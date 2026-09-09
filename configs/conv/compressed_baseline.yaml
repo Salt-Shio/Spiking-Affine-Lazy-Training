@@ -1,0 +1,72 @@
+run_name: compressed_baseline
+# ConvNetCompressed 訓練的正式 baseline。網路形狀完全由下面的 model.layers 決定
+# (src/models/conv_net.py build_network);空間尺寸 / ic 串接 / FC 的 n_in
+# 都由 build_network 從 input_shape + 卷積算式推導,這裡不填。
+#
+# init_k 三層全部 5.0,committed 值,不校準。理由與完整推導 + V1–V6 實測見
+# docs/math/初始權重尺度推導.md(舊的 firing-rate 目標帶準則選出的 8.0/64.0
+# 訓練較差,已於 2026-09-08 定案廢棄;舊 config compressed_baseline.yaml 內容
+# 即此檔前身 compressed_baseline_k5.yaml)。
+# conv 層的壓縮容量(L / max_out_spikes)全部是「起始猜測 + 訓練中偵測出界就
+# 放大」,見 docs/math/conv事件佇列壓縮版推導.md 第 7.2 節、src/train_conv_compressed.py。
+
+model:
+  decoder: membrane_regression   # membrane_regression / rate / population,見 salt_core.decoder
+
+  input_shape: [2, 34, 34]       # 虛擬輸入網格 C, H, W
+
+  layers:
+    - type: conv
+      oc: 8
+      k: 3
+      s: 2
+      p: 1
+      tau: 16.0
+      v_th: 1.0
+      alpha: 2.0
+      chunk_size: 1
+      # L 185 是舊版對全資料集靜態精算的值,當起始猜測夠準、幾乎不會出界。
+      L: 185
+      max_out_spikes: 9000
+      init_k: 5.0
+      L_grow_factor: 1.5
+      out_grow_factor: 1.5
+    # conv2。L 沒有靜態解,故意設小確保出界機制在訓練早期就被走過一次。
+    - type: conv
+      oc: 16
+      k: 3
+      s: 2
+      p: 1
+      tau: 16.0
+      v_th: 1.0
+      alpha: 2.0
+      chunk_size: 1
+      L: 32
+      max_out_spikes: 45000
+      init_k: 5.0
+      L_grow_factor: 1.5
+      out_grow_factor: 1.5
+    # 輸出層。v_th 1e9 = 純積分器(配 membrane_regression);FC 不會 fire。
+    # chunk_size 開大把 scan 步數砍成 1/512(積分步數預算 = 上一層的
+    # max_out_spikes 容量,上一層長大時這層自動跟著變長)。
+    - type: fc
+      name: out
+      n_out: 10
+      tau: 16.0
+      v_th: 1.0e+9
+      alpha: 2.0
+      chunk_size: 512
+      init_k: 5.0
+
+data:
+  max_events: 2000
+  train_size: 1000
+  val_size: 200
+  seed_train: 0
+  seed_val: 0
+
+train:
+  lr: 1.0e-2
+  epochs: 40
+  batch_size: 4
+  seed: 42

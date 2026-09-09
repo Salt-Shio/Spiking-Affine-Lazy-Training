@@ -1,0 +1,138 @@
+"""驗證 event_gain 補的是一個真實存在的梯度缺口,不是可有可無的加強項。
+
+問題:build_fc_queue 用 event_source_idx(離散索引)從 W 查權重——索引操作
+對「被索引的 W」有梯度,但不會讓「產生這個事件的上一層神經元的權重」出現在
+算式裡。就算 layer_chain.extract_output_events 全部改成純 JAX、正確合併排序,
+只要下一層的佇列還是「單純用索引查權重」,jax.grad 對上一層權重求出來的梯度
+永遠是 0——不是實作沒寫完整,是計算圖裡真的沒有這條邊。
+
+修法:build_fc_queue 的 event_gain 參數,傳上一層 chunk_scan.run_layer_forward
+回傳的 s_spike(不是 s_value,見 chunk_scan.py 的說明)。s_spike 是用
+atan_spike 算出來、forward 精確等於 1 的可微分量,乘進權重裡數值不變,但讓
+上一層的權重重新出現在算式裡——跟 core.py 的 soft reset (1-s)*x 是同一個技巧。
+
+例子:layer1 一顆神經元 p,三個各自只發一次事件的來源(沿用
+test_chunk_scan_gradient.py 的設定:tau=4,v_th=1.0,event_times=[0,1,5],
+W1=[[0.6,0.6,0.9]]),p 在事件 1(t=1)fire。layer2 一顆神經元 q,只接 p 一個
+來源,W2=[[0.5]]。loss 直接用 v_final,q(layer2 沒 fire,純仿射,不用透過
+s_value)。
+
+手算(見對話記錄,已用 jax.grad 交叉驗證):
+  x_0 = 0.6(N=0,a=1)
+  x_1 = 0.75*0.6+0.6 = 1.05 >= v_th,spike,s_spike = atan_spike(0.05) forward=1
+  atan_spike backward 在 x=0.05,alpha=2 處的斜率:
+    a=alpha/2=1, ax=pi*1*0.05≈0.157080, slope=1/(1+ax^2)≈0.975920
+  v_final,q = a_2*0 + s_spike*W2[q,p] = s_spike*0.5(a_2 這項因為 v0=0 恆為 0,
+    跟 layer2 的 N 算成多少無關)
+  d(s_spike)/dw1 = slope*dx1/dw1 = slope*1 ≈ 0.975920(w1 是直接項)
+  d(s_spike)/dw0 = slope*dx1/dw0 = slope*a_1 = slope*0.75 ≈ 0.731940
+    (w0 只透過 x0->x1 的鏈式間接影響)
+  d(s_spike)/dw2 = 0(事件2在 max_steps=2 就停了,從來沒被讀取過,不是遮罩掉)
+  d(v_final,q)/dW1 = 0.5 * d(s_spike)/dW1 ≈ [0.365970, 0.487960, 0.0]
+"""
+
+import jax
+import jax.numpy as jnp
+
+from salt_core.chunk_scan import run_layer_forward
+from salt_core.connectivity.fc import build_fc_queue
+from salt_core.layer_chain import extract_output_events
+
+TOL = 1e-3
+
+EXPECTED_GRAD_W1 = jnp.array([[0.365970, 0.487960, 0.0]])
+
+
+def assert_allclose(actual, expected, msg, tol=TOL):
+    actual = float(actual)
+    expected = float(expected)
+    assert abs(actual - expected) < tol, f"{msg}: got {actual}, expected {expected}"
+
+
+def _two_layer_v_final_q(W1, event_times, event_source_idx, tau, v_th, alpha, W2,
+                          use_gain):
+    """layer1(1 顆神經元 p,3 個來源)接 layer2(1 顆神經元 q,只接 p)。
+    max_steps=2:layer1 處理完事件0、事件1(fire)就停,事件2 從來沒被讀取過。
+    use_gain=False 時刻意不傳 event_gain,模擬「補之前」的算法,對照組。"""
+    maps1 = build_fc_queue(event_times, event_source_idx, W1, tau,
+                            n_real_events=event_times.shape[0])
+    spike_mask, spike_event_idx, s_spike, _, _ = run_layer_forward(
+        maps1, v_th, chunk_size=1, max_steps=2, alpha=alpha,
+        n_real_events=maps1.a.shape[1])
+
+    times2, src2, gain2, n_real_events2 = extract_output_events(
+        spike_mask, spike_event_idx, s_spike, event_times)
+
+    maps2 = build_fc_queue(times2, src2, W2, tau,
+                            event_gain=(gain2 if use_gain else None),
+                            n_real_events=n_real_events2)
+    _, _, _, _, v_final2 = run_layer_forward(
+        maps2, v_th, chunk_size=1, max_steps=maps2.a.shape[1], alpha=alpha,
+        n_real_events=n_real_events2)
+    return v_final2[0]
+
+
+def _setup():
+    tau = 4.0
+    v_th = 1.0
+    alpha = 2.0
+    event_times = jnp.array([0.0, 1.0, 5.0])
+    event_source_idx = jnp.array([0, 1, 2])
+    W1 = jnp.array([[0.6, 0.6, 0.9]])
+    W2 = jnp.array([[0.5]])
+    return W1, event_times, event_source_idx, tau, v_th, alpha, W2
+
+
+def test_forward_value_matches_hand_calc():
+    """先確認 forward 數值本身是對的(不管有沒有 event_gain,forward 都應該
+    是同一個數字,因為 s_spike forward 精確等於 1)。"""
+    W1, event_times, event_source_idx, tau, v_th, alpha, W2 = _setup()
+    v_gain = _two_layer_v_final_q(W1, event_times, event_source_idx, tau, v_th,
+                                   alpha, W2, use_gain=True)
+    v_no_gain = _two_layer_v_final_q(W1, event_times, event_source_idx, tau, v_th,
+                                      alpha, W2, use_gain=False)
+    assert_allclose(v_gain, 0.5, "v_final,q 手算應該是 0.5")
+    assert_allclose(v_no_gain, 0.5, "沒有 event_gain 時 forward 數值應該完全相同")
+
+
+def test_cross_layer_gradient_matches_hand_calc():
+    """補上 event_gain 之後,d(v_final,q)/dW1 應該非 0,而且對上手算的三個分量。"""
+    W1, event_times, event_source_idx, tau, v_th, alpha, W2 = _setup()
+
+    grad_fn = jax.grad(lambda W1: _two_layer_v_final_q(
+        W1, event_times, event_source_idx, tau, v_th, alpha, W2, use_gain=True))
+    grad_W1 = grad_fn(W1)
+
+    assert grad_W1.shape == (1, 3)
+    for j in range(3):
+        assert_allclose(grad_W1[0, j], EXPECTED_GRAD_W1[0, j],
+                         f"d(v_final,q)/dW1[0,{j}]")
+
+
+def test_without_event_gain_gradient_is_zero():
+    """對照組:不傳 event_gain(退化成單純用索引查權重),證明這正是文件裡
+    講的那個缺口——梯度不是「算錯」,是計算圖裡根本沒有這條邊,恆為 0。"""
+    W1, event_times, event_source_idx, tau, v_th, alpha, W2 = _setup()
+
+    grad_fn = jax.grad(lambda W1: _two_layer_v_final_q(
+        W1, event_times, event_source_idx, tau, v_th, alpha, W2, use_gain=False))
+    grad_W1 = grad_fn(W1)
+
+    assert grad_W1.shape == (1, 3)
+    for j in range(3):
+        assert_allclose(grad_W1[0, j], 0.0,
+                         f"沒有 event_gain 時 d(v_final,q)/dW1[0,{j}] 應該恆為 0")
+
+
+TESTS = [
+    test_forward_value_matches_hand_calc,
+    test_cross_layer_gradient_matches_hand_calc,
+    test_without_event_gain_gradient_is_zero,
+]
+
+
+if __name__ == "__main__":
+    for test in TESTS:
+        test()
+        print(f"PASS: {test.__name__}")
+    print(f"\n全部 {len(TESTS)} 項測試通過")
