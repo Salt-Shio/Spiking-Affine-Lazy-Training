@@ -63,7 +63,7 @@ class MetricsLog:
         append,該印就印。
 
         `dormant`:{conv_layer_name: {"dormant_frac": float, "act_p90p10": float}}
-        (見 src/dormant.py),沒傳則對應欄位填 nan。
+        (見 example/dormant.py),沒傳則對應欄位填 nan。
         """
         row = {"epoch": epoch, "train_loss": float(np.mean(self._losses)),
                "val_accuracy": val_accuracy}

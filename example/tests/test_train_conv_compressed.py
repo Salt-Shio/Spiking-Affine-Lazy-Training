@@ -1,4 +1,4 @@
-"""壓縮容量旋鈕動態放大機制(`src/train_conv_compressed.py`)的測試。沿用真實
+"""壓縮容量旋鈕動態放大機制(`example/train_conv_compressed.py`)的測試。沿用真實
 N-MNIST 小規模資料(跟 configs/conv/compressed_smoke.yaml 同量級:
 max_events=2000、train_size=16、val_size=8),不用合成資料;不碰
 train_conv_compressed.py 本身,只呼叫它公開的函式/`train()` entrypoint。
@@ -50,10 +50,10 @@ import optax
 import yaml
 
 from salt_core.layers import LayerDiag
-from src.models.conv_net import ConvNetCompressed, build_network
-from src.paths import CONFIGS_DIR, EXPERIMENTS_DIR
-from src.checkpoint import Checkpointer
-from src.train_conv_compressed import train
+from example.models.conv_net import ConvNetCompressed, build_network
+from example.paths import CONFIGS_DIR, EXPERIMENTS_DIR
+from example.checkpoint import Checkpointer
+from example.train_conv_compressed import train
 
 _TMP_DIR = os.path.join(EXPERIMENTS_DIR, "_tmp_test_train_conv_compressed_configs")
 os.makedirs(_TMP_DIR, exist_ok=True)
@@ -74,7 +74,7 @@ def _base_cfg(run_name: str, seed: int, conv2_L_init: int, grow: float, epochs: 
               conv1_L_init: int = 185, conv1_max_out_init: int = 8000,
               conv2_max_out_init: int = 35000, train_size: int = 16, val_size: int = 8) -> dict:
     """跟 compressed_smoke.yaml 同量級的骨架(config 是 model.layers list 形式,
-    見 src/models/conv_net.py build_network),只留這份測試真正要調整的欄位當
+    見 example/models/conv_net.py build_network),只留這份測試真正要調整的欄位當
     參數。`grow` 一次設定全部四個容量旋鈕的放大倍率(測試從沒需要它們互不
     相同)。`conv1_max_out_init` / `conv2_max_out_init` 預設給足(seed 1..42
     小規模不出界),E 類測試再覆寫成小值。"""

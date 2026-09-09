@@ -1,15 +1,17 @@
 # init_k 掃描與 $L_1$ 量測:公式與收斂性推導
 
-> **2026-09-08 現況 banner**:第 2、4、5、6、7 節推的是「用感受野正規化 firing
-> rate 落進目標帶 $[0.20, 0.50]$」當 init_k 選值準則的**掃描演算法**。
+> **現況 banner**:第 2、4、5、6、7 節推的是「用感受野正規化 firing rate 落進
+> 目標帶 $[0.20, 0.50]$」當 init_k 選值準則的**掃描演算法**。
 > 這個**準則本身已廢棄** —— 它把 init_k 推進「單筆事件就 fire」的飽和區,
 > 訓練較差(V6 實測 8/64 ≈ 0.735 vs `init_k=5` ≈ 0.80)。定案改成 committed
-> `init_k = 5.0`(三層),不校準。完整推導 + V1–V6 驗證見
-> `docs/math/初始權重尺度推導.md`。
+> `init_k = 5.0`(三層),不校準;完整推導 + V1–V6 驗證見
+> [`初始權重尺度推導.md`](初始權重尺度推導.md)。掃描用的 `src/init_k_search.py` /
+> `src/conv_param_search.py` 也早已刪除。
 > 本文件保留為 bracket + 幾何二分**演算法收斂性**的推導記錄;
 > **第 1、3 節的 $o_j$ / $L_1$ 幾何量測與 firing-rate 準則無關,仍然有效**。
 
-給新開的 session 讀的完整脈絡在 `docs/TODO.md` 任務 8 段 3.8、`docs/規格書.md`「段 3.8 定案」——那兩份文件講「決定量什麼、掃哪些層、目標帶多少」,是規格跟決策,不重複列在這裡。本文件只做一件事:把 `src/models/conv_net.py`(`_receptive_field_opportunity_count`/`conv_layer_receptive_field_firing_rate`/`conv1_receptive_field_L1_batch`)跟 `src/init_k_search.py`(`sweep_init_k`)裡實際在算的東西,寫成公式,並且證明 bracket+bisection 演算法為什麼會收斂、什麼情況下真的收斂不了——只有數學,不含程式碼實作細節。
+本文件把 bracket + bisection 掃描演算法寫成公式,證明它為什麼會收斂、什麼情況下
+真的收斂不了——只有數學,不含程式碼實作細節。
 
 ## 1. Opportunity count:合法 tap 的定義
 

@@ -1,12 +1,12 @@
-"""應用層(`src/`)共用的路徑錨點。
+"""應用層(`example/`)共用的路徑錨點。
 
-repo 根目錄由這個檔案自己的位置往上一層推得(`src/paths.py` -> repo 根),
+repo 根目錄由這個檔案自己的位置往上一層推得(`example/paths.py` -> repo 根),
 不靠環境變數、不動 `sys.path`。dataset 路徑由 `data/` 自己提供(`data.paths`),
 這裡只轉出來,讓訓練腳本一次 import 拿齊。
 """
 from pathlib import Path
 
-from data.paths import DATASET_ROOT  # noqa: F401  (轉出,讓 src.paths 當單一入口)
+from data.paths import DATASET_ROOT  # noqa: F401  (轉出,讓 example.paths 當單一入口)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

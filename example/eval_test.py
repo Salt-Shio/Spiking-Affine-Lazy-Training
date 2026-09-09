@@ -1,11 +1,11 @@
 """在 test set(或 val set)上評估一個已完成的訓練 run。
 
-訓練腳本(`src/train_conv_compressed.py`)只在訓練過程中看 val set、用它挑
+訓練腳本(`example/train_conv_compressed.py`)只在訓練過程中看 val set、用它挑
 best_params。test set 是刻意分開、只在需要一個「最終、沒被調參污染」的數字時
 才碰的——所以獨立成這支腳本,不焊進訓練迴圈,也不會每次訓練自動跑。
 
 用法:
-  python -m src.eval_test <exp_dir> [--which test|val] [--n N] [--seed S]
+  python -m example.eval_test <exp_dir> [--which test|val] [--n N] [--seed S]
                           [--params best|final]
 
 <exp_dir> 是一次訓練的輸出目錄(裡面要有 run.yaml + best_params.npz /
@@ -25,9 +25,9 @@ import yaml
 
 from data.src.nmnist import NMNISTDataset
 from salt_core.layers import ConvLayer
-from src.models.conv_net import ConvNetCompressed, build_decoder, build_network
-from src.paths import DATASET_ROOT
-from src.train_conv_compressed import make_evaluate_accuracy
+from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
+from example.paths import DATASET_ROOT
+from example.train_conv_compressed import make_evaluate_accuracy
 
 TEST_POOL_SIZE = 10000   # N-MNIST Test/ 全量(見 data.src.nmnist.build_split）
 

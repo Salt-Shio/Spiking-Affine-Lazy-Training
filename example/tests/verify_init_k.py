@@ -12,8 +12,8 @@
       低 init_k 那側 slope 維持在 α/2、梯度不塌                        步驟 5
 
 用法:
-  python -m src.tests.verify_init_k              # 跑全部 V1–V5,印表
-  pytest src/tests/verify_init_k.py              # 只跑 test_v1_*(純 numpy、快)
+  python -m example.tests.verify_init_k              # 跑全部 V1–V5,印表
+  pytest example/tests/verify_init_k.py              # 只跑 test_v1_*(純 numpy、快)
 """
 import math
 from dataclasses import replace
@@ -25,9 +25,9 @@ import optax
 
 from data.src.nmnist import NMNISTDataset
 from salt_core.layers import raw_events_to_stream
-from src.models.conv_net import ConvNetCompressed, build_decoder, build_network
-from src.paths import DATASET_ROOT, resolve_config
-from src.train_conv_compressed import load_config
+from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
+from example.paths import DATASET_ROOT, resolve_config
+from example.train_conv_compressed import load_config
 
 # 掃描的 init_k;√3 = Lee 變異數保持、8/64 = 舊 firing-rate 準則。
 INIT_KS = (math.sqrt(3.0), 3.0, 5.0, 8.0, 64.0)

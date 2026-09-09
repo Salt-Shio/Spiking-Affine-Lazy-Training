@@ -13,7 +13,7 @@
   layer list 的一個**通用迴圈**,不寫死層名。
 
 用法(config 路徑相對於 repo 根目錄,或給絕對路徑):
-  python -m src.train_conv_compressed configs/conv/compressed_baseline.yaml
+  python -m example.train_conv_compressed configs/conv/compressed_baseline.yaml
 """
 import argparse
 import datetime
@@ -35,12 +35,12 @@ import yaml
 from data.src.nmnist import NMNISTDataset
 from salt_core.calibrate import calibrate_network
 from salt_core.layers import ConvLayer
-from src.checkpoint import Checkpointer
-from src.dormant import dormant_report
-from src.metrics_log import MetricsLog
-from src.models.conv_net import ConvNetCompressed, build_decoder, build_network
-from src.paths import DATASET_ROOT, EXPERIMENTS_DIR, REPO_ROOT, resolve_config
-from src.utils import get_git_commit_hash, set_seed
+from example.checkpoint import Checkpointer
+from example.dormant import dormant_report
+from example.metrics_log import MetricsLog
+from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
+from example.paths import DATASET_ROOT, EXPERIMENTS_DIR, REPO_ROOT, resolve_config
+from example.utils import get_git_commit_hash, set_seed
 
 
 def load_config(path: str) -> dict:
@@ -236,7 +236,7 @@ def train(config_path: str):
                                     n_samples=data_cfg["val_size"], which="val")
 
     # 一列 layer 物件,形狀完全由 model_cfg["layers"] 決定(見
-    # src.models.conv_net.build_network)。動態放大 = 用 grown_to_fit 重建這個
+    # example.models.conv_net.build_network)。動態放大 = 用 grown_to_fit 重建這個
     # list,跨 while 迴圈迭代持續累積(層名不變)。
     layers = build_network(model_cfg)
 
@@ -269,7 +269,7 @@ def train(config_path: str):
 
     batch_size = min(train_cfg["batch_size"], data_cfg["train_size"])
 
-    # dormant score(src/dormant.py)每個 epoch 在這批固定樣本上量,跨 epoch 可比。
+    # dormant score(example/dormant.py)每個 epoch 在這批固定樣本上量,跨 epoch 可比。
     n_probe = min(128, data_cfg["train_size"])
     probe_batch = (train_split.event_times[:n_probe], train_split.x[:n_probe],
                    train_split.y[:n_probe], train_split.c[:n_probe],
@@ -350,7 +350,7 @@ def train(config_path: str):
 def _write_experiment(run_record: dict, params, best_params, exp_dir: str,
                        layers: list) -> None:
     """把 run 紀錄 + 權重寫進 exp_dir。metrics.csv 跟結尾的逐層用量摘要由
-    MetricsLog 負責(見 src/metrics_log.py)。"""
+    MetricsLog 負責(見 example/metrics_log.py)。"""
     with open(os.path.join(exp_dir, "run.yaml"), "w", encoding="utf-8") as f:
         yaml.safe_dump(run_record, f, allow_unicode=True, sort_keys=False)
 

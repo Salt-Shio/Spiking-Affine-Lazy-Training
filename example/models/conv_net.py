@@ -17,7 +17,7 @@
 
 佇列長度 `L`、輸出 spike 上界 `max_out_spikes` 都是「起始猜測 + 訓練中偵測
 出界就放大」(見 docs/math/conv事件佇列壓縮版推導.md 第 7.2 節、
-`salt_core.layers.ConvLayer.grown_to_fit`、`src/train_conv_compressed.py`)。
+`salt_core.layers.ConvLayer.grown_to_fit`、`example/train_conv_compressed.py`)。
 init_k 校準見 `salt_core.calibrate`,layer entry 沒填 `init_k` 就開訓前現算。
 """
 import jax

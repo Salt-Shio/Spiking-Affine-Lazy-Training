@@ -1,6 +1,6 @@
 # Chunk 化 forward 的梯度:不套閘 + soft reset
 
-延續 `docs/單狀態仿射平行掃描推導.md`(那份文件只推 forward:仿射合成、平行掃描、fire 判斷,不含梯度)。本文件補上梯度怎麼算,對應 `docs/TODO.md` 任務 5「驗證 surrogate gradient 銜接」在 chunk 化版本(`core.py` 的 `process_chunk`)上的具體落地。
+延續 `docs/單狀態仿射平行掃描推導.md`(那份文件只推 forward:仿射合成、平行掃描、fire 判斷,不含梯度)。本文件補上 chunk 化版本(`core.py` 的 `process_chunk`)的梯度怎麼算。
 
 ## 0. 決策脈絡(為什麼是這個設計,不是別的)
 
@@ -205,7 +205,7 @@ $$
 
 **這代表 `jax.grad` 直接對現有的 `process_chunk`(或用它組出來的 loss)求梯度,會自動算出本文件推導的全部結果,不需要為 chunk 化的 fire/reset 邏輯另外寫一個手刻的反向傳播規則**——這正是「不套閘」這個設計決策換來的最大工程好處,對照「套閘」版本需要手推、手刻整套反向 associative scan,複雜度差非常多。
 
-## 7. 用具體數字驗算(對照 `docs/TODO.md` 手算過的例子)
+## 7. 用具體數字驗算
 
 $\tau=4$($a=0.75$ 對應 $N=1$),$v_{th}=1$,$\alpha=2$,$N=[0,1,4]$,$w=[0.6,0.6,0.9]$。
 
