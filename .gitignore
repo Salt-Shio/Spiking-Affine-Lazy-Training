@@ -10,3 +10,5 @@ build/
 /CLAUDE.md
 .claude/
 .vscode/
+
+*.zip

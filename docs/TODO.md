@@ -15,6 +15,21 @@
 
 ## 待處理
 
+- **SNN 活動 monitor,ReDo 的前置。** 要記哪些資料、放哪一層、什麼形式,設計討論見
+  [`監測規格.md`](監測規格.md)(尚未定案)。現在只有 `LayerDiag`(4 個純量)+ `dormant.py`
+  (逐 epoch 一個 `dormant_frac`),且 `dormant.py` 在 `example/` = dev 自己寫,應搬進
+  `salt_core`。ReDo 要靠 activity 分布挑回收對象,單一 frac 不夠;debug SNN 訓練也會需要。
+  開放題「`init_k=√3` + ReDo package」往下走前先補這個。
+- **`max_steps` 與 `chunk_size` 脫鉤(conv 層)。** `ConvLayer.__call__` 傳
+  `max_steps=self.L`,不看 `chunk_size`;FC 層已用 `ceil(輸入流長度 / chunk_size)`。
+  現在 conv `chunk_size=1` 沒差,一調大就無效——`lax.scan` 不能提前退出,會 fire 的層
+  最壞情況(每個事件都 fire)強制 `max_steps=L`,`chunk_size>1` 只是每步做更多事、
+  步數不變(負優化)。正解:非 fire 層 `ceil(L/chunk_size)`;會 fire 的層 `chunk_size>1`
+  本質無效,要嘛別開、要嘛接受。是設計限制,不是 bug。
+- **L 收縮機制(啟發式,低優先)。** 現在 `grown_to_fit` 只單向長大。fire rate 訓練中
+  單調下降 → 下游事件變少 → `max_real_queue` 掉,L 有收縮空間(偵測訊號現成)。要做成
+  有 hysteresis 的啟發式(連續 N epoch `max_real_queue < L × 比例` 才縮一階),否則縮完
+  又要長回來 = thrash + 重編譯。
 - **`example/` 單元測試覆蓋缺口。** `example/tests/` 只有一個 e2e 檔
   (`test_train_conv_compressed.py`);`metrics_log` / `checkpoint` / `run_epochs` /
   `build_network` / `build_decoder` / `dormant` / `verify_init_k` 都沒單元測試。
