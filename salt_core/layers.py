@@ -27,13 +27,16 @@ from typing import NamedTuple, Protocol
 import jax
 import jax.numpy as jnp
 
-from salt_core.chunk_scan import LayerForwardResult, run_layer_forward
+from salt_core.chunk_scan import (LayerForwardResult, run_layer_forward,
+                                   run_layer_forward_traced)
 from salt_core.connectivity.conv import (build_conv_queue_compressed,
                                           conv_layer_receptive_field_firing_rate,
                                           unravel_conv_source)
 from salt_core.connectivity.fc import build_fc_queue
 from salt_core.layer_chain import (EventStream, extract_output_events,
                                     extract_output_events_compressed)
+from salt_core.monitor import (LayerForwardTrace, resolve_ms_compressed,
+                                resolve_ms_dense)
 
 
 def uniform_init(key: jax.Array, shape: tuple, fan_in: int, init_k: float) -> jax.Array:
@@ -77,6 +80,12 @@ class Layer(Protocol):
                 in_stream: EventStream) -> tuple[EventStream, LayerForwardResult, LayerDiag]:
         """讀一條標準事件流 + 這層權重,吐 (標準輸出事件流, 原始 forward 結果,
         固定診斷)。原始結果留給最後一層的解碼器(step 5)用。"""
+        ...
+
+    def forward_traced(self, w: jax.Array,
+                       in_stream: EventStream) -> tuple[EventStream, LayerForwardTrace]:
+        """跟 `forward` 一樣跑一層,但吐 (輸出事件流, `LayerForwardTrace` 逐步軌跡)。
+        給 `run_network_traced` 的週期性 debug probe 用,不進訓練熱路徑。"""
         ...
 
     def grown_to_fit(self, diag: LayerDiag) -> "Layer":
@@ -152,8 +161,11 @@ class ConvLayer:
     def init_weight(self, key: jax.Array) -> jax.Array:
         return uniform_init(key, self.weight_shape, self.fan_in, self.init_k)
 
-    def forward(self, w: jax.Array,
-                in_stream: EventStream) -> tuple[EventStream, LayerForwardResult, LayerDiag]:
+    def _run_forward(self, w: jax.Array, in_stream: EventStream, *, trace: bool):
+        """建壓縮佇列 + 跑一層 + 抽輸出流。`forward` / `forward_traced` 共用。
+        `trace=False` 時 graph 跟舊 `forward` body 逐位元相同(`trace` 是 Python
+        端靜態 bool,分支在 trace 期被消掉)。回傳 `(out_stream, result, cq,
+        v_steps, pointer_steps)`;後兩個只有 `trace=True` 時是陣列,否則 `None`。"""
         # 扁平來源編號 -> (x,y,c),用這層自己的輸入面尺寸。第一層吃 ravel 過的
         # 原始事件,ravel↔unravel 對合法座標((0..w_in-1, 0..h_in-1, 0..ic-1),
         # pad 也是 (0,0,0))是嚴格逆運算,不改數值。
@@ -162,13 +174,24 @@ class ConvLayer:
             in_stream.event_times, x, y, c, w, self.tau,
             self.s, self.p, self.h_out, self.w_out, self.L,
             event_gain=in_stream.event_gain, n_real_events=in_stream.n_real_events)
-        result = run_layer_forward(
-            cq.maps, self.v_th, chunk_size=self.chunk_size, max_steps=self.L,
-            alpha=self.alpha, n_real_events=cq.n_real_events)
+        if trace:
+            result, v_steps, pointer_steps = run_layer_forward_traced(
+                cq.maps, self.v_th, chunk_size=self.chunk_size, max_steps=self.L,
+                alpha=self.alpha, n_real_events=cq.n_real_events)
+        else:
+            result = run_layer_forward(
+                cq.maps, self.v_th, chunk_size=self.chunk_size, max_steps=self.L,
+                alpha=self.alpha, n_real_events=cq.n_real_events)
+            v_steps = pointer_steps = None
         out_stream = extract_output_events_compressed(
             result.spike_mask, result.spike_event_idx, result.s_spike,
             in_stream.event_times, cq.local_to_global_j,
             max_total_spikes=self.max_out_spikes)
+        return out_stream, result, cq, v_steps, pointer_steps
+
+    def forward(self, w: jax.Array,
+                in_stream: EventStream) -> tuple[EventStream, LayerForwardResult, LayerDiag]:
+        out_stream, result, cq, _, _ = self._run_forward(w, in_stream, trace=False)
         spike_count = jnp.sum(result.spike_mask)
         diag = LayerDiag(
             spike_count=spike_count,
@@ -176,6 +199,18 @@ class ConvLayer:
             max_real_queue=jnp.max(cq.n_real_events),
             n_out_spikes=out_stream.n_real_events)
         return out_stream, result, diag
+
+    def forward_traced(self, w: jax.Array,
+                       in_stream: EventStream) -> tuple[EventStream, LayerForwardTrace]:
+        """跟 `forward` 一樣跑一層,但吐 `LayerForwardTrace`(逐步軌跡)取代
+        `(LayerForwardResult, LayerDiag)`。給 `run_network_traced` 用。"""
+        out_stream, result, cq, v_steps, pointer_steps = self._run_forward(
+            w, in_stream, trace=True)
+        event_ms = resolve_ms_compressed(
+            pointer_steps, cq.local_to_global_j, cq.n_real_events, in_stream.event_times)
+        trace = LayerForwardTrace(spike_mask=result.spike_mask, s_value=result.s_value,
+                                   v_steps=v_steps, event_ms=event_ms)
+        return out_stream, trace
 
     def calibration_measure(self, calib_stream_batch: EventStream, chunk: int = 16):
         """回傳一個 `measure(weight) -> 純量`:對一批校準輸入流跑這層 forward,
@@ -249,19 +284,33 @@ class FCLayer:
     def init_weight(self, key: jax.Array) -> jax.Array:
         return uniform_init(key, self.weight_shape, self.fan_in, self.init_k)
 
-    def forward(self, w: jax.Array,
-                in_stream: EventStream) -> tuple[EventStream, LayerForwardResult, LayerDiag]:
+    def _run_forward(self, w: jax.Array, in_stream: EventStream, *, trace: bool):
+        """建密集佇列 + 跑一層 + 抽輸出流。`forward` / `forward_traced` 共用。
+        `trace=False` 時 graph 跟舊 `forward` body 逐位元相同。回傳
+        `(out_stream, result, v_steps, pointer_steps)`;後兩個只有 `trace=True`
+        時是陣列,否則 `None`。"""
         maps = build_fc_queue(
             in_stream.event_times, in_stream.event_source_idx, w, self.tau,
             event_gain=in_stream.event_gain, n_real_events=in_stream.n_real_events)
         # 積分預算 = 上一層宣告的輸出容量(輸入流固定長度),不是自己的欄位。
         scan_steps = -(-in_stream.event_times.shape[0] // self.chunk_size)  # ceil div
-        result = run_layer_forward(
-            maps, self.v_th, chunk_size=self.chunk_size, max_steps=scan_steps,
-            alpha=self.alpha, n_real_events=in_stream.n_real_events)
+        if trace:
+            result, v_steps, pointer_steps = run_layer_forward_traced(
+                maps, self.v_th, chunk_size=self.chunk_size, max_steps=scan_steps,
+                alpha=self.alpha, n_real_events=in_stream.n_real_events)
+        else:
+            result = run_layer_forward(
+                maps, self.v_th, chunk_size=self.chunk_size, max_steps=scan_steps,
+                alpha=self.alpha, n_real_events=in_stream.n_real_events)
+            v_steps = pointer_steps = None
         out_stream = extract_output_events(
             result.spike_mask, result.spike_event_idx, result.s_spike,
             in_stream.event_times, max_total_spikes=self.n_out)
+        return out_stream, result, v_steps, pointer_steps
+
+    def forward(self, w: jax.Array,
+                in_stream: EventStream) -> tuple[EventStream, LayerForwardResult, LayerDiag]:
+        out_stream, result, _, _ = self._run_forward(w, in_stream, trace=False)
         spike_count = jnp.sum(result.spike_mask)
         diag = LayerDiag(
             spike_count=spike_count,
@@ -269,6 +318,19 @@ class FCLayer:
             max_real_queue=jnp.zeros((), dtype=jnp.int32),
             n_out_spikes=out_stream.n_real_events)
         return out_stream, result, diag
+
+    def forward_traced(self, w: jax.Array,
+                       in_stream: EventStream) -> tuple[EventStream, LayerForwardTrace]:
+        """跟 `forward` 一樣跑一層,但吐 `LayerForwardTrace`(逐步軌跡)。密集
+        佇列的 `pointer` 直接是全域事件 index,`resolve_ms_dense` 不必查表。"""
+        out_stream, result, v_steps, pointer_steps = self._run_forward(
+            w, in_stream, trace=True)
+        n_real = jnp.broadcast_to(
+            jnp.asarray(in_stream.n_real_events, jnp.int32), (self.n_out,))
+        event_ms = resolve_ms_dense(pointer_steps, n_real, in_stream.event_times)
+        trace = LayerForwardTrace(spike_mask=result.spike_mask, s_value=result.s_value,
+                                   v_steps=v_steps, event_ms=event_ms)
+        return out_stream, trace
 
     def grown_to_fit(self, diag: LayerDiag) -> "FCLayer":
         # 輸出層沒有自己的容量旋鈕:積分預算來自上一層的輸出容量(輸入流長度),
@@ -310,3 +372,19 @@ def run_network(layers, input_stream: EventStream, weights):
         stream, result, diag = layer.forward(w, stream)
         diags.append(diag)
     return result, diags
+
+
+def run_network_traced(layers, input_stream: EventStream, weights):
+    """`run_network` 的 forward-only 姊妹:逐層跑 `forward_traced`,每層收一份
+    `LayerForwardTrace`(逐步軌跡),`stop_gradient` 後回傳 list。
+
+    定位是週期性 debug probe(見 docs/監測規格.md §6):shape 比 `run_network`
+    大一截、另編一個函式,不織進 `train_step`、不參與 grad。呼叫端拿它 dump
+    `.npz` 看自訂 decoder / 動力學。
+    """
+    stream = input_stream
+    traces = []
+    for layer, w in zip(layers, weights):
+        stream, trace = layer.forward_traced(w, stream)
+        traces.append(trace)
+    return jax.tree_util.tree_map(jax.lax.stop_gradient, traces)

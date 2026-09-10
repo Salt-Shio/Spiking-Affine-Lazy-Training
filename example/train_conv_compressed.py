@@ -36,7 +36,7 @@ from data.src.nmnist import NMNISTDataset
 from salt_core.calibrate import calibrate_network
 from salt_core.layers import ConvLayer
 from example.checkpoint import Checkpointer
-from example.dormant import dormant_report
+from salt_core.dormant import dormant_report
 from example.metrics_log import MetricsLog
 from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR, REPO_ROOT, resolve_config
@@ -269,7 +269,7 @@ def train(config_path: str):
 
     batch_size = min(train_cfg["batch_size"], data_cfg["train_size"])
 
-    # dormant score(example/dormant.py)每個 epoch 在這批固定樣本上量,跨 epoch 可比。
+    # dormant score(salt_core/dormant.py)每個 epoch 在這批固定樣本上量,跨 epoch 可比。
     n_probe = min(128, data_cfg["train_size"])
     probe_batch = (train_split.event_times[:n_probe], train_split.x[:n_probe],
                    train_split.y[:n_probe], train_split.c[:n_probe],

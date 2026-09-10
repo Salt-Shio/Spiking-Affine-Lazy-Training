@@ -103,6 +103,40 @@ def run_layer_forward(maps: AffineMap, v_th: float, chunk_size: int, max_steps: 
       s_value: shape (n_out_neurons, max_steps),見上方定義
       v_final: shape (n_out_neurons,),消化完 max_steps 步之後的膜電位
     """
+    result, _v_steps, _pointer_steps = _run_layer_scan(
+        maps, v_th, chunk_size, max_steps, n_real_events, alpha, trace=False)
+    return result
+
+
+def run_layer_forward_traced(maps: AffineMap, v_th: float, chunk_size: int, max_steps: int,
+                              n_real_events: jax.Array | int, alpha: float = 2.0
+                              ) -> tuple[LayerForwardResult, jax.Array, jax.Array]:
+    """跟 `run_layer_forward` 跑一模一樣的掃描,但額外把每步的膜電位與佇列
+    指標疊出來。回傳 `(result, v_steps, pointer_steps)`:
+
+    - `result`:`LayerForwardResult`,逐位元等於 `run_layer_forward`(共用 scan
+      內核,只差多疊兩條 per-step 輸出)。
+    - `v_steps`:`(n_out_neurons, max_steps)`,每步 chunk 結束(套過 soft reset)
+      的膜電位 = 完整膜電位軌跡,最後一欄 = `result.v_final`。
+    - `pointer_steps`:`(n_out_neurons, max_steps)` int,每步「這顆神經元從佇列
+      第幾欄開始消化」(消化前)。`chunk_size=1` 時就是步序號;`chunk_size>1`
+      時因 spike 提前收而不均勻。配 `local_to_global_j`(壓縮 conv)/ 直接當
+      全域 index(密集)+ event_times 可還原每步的真實毫秒。
+
+    定位是週期性深 probe,不進訓練熱路徑;呼叫端(`layers` 的 `forward_traced` /
+    `run_network_traced`)負責組成 `LayerForwardTrace` 並 `stop_gradient`。
+    """
+    return _run_layer_scan(maps, v_th, chunk_size, max_steps, n_real_events, alpha,
+                            trace=True)
+
+
+def _run_layer_scan(maps: AffineMap, v_th: float, chunk_size: int, max_steps: int,
+                     n_real_events: jax.Array | int, alpha: float, *, trace: bool):
+    """`run_layer_forward` / `run_layer_forward_traced` 共用的 scan 內核。
+    回傳 `(LayerForwardResult, v_steps, pointer_steps)`;`trace=False` 時後兩個
+    是 `None`,且 graph 跟舊版逐位元相同(`trace` 是 Python 靜態 bool,
+    `if trace` 分支在 trace 期被消掉)。
+    """
     n_out_neurons, n_total_events = maps.a.shape
     # 統一成 (n_out_neurons,) int32:密集版傳純量(所有神經元同一個數)、
     # 壓縮版傳逐神經元陣列、沒傳代表整條都是真事件——正規化之後底下只處理
@@ -137,15 +171,21 @@ def run_layer_forward(maps: AffineMap, v_th: float, chunk_size: int, max_steps: 
         n_consumed = jnp.where(chunk_result.is_spiked, chunk_result.spike_idx + 1, chunk_size)
         spike_event_idx = pointer + chunk_result.spike_idx
         new_pointer = pointer + n_consumed
-        return (chunk_result.v_final, new_pointer), (chunk_result.is_spiked, spike_event_idx, s_spike, s_value)
-        # 對於 step 來說 (chunk_result.is_spiked, spike_event_idx, s_spike, s_value) 不會被
-        # carry 用到,但 scan 的特性會把每一步的這個 tuple 疊成陣列,當作 scan 的回傳值給外面用
+        ys = (chunk_result.is_spiked, spike_event_idx, s_spike, s_value)
+        if trace:
+            ys = ys + (chunk_result.v_final, pointer)
+        return (chunk_result.v_final, new_pointer), ys
+        # step 不用這個 ys tuple 的內容,但 scan 會把每一步疊成陣列當回傳值給外面用
 
     init = (jnp.zeros(n_out_neurons, dtype=maps.a.dtype), jnp.zeros(n_out_neurons, dtype=jnp.int32))
-    (v_final, _), (spike_mask, spike_event_idx, s_spike, s_value) = jax.lax.scan(
-        step, init, None, length=max_steps)
+    (v_final, _), ys = jax.lax.scan(step, init, None, length=max_steps)
+    spike_mask, spike_event_idx, s_spike, s_value = ys[:4]
 
     # scan 的疊代軸在最前面,shape 是 (max_steps, n_out_neurons),轉成
     # (n_out_neurons, max_steps) 給呼叫端用
-    return LayerForwardResult(spike_mask=spike_mask.T, spike_event_idx=spike_event_idx.T,
-                               s_spike=s_spike.T, s_value=s_value.T, v_final=v_final)
+    result = LayerForwardResult(spike_mask=spike_mask.T, spike_event_idx=spike_event_idx.T,
+                                 s_spike=s_spike.T, s_value=s_value.T, v_final=v_final)
+    if not trace:
+        return result, None, None
+    v_step, pointer_step = ys[4], ys[5]
+    return result, v_step.T, pointer_step.T

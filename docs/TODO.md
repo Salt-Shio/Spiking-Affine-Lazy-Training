@@ -15,11 +15,16 @@
 
 ## 待處理
 
-- **SNN 活動 monitor,ReDo 的前置。** 要記哪些資料、放哪一層、什麼形式,設計討論見
-  [`監測規格.md`](監測規格.md)(尚未定案)。現在只有 `LayerDiag`(4 個純量)+ `dormant.py`
-  (逐 epoch 一個 `dormant_frac`),且 `dormant.py` 在 `example/` = dev 自己寫,應搬進
-  `salt_core`。ReDo 要靠 activity 分布挑回收對象,單一 frac 不夠;debug SNN 訓練也會需要。
-  開放題「`init_k=√3` + ReDo package」往下走前先補這個。
+- **SNN 活動 monitor,ReDo 的前置。** 設計定案見 [`監測規格.md`](監測規格.md)。
+  `salt_core` 側已完成:`dormant` 搬進 `salt_core/dormant.py`(`dormant_score` 純歸約
+  primitive + `dormant_report` 自己逐層跑 forward,不碰 `LayerDiag`);`LayerDiag` 依
+  §4.2 維持 4 欄不動;§6 的 `run_network_traced` / `LayerForwardTrace` /
+  `salt_core/monitor.py`(逐層 `(n, max_steps)`:reset 後膜電位、是否 spike、`s_value`、
+  對到的真實毫秒;forward-only、`stop_gradient`;`chunk_scan` 抽共用 scan 內核,
+  `run_layer_forward` 逐位元不變)。測試 `test_dormant.py` / `test_monitor.py`。
+  未完成:`example` 消費端 —— 週期性呼叫 `run_network_traced` on 探測批、dump `.npz`;
+  `metrics.csv` 要不要多寫欄位(從既有的 `LayerForwardResult` / `diags` 現場算)。
+  §7 的呼叫端政策(探測批策略 / dormant 來源 / 輸出格式)串 ReDo 時再定。
 - **`max_steps` 與 `chunk_size` 脫鉤(conv 層)。** `ConvLayer.__call__` 傳
   `max_steps=self.L`,不看 `chunk_size`;FC 層已用 `ceil(輸入流長度 / chunk_size)`。
   現在 conv `chunk_size=1` 沒差,一調大就無效——`lax.scan` 不能提前退出,會 fire 的層
