@@ -55,6 +55,7 @@ from example.models.conv_net import ConvNetCompressed, build_network
 from example.paths import CONFIGS_DIR, EXPERIMENTS_DIR
 from example.checkpoint import Checkpointer
 from example.train_conv_compressed import train
+from example.utils import TRACES_DIRNAME, TRAIN_DIRNAME
 
 # 這份 e2e 測試會呼叫真正的 train(),每個案例吐一個 conv_compressed_*_<時間戳>
 # 目錄。全部關進 experiments/TEST_TEMP,而且「一次只留最後一批」——模組載入
@@ -130,7 +131,7 @@ def _run_capture(config_path: str):
 
 
 def _read_metrics_csv(exp_dir: str) -> list:
-    with open(os.path.join(exp_dir, "metrics.csv"), newline="", encoding="utf-8") as f:
+    with open(os.path.join(exp_dir, TRAIN_DIRNAME, "metrics.csv"), newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
@@ -326,7 +327,7 @@ def test_conv2_L_overflow_after_checkpoint_resumes_from_disk_not_reinit():
     assert int(rows[-1]["conv2_L"]) == k["new"]
     assert final_cfg["final_capacity"]["conv2"]["L"] == k["new"]
 
-    final_ckpt = np.load(os.path.join(exp_dir, "checkpoint.npz"))
+    final_ckpt = np.load(os.path.join(exp_dir, TRAIN_DIRNAME, "checkpoint.npz"))
     assert int(final_ckpt["epoch"]) == epochs - 1
 
 
@@ -402,11 +403,11 @@ def test_end_to_end_smoke_produces_expected_artifacts():
 
     for fname in ("checkpoint.npz", "run.yaml", "metrics.csv", "best_params.npz",
                   "params.npz"):
-        assert os.path.isfile(os.path.join(exp_dir, fname)), f"缺少 {fname}"
+        assert os.path.isfile(os.path.join(exp_dir, TRAIN_DIRNAME, fname)), f"缺少 train/{fname}"
 
     # compressed_smoke.yaml 有開 probe_every -> traces/ 該有東西
-    assert os.path.isfile(os.path.join(exp_dir, "traces", "summary.npz")), "缺少 traces/summary.npz"
-    assert os.path.isfile(os.path.join(exp_dir, "traces", "full_epoch_000.npz")), "缺少 traces/full_epoch_000.npz"
+    assert os.path.isfile(os.path.join(exp_dir, TRACES_DIRNAME, "summary.npz")), "缺少 traces/summary.npz"
+    assert os.path.isfile(os.path.join(exp_dir, TRACES_DIRNAME, "full_epoch_000.npz")), "缺少 traces/full_epoch_000.npz"
 
     rows = _read_metrics_csv(exp_dir)
     assert len(rows) > 0

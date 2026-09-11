@@ -8,10 +8,18 @@ best_params。test set 是刻意分開、只在需要一個「最終、沒被調
   python -m example.eval_test <exp_dir> [--which test|val] [--n N] [--seed S]
                           [--params best|final]
 
-<exp_dir> 是一次訓練的輸出目錄(裡面要有 run.yaml + best_params.npz /
-params.npz)。網路形狀從 run.yaml 的 config 快照重建,壓縮容量(L /
+<exp_dir> 是一次訓練的輸出目錄(裡面要有 train/run.yaml + train/best_params.npz /
+train/params.npz)。網路形狀從 run.yaml 的 config 快照重建,壓縮容量(L /
 max_out_spikes)用 run.yaml 記的訓練結束時的最終值(訓練中可能長大過),
-權重從 npz 載入。結果寫進 <exp_dir>/eval_<which>.yaml,不改 run.yaml。
+權重從 npz 載入。
+
+輸出(獨立的 eval/ 子資料夾,不改 train/ 底下任何東西):
+  <exp_dir>/eval/<which>.yaml       accuracy / loss / confusion_matrix + 中繼資料
+  <exp_dir>/eval/<which>_preds.npz  逐樣本的 preds + labels,要重算別的東西不用重跑整個評估
+
+評估用的 `make_evaluate`(`example/utils.py`)跟訓練熱路徑(`run_epochs` 每個
+epoch 對 val split 的檢查)共用同一份——兩邊要的計算完全一樣(分批 vmap 算
+scores、導出 accuracy/loss/preds),只是誰用哪個回傳值不同。
 """
 import argparse
 import dataclasses
@@ -25,15 +33,15 @@ import yaml
 
 from data.src.nmnist import NMNISTDataset
 from salt_core.layers import ConvLayer
-from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
+from example.models.conv_net import N_CLASSES, ConvNetCompressed, build_decoder, build_network
 from example.paths import DATASET_ROOT
-from example.train_conv_compressed import make_evaluate_accuracy
+from example.utils import EVAL_DIRNAME, TRAIN_DIRNAME, load_params_npz, make_evaluate
 
 TEST_POOL_SIZE = 10000   # N-MNIST Test/ 全量(見 data.src.nmnist.build_split）
 
 
 def _load_run_record(exp_dir: str) -> dict:
-    with open(os.path.join(exp_dir, "run.yaml"), "r", encoding="utf-8") as f:
+    with open(os.path.join(exp_dir, TRAIN_DIRNAME, "run.yaml"), "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -55,8 +63,14 @@ def _rebuild_layers(run_record: dict) -> list:
 
 def _load_params(exp_dir: str, layers: list, which_params: str) -> tuple:
     fname = "best_params.npz" if which_params == "best" else "params.npz"
-    data = np.load(os.path.join(exp_dir, fname))
-    return tuple(data[layer.name] for layer in layers)
+    return load_params_npz(os.path.join(exp_dir, TRAIN_DIRNAME, fname), layers)
+
+
+def _confusion_matrix(labels: np.ndarray, preds: np.ndarray, n_classes: int) -> np.ndarray:
+    """列 = 真實類別、欄 = 預測類別,標籤就是類別的數字 index(N-MNIST 是 0–9)。"""
+    cm = np.zeros((n_classes, n_classes), dtype=np.int64)
+    np.add.at(cm, (labels, preds), 1)
+    return cm
 
 
 def evaluate_run(exp_dir: str, which: str, n_samples: int | None,
@@ -78,8 +92,14 @@ def evaluate_run(exp_dir: str, which: str, n_samples: int | None,
 
     eval_batch_size = int(data_cfg.get("batch_size")
                           or run_record["config"]["train"]["batch_size"])
-    evaluate_accuracy = make_evaluate_accuracy(net, decoder, eval_batch_size)
-    accuracy, preds = evaluate_accuracy(params, split)
+    evaluate = make_evaluate(net, decoder, eval_batch_size)
+    accuracy, loss, preds = evaluate(params, split)
+    labels = np.asarray(split.labels)
+    confusion_matrix = _confusion_matrix(labels, preds, N_CLASSES)
+
+    eval_dir = os.path.join(exp_dir, EVAL_DIRNAME)
+    os.makedirs(eval_dir, exist_ok=True)
+    np.savez(os.path.join(eval_dir, f"{which}_preds.npz"), preds=preds, labels=labels)
 
     return {
         "which": which,
@@ -87,6 +107,8 @@ def evaluate_run(exp_dir: str, which: str, n_samples: int | None,
         "seed": int(seed),
         "params": which_params,
         "accuracy": accuracy,
+        "loss": loss,
+        "confusion_matrix": confusion_matrix.tolist(),
         "git_commit": run_record.get("git_commit", ""),
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
     }
@@ -106,13 +128,15 @@ def main() -> None:
 
     result = evaluate_run(args.exp_dir, args.which, args.n, args.seed, args.params)
 
-    out_path = os.path.join(args.exp_dir, f"eval_{args.which}.yaml")
+    out_path = os.path.join(args.exp_dir, EVAL_DIRNAME, f"{args.which}.yaml")
     with open(out_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(result, f, allow_unicode=True, sort_keys=False)
+    preds_path = os.path.join(args.exp_dir, EVAL_DIRNAME, f"{args.which}_preds.npz")
 
-    print(f"{args.which} accuracy = {result['accuracy']:.4f} "
+    print(f"{args.which} accuracy = {result['accuracy']:.4f}  loss = {result['loss']:.4f} "
           f"(n={result['n_samples']}, seed={result['seed']}, params={result['params']})")
     print(f"寫入 {out_path}")
+    print(f"preds 存到 {preds_path}")
 
 
 if __name__ == "__main__":

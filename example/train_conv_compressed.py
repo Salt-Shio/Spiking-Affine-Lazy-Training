@@ -28,7 +28,6 @@ sys.stdout.reconfigure(line_buffering=True)
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import optax
 import yaml
 
@@ -40,7 +39,8 @@ from example.metrics_log import MetricsLog
 from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
 from example.trace_probe import TraceProbe
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR, REPO_ROOT, resolve_config
-from example.utils import get_git_commit_hash, set_seed
+from example.utils import (TRACES_DIRNAME, TRAIN_DIRNAME, get_git_commit_hash,
+                           make_evaluate, save_params_npz, set_seed)
 
 
 def load_config(path: str) -> dict:
@@ -89,30 +89,6 @@ def make_train_step(net, optimizer, decoder):
     return train_step
 
 
-def make_evaluate_accuracy(net, decoder, eval_batch_size: int):
-    """FC 輸出層仍是密集版 build_fc_queue,記憶體隨 vmap 樣本數線性成長,不能
-    整個 split 一次 vmap。"""
-    @jax.jit
-    def _predict(params, event_times, x, y, c, n_real):
-        result, _ = net.apply_batched(params, event_times, x, y, c, n_real)
-        scores, _ = jax.vmap(decoder.decode)(result)
-        return jnp.argmax(scores, axis=1)
-
-    def evaluate_accuracy(params, split):
-        n = split.labels.shape[0]
-        preds_parts = []
-        for start in range(0, n, eval_batch_size):
-            end = min(start + eval_batch_size, n)
-            preds_parts.append(_predict(params, split.event_times[start:end],
-                                         split.x[start:end], split.y[start:end],
-                                         split.c[start:end], split.n_real_events[start:end]))
-        preds = jnp.concatenate(preds_parts)
-        accuracy = float(jnp.mean((preds == split.labels).astype(jnp.float32)))
-        return accuracy, np.asarray(preds)
-
-    return evaluate_accuracy
-
-
 def _grow_layers(layers: list, reduced_diags: list) -> list:
     """對每一層問一次 `grown_to_fit`,回傳新的 layer list(沒出界的層原封不動,
     是同一個物件)。"""
@@ -150,7 +126,7 @@ class EpochsOutcome(NamedTuple):
     best: Best
 
 
-def run_epochs(*, layers, train_step, evaluate_accuracy, params, opt_state,
+def run_epochs(*, layers, train_step, evaluate, params, opt_state,
                shuffle_key, start_epoch: int, total_epochs: int,
                train_split, val_split, batch_size: int, probe_batch,
                metrics_log, checkpointer, best: Best,
@@ -198,7 +174,7 @@ def run_epochs(*, layers, train_step, evaluate_accuracy, params, opt_state,
                                       grad_norms=grad_norms,
                                       decoder_metrics=reduced_metrics)
 
-        val_accuracy, _ = evaluate_accuracy(params, val_split)
+        val_accuracy, _val_loss, _ = evaluate(params, val_split)
         if val_accuracy > best.val_accuracy:
             best = Best(params=params, val_accuracy=val_accuracy, epoch=epoch)
         dormant = dormant_report(layers, params, probe_batch)
@@ -218,10 +194,14 @@ def run_epochs(*, layers, train_step, evaluate_accuracy, params, opt_state,
 def _make_exp_dir(run_name: str, exp_root=EXPERIMENTS_DIR) -> str:
     """訓練「開始前」就建好目錄——checkpoint 要在訓練過程中(每個 epoch 結束)
     持續寫進同一個目錄。`exp_root` 預設是 `experiments/`;e2e 測試傳
-    `experiments/TEST_TEMP` 進來,把測試產物跟正式 run 隔開。"""
+    `experiments/TEST_TEMP` 進來,把測試產物跟正式 run 隔開。
+
+    只在這裡先建 `train/`(訓練產物每個 epoch 都要寫,是唯一保證一定會用到
+    的子資料夾)。`traces/`(`TraceProbe`)、`eval/`(`eval_test.py`)是條件式
+    的,各自的消費者第一次要寫的時候自己建。"""
     date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     exp_dir = os.path.join(exp_root, f"conv_compressed_{run_name}_{date_str}")
-    os.makedirs(exp_dir, exist_ok=True)
+    os.makedirs(os.path.join(exp_dir, TRAIN_DIRNAME), exist_ok=True)
     return exp_dir
 
 
@@ -274,7 +254,7 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
     if probe_every > 0:
         k_trace = min(int(train_cfg.get("probe_samples", 8)), data_cfg["train_size"])
         trace_probe = TraceProbe(
-            traces_dir=os.path.join(exp_dir, "traces"),
+            traces_dir=os.path.join(exp_dir, TRACES_DIRNAME),
             probe_batch=(train_split.event_times[:k_trace], train_split.x[:k_trace],
                          train_split.y[:k_trace], train_split.c[:k_trace],
                          train_split.n_real_events[:k_trace]),
@@ -284,7 +264,7 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
     # checkpoint 每個 epoch 覆蓋寫一份最新的;出界就退回它重編譯續練。
     # exp_dir 每次新目錄,所以 checkpointer.exists() 等價於「這次 run 存過沒」:
     # 沒存過就出界 -> 退回訓練最初始狀態(同一顆 seed 重新 init)。
-    checkpointer = Checkpointer(os.path.join(exp_dir, "checkpoint.npz"))
+    checkpointer = Checkpointer(os.path.join(exp_dir, TRAIN_DIRNAME, "checkpoint.npz"))
 
     metrics_log = MetricsLog(layer_names, conv_names, total_epochs=train_cfg["epochs"])
 
@@ -313,8 +293,7 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
         outcome = run_epochs(
             layers=layers,
             train_step=make_train_step(net, optimizer, decoder),
-            evaluate_accuracy=make_evaluate_accuracy(net, decoder,
-                                                      eval_batch_size=batch_size),
+            evaluate=make_evaluate(net, decoder, eval_batch_size=batch_size),
             params=params, opt_state=opt_state, shuffle_key=shuffle_key,
             start_epoch=start_epoch, total_epochs=train_cfg["epochs"],
             train_split=train_split, val_split=val_split, batch_size=batch_size,
@@ -346,7 +325,7 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
                    "out": rows[-1][f"{name}_obs_out"]}
             for name in conv_names} if rows else {}),
     }
-    metrics_log.write_csv(os.path.join(exp_dir, "metrics.csv"))
+    metrics_log.write_csv(os.path.join(exp_dir, TRAIN_DIRNAME, "metrics.csv"))
     _write_experiment(run_record, params, best_params, exp_dir, layers)
     metrics_log.print_summary(layers)
     return exp_dir, net, params, train_split, val_split, run_record
@@ -356,14 +335,11 @@ def _write_experiment(run_record: dict, params, best_params, exp_dir: str,
                        layers: list) -> None:
     """把 run 紀錄 + 權重寫進 exp_dir。metrics.csv 跟結尾的逐層用量摘要由
     MetricsLog 負責(見 example/metrics_log.py)。"""
-    with open(os.path.join(exp_dir, "run.yaml"), "w", encoding="utf-8") as f:
+    with open(os.path.join(exp_dir, TRAIN_DIRNAME, "run.yaml"), "w", encoding="utf-8") as f:
         yaml.safe_dump(run_record, f, allow_unicode=True, sort_keys=False)
 
-    names = [layer.name for layer in layers]
-    np.savez(os.path.join(exp_dir, "params.npz"),
-             **{n: np.asarray(w) for n, w in zip(names, params)})
-    np.savez(os.path.join(exp_dir, "best_params.npz"),
-             **{n: np.asarray(w) for n, w in zip(names, best_params)})
+    save_params_npz(os.path.join(exp_dir, TRAIN_DIRNAME, "params.npz"), layers, params)
+    save_params_npz(os.path.join(exp_dir, TRAIN_DIRNAME, "best_params.npz"), layers, best_params)
 
     best = run_record["best"]
     print(f"訓練結束,結果存到 {exp_dir}")

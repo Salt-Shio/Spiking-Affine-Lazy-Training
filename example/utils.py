@@ -1,10 +1,32 @@
-"""共用小工具:決定性種子設定、git commit hash——訓練跑起來之後,每一次
-`experiments/` 記錄都要能回答「這是哪個 code 版本、哪個亂數種子跑出來的」。
+"""共用小工具:決定性種子設定、git commit hash、批次評估、params npz 存讀、
+`experiments/<run>/` 底下的子資料夾命名。
+
+`train_conv_compressed.py`(訓練)跟 `eval_test.py`(事後評估)有兩處各自
+刻了一份幾乎一樣的東西,收在這裡單一來源:
+
+- `make_evaluate`:分批 vmap 算 scores、導出 accuracy/loss/preds,兩邊本來
+  各刻一份。
+- `save_params_npz`/`load_params_npz`:`params.npz`/`best_params.npz` 的
+  寫讀,key = 層名——訓練那邊寫、eval_test 這邊讀,約定只靠人記得對齊,
+  現在收進同一份函式。
+
+`TRAIN_DIRNAME`/`TRACES_DIRNAME`/`EVAL_DIRNAME`:`experiments/<run>/` 底下
+三個子資料夾的名字——訓練產物(`run.yaml`/`metrics.csv`/`checkpoint.npz`/
+`params.npz`/`best_params.npz`)、`trace_probe.py` 的週期性探測、
+`eval_test.py`/`plot_eval.py` 的事後評估,各自獨立一個資料夾。寫的一邊
+(`train_conv_compressed.py`)跟讀的一邊(`eval_test.py`/`plot_eval.py`/
+測試)都從這裡拿名字,不是各自重複寫字串常數,才不會兩邊漂移。
 """
 import subprocess
 
 import jax
+import jax.numpy as jnp
 import numpy as np
+import optax
+
+TRAIN_DIRNAME = "train"
+TRACES_DIRNAME = "traces"
+EVAL_DIRNAME = "eval"
 
 
 def set_seed(seed: int) -> jax.Array:
@@ -32,3 +54,52 @@ def get_git_commit_hash(repo_dir: str | None = None) -> str:
         return result.stdout.strip()
     except Exception:
         return "unknown"
+
+
+def save_params_npz(path: str, layers: list, params: tuple) -> None:
+    """`params`(對齊 `layers` 的位置 tuple)存成 npz,key = 層名。訓練結束
+    (`train_conv_compressed._write_experiment`)寫 `params.npz`/`best_params.npz`,
+    `eval_test.py` 讀回——兩邊靠層名對齊,不是位置,收在同一份函式才不會
+    兩邊 key 命名各自漂移。"""
+    names = [layer.name for layer in layers]
+    np.savez(path, **{n: np.asarray(w) for n, w in zip(names, params)})
+
+
+def load_params_npz(path: str, layers: list) -> tuple:
+    """`save_params_npz` 的反函式:讀回對齊 `layers` 的位置 tuple。"""
+    data = np.load(path)
+    return tuple(data[layer.name] for layer in layers)
+
+
+def make_evaluate(net, decoder, eval_batch_size: int):
+    """分批 vmap 算 scores,一次導出 `(accuracy, loss, preds)`。FC 輸出層仍是
+    密集版 `build_fc_queue`,記憶體隨 vmap 樣本數線性長,不能整個 split 一次
+    vmap,分批的理由跟訓練熱路徑的其他分批迴圈(`dormant_report`/
+    `calibration_measure`)一樣。
+
+    訓練期(`run_epochs` 每個 epoch 對 val split 的檢查)跟事後評估
+    (`eval_test.py` 對 test/val split 的一次性評估)共用這一份——兩邊要的
+    計算完全一樣,只差呼叫端要不要用 `loss`/`preds`;訓練那邊現在也免費多拿到
+    一個 val loss,只是目前沒有欄位記它。
+    """
+    @jax.jit
+    def _scores(params, event_times, x, y, c, n_real):
+        result, _ = net.apply_batched(params, event_times, x, y, c, n_real)
+        scores, _ = jax.vmap(decoder.decode)(result)
+        return scores
+
+    def evaluate(params, split):
+        n = split.labels.shape[0]
+        scores_parts = []
+        for start in range(0, n, eval_batch_size):
+            end = min(start + eval_batch_size, n)
+            scores_parts.append(_scores(
+                params, split.event_times[start:end], split.x[start:end],
+                split.y[start:end], split.c[start:end], split.n_real_events[start:end]))
+        scores = jnp.concatenate(scores_parts)
+        preds = jnp.argmax(scores, axis=1)
+        loss = float(jnp.mean(optax.softmax_cross_entropy(scores, split.labels_onehot)))
+        accuracy = float(jnp.mean((preds == split.labels).astype(jnp.float32)))
+        return accuracy, loss, np.asarray(preds)
+
+    return evaluate

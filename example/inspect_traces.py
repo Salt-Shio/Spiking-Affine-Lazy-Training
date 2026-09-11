@@ -1,6 +1,6 @@
 """讀 experiments/<run>/traces/ 的 dump,印成看得懂的東西。
 
-`example/trace_probe.py`(訓練期)/ 之後的 `eval_test --trace` 寫出:
+`example/trace_probe.py`(訓練期週期性探測)寫出:
   summary.npz         逐神經元 (E, n) 摘要 + epochs (E,)
   full_epoch_XXX.npz  少數樣本的完整 (S, n, max_steps) 軌跡
 
@@ -27,13 +27,14 @@ import numpy as np
 from salt_core.dormant import dormant_score
 from salt_core.monitor import (LayerForwardTrace, layer_names, pack_key,
                                summarize_trace_scalars)
+from example.utils import TRACES_DIRNAME
 
 _ACTIVITY_KEY = {"spike": "spike_count", "s_value": "s_value_sum"}
 
 
 def _resolve_traces_dir(path: str) -> str:
-    if os.path.isdir(os.path.join(path, "traces")):
-        return os.path.join(path, "traces")
+    if os.path.isdir(os.path.join(path, TRACES_DIRNAME)):
+        return os.path.join(path, TRACES_DIRNAME)
     return path
 
 
