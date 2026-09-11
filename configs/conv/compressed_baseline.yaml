@@ -70,3 +70,7 @@ train:
   epochs: 40
   batch_size: 4
   seed: 42
+  probe_every: 5          # 每 5 個 epoch 量一次逐神經元摘要
+  probe_samples: 8        # 固定拿 train 前 8 筆當探測批
+  probe_full_every: 20    # 每 20 個 epoch 另存完整逐步陣列
+  probe_full_samples: 2   # 完整陣列存 2 筆樣本

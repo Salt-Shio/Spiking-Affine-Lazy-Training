@@ -42,6 +42,7 @@ import io
 import math
 import os
 import re
+import shutil
 
 import jax
 import jax.numpy as jnp
@@ -55,7 +56,14 @@ from example.paths import CONFIGS_DIR, EXPERIMENTS_DIR
 from example.checkpoint import Checkpointer
 from example.train_conv_compressed import train
 
-_TMP_DIR = os.path.join(EXPERIMENTS_DIR, "_tmp_test_train_conv_compressed_configs")
+# 這份 e2e 測試會呼叫真正的 train(),每個案例吐一個 conv_compressed_*_<時間戳>
+# 目錄。全部關進 experiments/TEST_TEMP,而且「一次只留最後一批」——模組載入
+# (= 這一輪 pytest)開頭就把上一輪的整包清掉,不再無限累積。
+_TEST_TEMP = os.path.join(EXPERIMENTS_DIR, "TEST_TEMP")
+shutil.rmtree(_TEST_TEMP, ignore_errors=True)
+os.makedirs(_TEST_TEMP, exist_ok=True)
+
+_TMP_DIR = os.path.join(_TEST_TEMP, "_configs")
 os.makedirs(_TMP_DIR, exist_ok=True)
 
 _TRAIN_RESULT_TOL = 1e-4
@@ -117,7 +125,7 @@ def _run_capture(config_path: str):
     接下來——B/C 類測試要驗證「出界訊息真的印了幾次、內容對不對」。"""
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        result = train(config_path)
+        result = train(config_path, exp_root=_TEST_TEMP)
     return result, buf.getvalue()
 
 
@@ -395,6 +403,10 @@ def test_end_to_end_smoke_produces_expected_artifacts():
     for fname in ("checkpoint.npz", "run.yaml", "metrics.csv", "best_params.npz",
                   "params.npz"):
         assert os.path.isfile(os.path.join(exp_dir, fname)), f"缺少 {fname}"
+
+    # compressed_smoke.yaml 有開 probe_every -> traces/ 該有東西
+    assert os.path.isfile(os.path.join(exp_dir, "traces", "summary.npz")), "缺少 traces/summary.npz"
+    assert os.path.isfile(os.path.join(exp_dir, "traces", "full_epoch_000.npz")), "缺少 traces/full_epoch_000.npz"
 
     rows = _read_metrics_csv(exp_dir)
     assert len(rows) > 0

@@ -39,6 +39,7 @@ from example.checkpoint import Checkpointer
 from salt_core.dormant import dormant_report
 from example.metrics_log import MetricsLog
 from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
+from example.trace_probe import TraceProbe
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR, REPO_ROOT, resolve_config
 from example.utils import get_git_commit_hash, set_seed
 
@@ -153,7 +154,8 @@ class EpochsOutcome(NamedTuple):
 def run_epochs(*, layers, train_step, evaluate_accuracy, params, opt_state,
                shuffle_key, start_epoch: int, total_epochs: int,
                train_split, val_split, batch_size: int, probe_batch,
-               metrics_log, checkpointer, best: Best) -> EpochsOutcome:
+               metrics_log, checkpointer, best: Best,
+               trace_probe: "TraceProbe | None" = None) -> EpochsOutcome:
     """跑 `[start_epoch, total_epochs)` 的訓練迴圈。
 
     **不知道「長大」這回事**:偵測到某 batch 的真實用量超過壓縮容量,就用
@@ -206,20 +208,25 @@ def run_epochs(*, layers, train_step, evaluate_accuracy, params, opt_state,
         checkpointer.save(params=params, opt_state=opt_state,
                           shuffle_key=shuffle_key, epoch=epoch)
 
+        # 逐步軌跡探測(forward-only、另一個編譯目標,不影響上面的訓練熱路徑)。
+        if trace_probe is not None and trace_probe.due(epoch):
+            trace_probe.run(layers, params, epoch)
+
     return EpochsOutcome(overflowed=False, grown_layers=layers,
                           final_params=params, best=best)
 
 
-def _make_exp_dir(run_name: str) -> str:
+def _make_exp_dir(run_name: str, exp_root=EXPERIMENTS_DIR) -> str:
     """訓練「開始前」就建好目錄——checkpoint 要在訓練過程中(每個 epoch 結束)
-    持續寫進同一個目錄。"""
+    持續寫進同一個目錄。`exp_root` 預設是 `experiments/`;e2e 測試傳
+    `experiments/TEST_TEMP` 進來,把測試產物跟正式 run 隔開。"""
     date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_dir = os.path.join(EXPERIMENTS_DIR, f"conv_compressed_{run_name}_{date_str}")
+    exp_dir = os.path.join(exp_root, f"conv_compressed_{run_name}_{date_str}")
     os.makedirs(exp_dir, exist_ok=True)
     return exp_dir
 
 
-def train(config_path: str):
+def train(config_path: str, exp_root=EXPERIMENTS_DIR):
     # config 只在這裡解析一次:三個區塊各自綁好,之後 train() 只碰這三個
     # (跟 run_name),不再出現 raw_cfg[...]。raw_cfg 只留著當「輸入快照」放進
     # run 紀錄,train() 不改它。
@@ -275,7 +282,22 @@ def train(config_path: str):
                    train_split.y[:n_probe], train_split.c[:n_probe],
                    train_split.n_real_events[:n_probe])
 
-    exp_dir = _make_exp_dir(run_name)
+    exp_dir = _make_exp_dir(run_name, exp_root)
+
+    # 逐步軌跡探測(docs/監測規格.md §6/§7):train.probe_every > 0 才開,對固定的
+    # 前 K 筆 train 樣本週期性跑 run_network_traced,dump experiments/<run>/traces/。
+    trace_probe = None
+    probe_every = int(train_cfg.get("probe_every", 0))
+    if probe_every > 0:
+        k_trace = min(int(train_cfg.get("probe_samples", 8)), data_cfg["train_size"])
+        trace_probe = TraceProbe(
+            traces_dir=os.path.join(exp_dir, "traces"),
+            probe_batch=(train_split.event_times[:k_trace], train_split.x[:k_trace],
+                         train_split.y[:k_trace], train_split.c[:k_trace],
+                         train_split.n_real_events[:k_trace]),
+            every=probe_every, total_epochs=train_cfg["epochs"],
+            full_every=int(train_cfg.get("probe_full_every", 0)),
+            full_samples=int(train_cfg.get("probe_full_samples", 2)))
     # checkpoint 每個 epoch 覆蓋寫一份最新的;出界就退回它重編譯續練。
     # exp_dir 每次新目錄,所以 checkpointer.exists() 等價於「這次 run 存過沒」:
     # 沒存過就出界 -> 退回訓練最初始狀態(同一顆 seed 重新 init)。
@@ -314,7 +336,8 @@ def train(config_path: str):
             start_epoch=start_epoch, total_epochs=train_cfg["epochs"],
             train_split=train_split, val_split=val_split, batch_size=batch_size,
             probe_batch=probe_batch,
-            metrics_log=metrics_log, checkpointer=checkpointer, best=best)
+            metrics_log=metrics_log, checkpointer=checkpointer, best=best,
+            trace_probe=trace_probe)
 
         best = outcome.best
         if not outcome.overflowed:

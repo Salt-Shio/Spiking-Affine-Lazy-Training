@@ -22,9 +22,26 @@
   `salt_core/monitor.py`(逐層 `(n, max_steps)`:reset 後膜電位、是否 spike、`s_value`、
   對到的真實毫秒;forward-only、`stop_gradient`;`chunk_scan` 抽共用 scan 內核,
   `run_layer_forward` 逐位元不變)。測試 `test_dormant.py` / `test_monitor.py`。
-  未完成:`example` 消費端 —— 週期性呼叫 `run_network_traced` on 探測批、dump `.npz`;
-  `metrics.csv` 要不要多寫欄位(從既有的 `LayerForwardResult` / `diags` 現場算)。
-  §7 的呼叫端政策(探測批策略 / dormant 來源 / 輸出格式)串 ReDo 時再定。
+  `example` 消費端(訓練側 + 讀端)已完成:`example/trace_probe.py` 的 `TraceProbe`
+  週期性對固定前 K 筆 train 樣本跑 `run_network_traced`,逐神經元摘要疊進
+  `experiments/<run>/traces/summary.npz`、每隔幾個 epoch 另存
+  `full_epoch_XXX.npz`(完整 `(S, n, max_steps)`);`train.probe_every > 0` 才開。
+  `example/inspect_traces.py` 讀 `traces/`:休眠曲線(重用 `dormant_score`)、
+  整段沒醒的神經元、單神經元波形。測試 `test_trace_probe.py` / `test_inspect_traces.py`。
+  未完成:`eval_test.py` 加同一套 `--trace`(共用 dump 函式);`metrics.csv` 要不要多寫
+  欄位等 ReDo 準則定案再決定(§7.3);§7.3 的 dormant / ReDo 逐神經元活動來源串 ReDo 時再定。
+- **monitor 這批 code 要做一次結構重整(功能正確,但寫得急)。** 已知難聞點:
+  (1) `trace_probe.py` 的 `_compile` 靠 `layers is self._cache_key` 物件 identity 當
+  編譯快取 key,隱晦;(2) `run()` 裡 `acc = [{k: a[k]+d[k] ...}]` 手刻 tree reduce,
+  `jax.tree_util` 有現成;(3) `self._summ` 是「層名→欄名→list of (n,) 陣列」三層巢狀
+  dict 原地 mutate,`_record` 還分 append / 覆寫 slot 兩條路 —— 改成「以 epoch 為 key」
+  重寫時才組陣列;(4) `_SUMMARY_KEYS` 跟 `_summarise_one` 的 key 抄兩份;
+  (5) npz 扁平命名 `f"{層名}__{欄名}"` 兩支檔案來回拼 / `.split("__")` 拆,該收成一個
+  helper;(6) `inspect_traces.py` 的 `report_*` 計算跟 print 綁死,無法重用;
+  (7) monitor 這條路橫跨 `chunk_scan` / `layers` / `monitor` / `trace_probe` /
+  `inspect_traces` 五個檔。另有兩個純顯示 / 文件小 bug:`inspect_traces` 把 `epochs`
+  印成 `[np.int32(0), ...]`(該用 `.tolist()`);§7.2 原本「跟 metrics.csv 一致」的措辭
+  太滿(已改)。
 - **`max_steps` 與 `chunk_size` 脫鉤(conv 層)。** `ConvLayer.__call__` 傳
   `max_steps=self.L`,不看 `chunk_size`;FC 層已用 `ceil(輸入流長度 / chunk_size)`。
   現在 conv `chunk_size=1` 沒差,一調大就無效——`lax.scan` 不能提前退出,會 fire 的層
