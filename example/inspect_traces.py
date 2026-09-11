@@ -24,9 +24,9 @@ import os
 
 import numpy as np
 
+from example.trace_store import layer_names, pack_key
 from salt_core.dormant import dormant_score
 
-_SUMMARY_KEYS = ("spike_count", "s_value_sum", "v_final", "idle_frac")
 _ACTIVITY_KEY = {"spike": "spike_count", "s_value": "s_value_sum"}
 
 
@@ -36,21 +36,41 @@ def _resolve_traces_dir(path: str) -> str:
     return path
 
 
-def _layer_names(files) -> list:
-    """summary / full npz 的 key 是 `<層名>__<欄>`,依首次出現順序取層名。"""
-    names = []
-    for key in files:
-        if "__" not in key:
-            continue
-        name = key.split("__", 1)[0]
-        if name not in names:
-            names.append(name)
-    return names
-
-
 # --------------------------------------------------------------------------
 # summary.npz
 # --------------------------------------------------------------------------
+
+def _summarize_final_epoch(final_row: np.ndarray, *, top_k: int) -> dict:
+    """末 epoch 活動量的分布 + 排名(純計算,不印),`report_summary` 用來組字串。"""
+    p10, p50, p90 = np.percentile(final_row, [10, 50, 90])
+    order = np.argsort(final_row)
+    top = [(int(i), float(final_row[i])) for i in order[::-1][:top_k]]
+    bottom = [(int(i), float(final_row[i])) for i in order[:top_k]]
+    return {"p10": p10, "p50": p50, "p90": p90, "max": float(final_row.max()),
+            "top": top, "bottom": bottom}
+
+
+def _summarize_layer(act: np.ndarray, *, tau: float, top_k: int) -> dict:
+    """整層 summary.npz 一個活動量欄(shape (E, n))的完整統計:逐 epoch dormant、
+    趨勢、整段沒醒數、末 epoch 分布 + 排名。純計算,不印,`report_summary` 負責印。
+    """
+    per_epoch = [dormant_score(row, tau=tau) for row in act]
+    never_woke = int(np.sum(act.max(axis=0) < 1e-9))
+    return {
+        "n": act.shape[1],
+        "per_epoch": per_epoch,
+        "trend": (per_epoch[0]["dormant_frac"], per_epoch[-1]["dormant_frac"]),
+        "never_woke": never_woke,
+        "final": _summarize_final_epoch(act[-1], top_k=top_k),
+    }
+
+
+def _summarize_vfinal_idle(vf: np.ndarray, idle: np.ndarray) -> dict:
+    """末 epoch 的 v_final / idle_frac 兩個摘要量(純計算,不印)。"""
+    return {"mean": float(np.nanmean(vf)), "min": float(np.nanmin(vf)),
+            "max": float(np.nanmax(vf)), "nonfinite": int(np.sum(~np.isfinite(vf))),
+            "idle_mean": float(idle.mean())}
+
 
 def report_summary(traces_dir: str, *, tau: float, activity: str, top_k: int) -> None:
     path = os.path.join(traces_dir, "summary.npz")
@@ -59,55 +79,59 @@ def report_summary(traces_dir: str, *, tau: float, activity: str, top_k: int) ->
         return
     s = np.load(path)
     epochs = s["epochs"]
-    names = _layer_names(s.files)
+    names = layer_names(s.files)
     act_key = _ACTIVITY_KEY[activity]
 
-    print(f"== summary.npz ==  {len(epochs)} 個探測 epoch:{list(epochs)}")
+    print(f"== summary.npz ==  {len(epochs)} 個探測 epoch:{epochs.tolist()}")
     print(f"   休眠用 {act_key}(tau={tau})\n")
 
     for name in names:
-        act = s[f"{name}__{act_key}"]          # (E, n)
-        n = act.shape[1]
-        print(f"[{name}]  n={n}")
+        act = s[pack_key(name, act_key)]          # (E, n)
+        layer_stats = _summarize_layer(act, tau=tau, top_k=top_k)
+        print(f"[{name}]  n={layer_stats['n']}")
 
-        # 休眠比例隨 epoch
         print("   epoch :  dormant_frac  act_p90p10")
-        for e, row in zip(epochs, act):
-            r = dormant_score(row, tau=tau)
+        for e, r in zip(epochs, layer_stats["per_epoch"]):
             print(f"   {int(e):5d} :  {r['dormant_frac']:11.3f}  {r['act_p90p10']:10.2f}")
-        first = dormant_score(act[0], tau=tau)["dormant_frac"]
-        last = dormant_score(act[-1], tau=tau)["dormant_frac"]
+        first, last = layer_stats["trend"]
         print(f"   趨勢   :  {first:.3f} -> {last:.3f}  (Δ {last - first:+.3f})")
 
-        # 整段沒醒的神經元(所有探測 epoch 活動量都 ~0)
-        never = int(np.sum(act.max(axis=0) < 1e-9))
+        never, n = layer_stats["never_woke"], layer_stats["n"]
         print(f"   整段沒醒 :  {never}/{n}  ({100.0 * never / n:.1f}%)")
 
-        # 最後一個探測 epoch 的活動量分布
-        finalrow = act[-1]
-        p10, p50, p90 = np.percentile(finalrow, [10, 50, 90])
-        print(f"   末 epoch 活動量分布 :  p10={p10:.4g}  p50={p50:.4g}  p90={p90:.4g}  "
-              f"max={finalrow.max():.4g}")
+        final = layer_stats["final"]
+        print(f"   末 epoch 活動量分布 :  p10={final['p10']:.4g}  p50={final['p50']:.4g}  "
+              f"p90={final['p90']:.4g}  max={final['max']:.4g}")
+        print(f"   末 epoch 最活躍 {top_k} :  " +
+              ", ".join(f"#{i}={v:.3g}" for i, v in final["top"]))
+        print(f"   末 epoch 最安靜 {top_k} :  " +
+              ", ".join(f"#{i}={v:.3g}" for i, v in final["bottom"]))
 
-        order = np.argsort(finalrow)
-        hi = [(int(i), float(finalrow[i])) for i in order[::-1][:top_k]]
-        lo = [(int(i), float(finalrow[i])) for i in order[:top_k]]
-        print(f"   末 epoch 最活躍 {top_k} :  " + ", ".join(f"#{i}={v:.3g}" for i, v in hi))
-        print(f"   末 epoch 最安靜 {top_k} :  " + ", ".join(f"#{i}={v:.3g}" for i, v in lo))
-
-        # 其他兩個摘要量(末 epoch)
-        vf = s[f"{name}__v_final"][-1]
-        idle = s[f"{name}__idle_frac"][-1]
-        nonfinite = int(np.sum(~np.isfinite(vf)))
-        print(f"   末 epoch v_final :  mean={np.nanmean(vf):.4g}  min={np.nanmin(vf):.4g}  "
-              f"max={np.nanmax(vf):.4g}  非有限={nonfinite}")
-        print(f"   末 epoch idle_frac :  mean={idle.mean():.3f}  "
+        vf_idle = _summarize_vfinal_idle(s[pack_key(name, "v_final")][-1],
+                                          s[pack_key(name, "idle_frac")][-1])
+        print(f"   末 epoch v_final :  mean={vf_idle['mean']:.4g}  min={vf_idle['min']:.4g}  "
+              f"max={vf_idle['max']:.4g}  非有限={vf_idle['nonfinite']}")
+        print(f"   末 epoch idle_frac :  mean={vf_idle['idle_mean']:.3f}  "
               f"(=1 代表該神經元探測批上完全沒收到事件)\n")
 
 
 # --------------------------------------------------------------------------
 # full_epoch_XXX.npz
 # --------------------------------------------------------------------------
+
+def _summarize_full_layer(sm: np.ndarray, sv: np.ndarray, vs: np.ndarray,
+                           ms: np.ndarray) -> dict:
+    """一層一筆樣本的完整軌跡(各 shape `(n, max_steps)`)摘要(純計算,不印)。"""
+    n, steps = sm.shape
+    fired = np.where(sm.sum(axis=1) > 0)[0]
+    return {
+        "n": n, "steps": steps, "total_spikes": int(sm.sum()), "fired": fired,
+        "idle_frac": float(np.isnan(ms).mean()),
+        "v_range": (float(np.nanmin(vs)), float(np.nanmax(vs))),
+        "nonfinite_v": int(np.sum(~np.isfinite(vs))),
+        "nonfinite_s": int(np.sum(~np.isfinite(sv))),
+    }
+
 
 def report_full(traces_dir: str, epoch: int, *, sample: int, neuron: int | None) -> None:
     path = os.path.join(traces_dir, f"full_epoch_{epoch:03d}.npz")
@@ -117,25 +141,26 @@ def report_full(traces_dir: str, epoch: int, *, sample: int, neuron: int | None)
         print(f"(沒有 {path};現有:{avail})")
         return
     f = np.load(path)
-    names = _layer_names(f.files)
-    n_samples = f[f"{names[0]}__spike_mask"].shape[0]
+    names = layer_names(f.files)
+    n_samples = f[pack_key(names[0], "spike_mask")].shape[0]
     if not 0 <= sample < n_samples:
         print(f"--sample {sample} 超出範圍(這份只有 {n_samples} 筆)")
         return
 
     print(f"\n== full_epoch_{epoch:03d}.npz ==  {n_samples} 筆樣本,看第 {sample} 筆\n")
     for name in names:
-        sm = f[f"{name}__spike_mask"][sample]    # (n, max_steps)
-        sv = f[f"{name}__s_value"][sample]
-        vs = f[f"{name}__v_steps"][sample]
-        ms = f[f"{name}__event_ms"][sample]
-        n, steps = sm.shape
-        fired = np.where(sm.sum(axis=1) > 0)[0]
-        print(f"[{name}]  ({n}, {steps})  總 spike={int(sm.sum())}  "
+        sm = f[pack_key(name, "spike_mask")][sample]    # (n, max_steps)
+        sv = f[pack_key(name, "s_value")][sample]
+        vs = f[pack_key(name, "v_steps")][sample]
+        ms = f[pack_key(name, "event_ms")][sample]
+        stats = _summarize_full_layer(sm, sv, vs, ms)
+        n = stats["n"]
+        fired = stats["fired"]
+        print(f"[{name}]  ({n}, {stats['steps']})  總 spike={stats['total_spikes']}  "
               f"有 fire={fired.size}/{n}  "
-              f"空轉步比例={np.isnan(ms).mean():.2f}  "
-              f"v_steps∈[{np.nanmin(vs):.3g}, {np.nanmax(vs):.3g}]  "
-              f"非有限(v/s)={int(np.sum(~np.isfinite(vs)))}/{int(np.sum(~np.isfinite(sv)))}")
+              f"空轉步比例={stats['idle_frac']:.2f}  "
+              f"v_steps∈[{stats['v_range'][0]:.3g}, {stats['v_range'][1]:.3g}]  "
+              f"非有限(v/s)={stats['nonfinite_v']}/{stats['nonfinite_s']}")
 
         j = neuron if neuron is not None else (int(fired[0]) if fired.size else 0)
         if not 0 <= j < n:

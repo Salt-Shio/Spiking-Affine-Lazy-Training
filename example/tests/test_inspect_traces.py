@@ -5,8 +5,8 @@ import os
 
 import numpy as np
 
-from example.inspect_traces import (_layer_names, _resolve_traces_dir,
-                                     report_full, report_summary)
+from example.inspect_traces import _resolve_traces_dir, report_full, report_summary
+from example.trace_store import layer_names
 
 
 def _write_summary(traces_dir: str, epochs, layers: dict) -> None:
@@ -37,7 +37,7 @@ def _write_full(traces_dir: str, epoch: int, layers: dict, S=2, steps=12) -> Non
 def test_layer_names_order():
     files = ["epochs", "conv1__spike_count", "conv1__v_final",
              "conv2__spike_count", "out__idle_frac"]
-    assert _layer_names(files) == ["conv1", "conv2", "out"]
+    assert layer_names(files) == ["conv1", "conv2", "out"]
 
 
 def test_resolve_traces_dir(tmp_path):

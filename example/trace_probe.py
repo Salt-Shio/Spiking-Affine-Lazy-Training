@@ -9,25 +9,28 @@
 - 探測批建構時就切好、之後不換,跨 epoch 可比,跟 `dormant_report` 同一個做法。
 - FC 密集佇列記憶體隨 vmap 樣本數線性長,所以 K 筆是逐筆迴圈跑、不整批 vmap。
 """
+import operator
 import os
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
+from example.trace_store import pack_key
 from salt_core.layers import raw_events_to_stream, run_network_traced
-
-# summary.npz 每層四個逐神經元 (n,) 摘要:
-#   spike_count  該神經元在探測批上的平均總 spike 數
-#   s_value_sum  Σ_t s_value 的平均(離門檻多近的連續量累積)
-#   v_final      最終膜電位的平均
-#   idle_frac    空轉步(event_ms = nan)比例的平均
-_SUMMARY_KEYS = ("spike_count", "s_value_sum", "v_final", "idle_frac")
-_FULL_FIELDS = ("spike_mask", "s_value", "v_steps", "event_ms")
 
 
 def _summarise_one(trace) -> dict:
-    """一層一份 `LayerForwardTrace` -> 逐神經元 `(n,)` 摘要 dict(對步軸縮減)。"""
+    """一層一份 `LayerForwardTrace` -> 逐神經元 `(n,)` 摘要 dict(對步軸縮減)。
+    這四個 key(`spike_count`/`s_value_sum`/`v_final`/`idle_frac`)是
+    summary.npz 欄位的唯一來源——`TraceProbe` 其他地方都從這個 dict 的
+    key 反推欄位,不另外重複列一份。
+
+      spike_count  該神經元在探測批上的平均總 spike 數
+      s_value_sum  Σ_t s_value 的平均(離門檻多近的連續量累積)
+      v_final      最終膜電位的平均
+      idle_frac    空轉步(event_ms = nan)比例的平均
+    """
     return {
         "spike_count": trace.spike_mask.sum(axis=1).astype(jnp.float32),
         "s_value_sum": trace.s_value.sum(axis=1),
@@ -55,10 +58,12 @@ class TraceProbe:
         self._total_epochs = int(total_epochs)
         self._full_every = int(full_every)
         self._full_samples = min(int(full_samples), self._k)
-        self._epochs: list[int] = []
-        # name -> key -> list of (n,) np 陣列,一個 recorded epoch 一份
-        self._summ: dict[str, dict[str, list]] = {}
-        self._cache_key = None            # 上次編譯對應的 layers 物件(出界重建才換)
+        # epoch -> {層名 -> {欄名 -> (n,) np 陣列}},一個 recorded epoch 一份。
+        # 用 epoch 當 key:出界重練退回已記錄過的 epoch 號時,重新賦值就是覆寫,
+        # 不用另外分「新增」/「覆寫」兩條路。
+        self._records: dict[int, dict[str, dict[str, np.ndarray]]] = {}
+        self._fields: list[str] | None = None   # 首次 _record 時從 acc 記下(單一來源:_summarise_one)
+        self._cache_key = None            # 上次編譯對應的 layers 配置(值相等就不重編譯)
         self._summ_fn = None
         self._full_fn = None
         os.makedirs(self._dir, exist_ok=True)
@@ -72,8 +77,15 @@ class TraceProbe:
         return self._full_every > 0 and epoch % self._full_every == 0
 
     def _compile(self, layers: list) -> None:
-        """把兩個 traced forward 編一次,快取到 layers 物件換掉(出界重建)為止。"""
-        if layers is self._cache_key:
+        """把兩個 traced forward 編一次,快取到 layers 配置變掉(出界重建)為止。
+
+        `layers` 是一列 frozen dataclass(值可比較),用 `==` 而不是 `is`:
+        `grown_to_fit` 沒出界時回傳同一個物件、出界才回傳欄位值不同的新物件,
+        兩種情況下 identity 判斷跟 equality 判斷結果一樣,換成 equality 純粹是
+        把「recompile 的理由是配置值變了」講清楚,不依賴呼叫端傳進來的是不是
+        同一個物件。
+        """
+        if layers == self._cache_key:
             return
         h_in, w_in = layers[0].h_in, layers[0].w_in
 
@@ -99,12 +111,9 @@ class TraceProbe:
         for i in range(self._k):
             per_layer = jax.tree_util.tree_map(
                 np.asarray, self._summ_fn(params, *(v[i] for v in self._batch)))
-            if acc is None:
-                acc = per_layer
-            else:
-                acc = [{k: a[k] + d[k] for k in _SUMMARY_KEYS}
-                       for a, d in zip(acc, per_layer)]
-        acc = [{k: d[k] / self._k for k in _SUMMARY_KEYS} for d in acc]
+            acc = per_layer if acc is None else jax.tree_util.tree_map(
+                operator.add, acc, per_layer)
+        acc = jax.tree_util.tree_map(lambda x: x / self._k, acc)
 
         self._record(epoch, names, acc)
         self._write_summary(names)
@@ -113,32 +122,26 @@ class TraceProbe:
             self._dump_full(epoch, names, params)
 
     def _record(self, epoch: int, names: list, acc: list) -> None:
-        if epoch in self._epochs:          # 出界重練會退回已記錄過的 epoch 號
-            slot = self._epochs.index(epoch)
-            for name, d in zip(names, acc):
-                for k in _SUMMARY_KEYS:
-                    self._summ[name][k][slot] = d[k]
-            return
-        self._epochs.append(epoch)
-        for name, d in zip(names, acc):
-            layer_d = self._summ.setdefault(name, {k: [] for k in _SUMMARY_KEYS})
-            for k in _SUMMARY_KEYS:
-                layer_d[k].append(d[k])
+        if self._fields is None:
+            self._fields = list(acc[0].keys())
+        self._records[epoch] = dict(zip(names, acc))
 
     def _write_summary(self, names: list) -> None:
-        out = {"epochs": np.asarray(self._epochs, dtype=np.int32)}
+        epochs = sorted(self._records)
+        out = {"epochs": np.asarray(epochs, dtype=np.int32)}
         for name in names:
-            for k in _SUMMARY_KEYS:
-                out[f"{name}__{k}"] = np.stack(self._summ[name][k])   # (E, n)
+            for field in self._fields:
+                out[pack_key(name, field)] = np.stack(
+                    [self._records[e][name][field] for e in epochs])   # (E, n)
         np.savez(os.path.join(self._dir, "summary.npz"), **out)
 
     def _dump_full(self, epoch: int, names: list, params) -> None:
-        stacks: dict[str, list] = {f"{n}__{f}": []
-                                   for n in names for f in _FULL_FIELDS}
+        stacks: dict[str, list] = {}
         for i in range(self._full_samples):
             traces = self._full_fn(params, *(v[i] for v in self._batch))
             for name, t in zip(names, traces):
-                for f in _FULL_FIELDS:
-                    stacks[f"{name}__{f}"].append(np.asarray(getattr(t, f)))
+                for field in t._fields:               # LayerForwardTrace 自帶,不重抄一份
+                    stacks.setdefault(pack_key(name, field), []).append(
+                        np.asarray(getattr(t, field)))
         out = {k: np.stack(v) for k, v in stacks.items()}            # (S, n, max_steps)
         np.savez(os.path.join(self._dir, f"full_epoch_{epoch:03d}.npz"), **out)
