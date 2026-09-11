@@ -24,8 +24,9 @@ import os
 
 import numpy as np
 
-from example.trace_store import layer_names, pack_key
 from salt_core.dormant import dormant_score
+from salt_core.monitor import (LayerForwardTrace, layer_names, pack_key,
+                               summarize_trace_scalars)
 
 _ACTIVITY_KEY = {"spike": "spike_count", "s_value": "s_value_sum"}
 
@@ -119,20 +120,6 @@ def report_summary(traces_dir: str, *, tau: float, activity: str, top_k: int) ->
 # full_epoch_XXX.npz
 # --------------------------------------------------------------------------
 
-def _summarize_full_layer(sm: np.ndarray, sv: np.ndarray, vs: np.ndarray,
-                           ms: np.ndarray) -> dict:
-    """一層一筆樣本的完整軌跡(各 shape `(n, max_steps)`)摘要(純計算,不印)。"""
-    n, steps = sm.shape
-    fired = np.where(sm.sum(axis=1) > 0)[0]
-    return {
-        "n": n, "steps": steps, "total_spikes": int(sm.sum()), "fired": fired,
-        "idle_frac": float(np.isnan(ms).mean()),
-        "v_range": (float(np.nanmin(vs)), float(np.nanmax(vs))),
-        "nonfinite_v": int(np.sum(~np.isfinite(vs))),
-        "nonfinite_s": int(np.sum(~np.isfinite(sv))),
-    }
-
-
 def report_full(traces_dir: str, epoch: int, *, sample: int, neuron: int | None) -> None:
     path = os.path.join(traces_dir, f"full_epoch_{epoch:03d}.npz")
     if not os.path.isfile(path):
@@ -153,7 +140,8 @@ def report_full(traces_dir: str, epoch: int, *, sample: int, neuron: int | None)
         sv = f[pack_key(name, "s_value")][sample]
         vs = f[pack_key(name, "v_steps")][sample]
         ms = f[pack_key(name, "event_ms")][sample]
-        stats = _summarize_full_layer(sm, sv, vs, ms)
+        trace = LayerForwardTrace(spike_mask=sm, s_value=sv, v_steps=vs, event_ms=ms)
+        stats = summarize_trace_scalars(trace)
         n = stats["n"]
         fired = stats["fired"]
         print(f"[{name}]  ({n}, {stats['steps']})  總 spike={stats['total_spikes']}  "

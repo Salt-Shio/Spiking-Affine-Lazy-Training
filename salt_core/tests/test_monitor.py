@@ -16,8 +16,10 @@ from salt_core.chunk_scan import run_layer_forward, run_layer_forward_traced
 from salt_core.connectivity.fc import build_fc_queue
 from salt_core.layers import (ConvLayer, FCLayer, raw_events_to_stream,
                                run_network, run_network_traced)
-from salt_core.monitor import (LayerForwardTrace, resolve_ms_compressed,
-                                resolve_ms_dense)
+from salt_core.monitor import (LayerForwardTrace, layer_names, pack_key,
+                                resolve_ms_compressed, resolve_ms_dense,
+                                summarize_trace, summarize_trace_scalars,
+                                unpack_key)
 
 TOL = 1e-6
 
@@ -214,6 +216,79 @@ def test_run_network_traced_forward_matches_run_network():
                                 np.asarray(result.v_final), atol=TOL)
 
 
+# ============================================================================
+# D. summarize_trace / summarize_trace_scalars
+# ============================================================================
+
+def _toy_trace():
+    spike_mask = jnp.array([[True, False, True], [False, False, False]])
+    s_value = jnp.array([[0.6, 0.1, 0.7], [0.2, 0.3, 0.4]], dtype=jnp.float32)
+    v_steps = jnp.array([[0.1, 0.2, 0.9], [0.05, 0.05, 0.05]], dtype=jnp.float32)
+    event_ms = jnp.array([[1.0, 2.0, jnp.nan], [jnp.nan, jnp.nan, jnp.nan]],
+                        dtype=jnp.float32)
+    return LayerForwardTrace(spike_mask=spike_mask, s_value=s_value,
+                             v_steps=v_steps, event_ms=event_ms)
+
+
+def test_summarize_trace_hand():
+    out = summarize_trace(_toy_trace())
+    np.testing.assert_array_equal(np.asarray(out["spike_count"]), [2.0, 0.0])
+    np.testing.assert_allclose(np.asarray(out["s_value_sum"]), [1.4, 0.9], atol=TOL)
+    np.testing.assert_allclose(np.asarray(out["v_final"]), [0.9, 0.05], atol=TOL)
+    np.testing.assert_allclose(np.asarray(out["idle_frac"]), [1 / 3, 1.0], atol=TOL)
+
+
+def test_summarize_trace_matches_forward_traced():
+    """對真的 layer.forward_traced 輸出跑,不只是手算的玩具例子。"""
+    layers = _layers()
+    params = _params(layers)
+    stream = _stream0(_raw_batch(jax.random.PRNGKey(6), 3, 20, 34, 34, 2), layers[0])
+    _out, trace = layers[0].forward_traced(params[0], stream)
+    out = summarize_trace(trace)
+    np.testing.assert_array_equal(np.asarray(out["spike_count"]),
+                                  np.asarray(trace.spike_mask).sum(axis=1))
+    np.testing.assert_allclose(np.asarray(out["v_final"]),
+                               np.asarray(trace.v_steps[:, -1]), atol=TOL)
+
+
+def test_summarize_trace_scalars_hand():
+    out = summarize_trace_scalars(_toy_trace())
+    assert out["n"] == 2 and out["steps"] == 3
+    assert out["total_spikes"] == 2
+    np.testing.assert_array_equal(out["fired"], [0])          # 只有神經元 0 有 fire
+    np.testing.assert_allclose(out["idle_frac"], 4 / 6, atol=TOL)   # 6 格裡 4 個 nan
+    np.testing.assert_allclose(out["v_range"], (0.05, 0.9), atol=TOL)
+    assert out["nonfinite_v"] == 0 and out["nonfinite_s"] == 0
+
+
+def test_summarize_trace_scalars_nonfinite_counts():
+    bad_v = jnp.array([[0.1, jnp.inf, 0.9], [0.05, 0.05, jnp.nan]], dtype=jnp.float32)
+    trace = _toy_trace()._replace(v_steps=bad_v)
+    out = summarize_trace_scalars(trace)
+    assert out["nonfinite_v"] == 2          # 一個 inf + 一個 nan
+
+
+# ============================================================================
+# E. pack_key / unpack_key / layer_names
+# ============================================================================
+
+def test_pack_unpack_roundtrip():
+    key = pack_key("conv1", "spike_count")
+    assert key == "conv1__spike_count"
+    assert unpack_key(key) == ("conv1", "spike_count")
+
+
+def test_layer_names_dedupes_and_skips_non_keys():
+    files = ["epochs", "conv1__spike_count", "conv1__v_final",
+             "conv2__spike_count", "out__idle_frac"]
+    assert layer_names(files) == ["conv1", "conv2", "out"]
+
+
+def test_layer_names_empty():
+    assert layer_names([]) == []
+    assert layer_names(["epochs"]) == []
+
+
 TESTS = [
     test_traced_forward_result_bit_identical,
     test_traced_pointer_monotone_and_starts_at_zero,
@@ -224,6 +299,13 @@ TESTS = [
     test_run_network_traced_shape_and_alignment,
     test_run_network_traced_stops_gradient,
     test_run_network_traced_forward_matches_run_network,
+    test_summarize_trace_hand,
+    test_summarize_trace_matches_forward_traced,
+    test_summarize_trace_scalars_hand,
+    test_summarize_trace_scalars_nonfinite_counts,
+    test_pack_unpack_roundtrip,
+    test_layer_names_dedupes_and_skips_non_keys,
+    test_layer_names_empty,
 ]
 
 

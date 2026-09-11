@@ -102,8 +102,8 @@ def _grow(observed: int, current: int, factor: float) -> int:
 
 @dataclass(frozen=True)
 class ConvLayer:
-    """一個壓縮版 conv 層。靜態欄位分四組:輸入面幾何 / 這層幾何 / 神經元動力學 /
-    容量 + init + 放大倍率。
+    """一個壓縮版 conv 層。靜態欄位分五組:輸入面幾何 / 這層幾何 / init_k /
+    神經元動力學 / 容量 + 放大倍率。
 
     輸入面幾何(`ic` / `h_in` / `w_in`)= 上一層的輸出:`ic` 要等於上一層的
     `oc`,`h_in`/`w_in` 要等於上一層的 `h_out`/`w_out`——組層 list 的時候
@@ -125,16 +125,20 @@ class ConvLayer:
     k: int
     s: int
     p: int
+    # 初始權重尺度 —— 必填,不校準,委定值見 docs/問題紀錄.md §12(firing-rate
+    # 目標帶準則廢棄,固定 init_k=5.0)。找 k 的搜尋能力(舊 `salt_core/calibrate.py`)
+    # 已移除;`calibration_measure` 這個量測 primitive 還留著,給
+    # `example/tests/verify_init_k.py` 的獨立數值驗證用。
+    init_k: float
     # 神經元動力學(逐層)—— 有預設,是「起點」,config 要覆蓋就覆蓋。
     tau: float = 16.0
     v_th: float = 1.0
     alpha: float = 2.0
     chunk_size: int = 1
-    # 容量 + init + 放大倍率 —— 有預設。L / max_out_spikes 的值不重要(出界會
+    # 容量 + 放大倍率 —— 有預設。L / max_out_spikes 的值不重要(出界會
     # 自己長大),預設只求「不要太小、少幾次開頭重編譯」。
     L: int = 128
     max_out_spikes: int = 8192
-    init_k: float | None = None   # None = 開訓前用 calibration_measure 現算(見 salt_core.calibrate)
     L_grow_factor: float = 1.5
     out_grow_factor: float = 1.5
 
@@ -216,8 +220,9 @@ class ConvLayer:
         """回傳一個 `measure(weight) -> 純量`:對一批校準輸入流跑這層 forward,
         算感受野正規化的 firing rate(每顆神經元 spike 數 / 自己的感受野事件數,
         只對感受野事件數 > 0 的神經元取平均),再對整批樣本取平均。分批 vmap
-        避免整批一次建構壓縮佇列 OOM。`salt_core.calibrate` 找 init_k 時用這個
-        當 measure——準則(要不要 firing rate、目標帶多少)是呼叫端的決定。"""
+        避免整批一次建構壓縮佇列 OOM。自動找 init_k 的搜尋管線(舊
+        `salt_core/calibrate.py`)已移除(見 docs/問題紀錄.md §12),這個量測
+        primitive 留著給 `example/tests/verify_init_k.py` 的獨立數值驗證用。"""
         n = calib_stream_batch.event_times.shape[0]
 
         def measure(w: jax.Array) -> float:

@@ -13,30 +13,10 @@ import operator
 import os
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 
-from example.trace_store import pack_key
 from salt_core.layers import raw_events_to_stream, run_network_traced
-
-
-def _summarise_one(trace) -> dict:
-    """一層一份 `LayerForwardTrace` -> 逐神經元 `(n,)` 摘要 dict(對步軸縮減)。
-    這四個 key(`spike_count`/`s_value_sum`/`v_final`/`idle_frac`)是
-    summary.npz 欄位的唯一來源——`TraceProbe` 其他地方都從這個 dict 的
-    key 反推欄位,不另外重複列一份。
-
-      spike_count  該神經元在探測批上的平均總 spike 數
-      s_value_sum  Σ_t s_value 的平均(離門檻多近的連續量累積)
-      v_final      最終膜電位的平均
-      idle_frac    空轉步(event_ms = nan)比例的平均
-    """
-    return {
-        "spike_count": trace.spike_mask.sum(axis=1).astype(jnp.float32),
-        "s_value_sum": trace.s_value.sum(axis=1),
-        "v_final": trace.v_steps[:, -1],
-        "idle_frac": jnp.isnan(trace.event_ms).mean(axis=1),
-    }
+from salt_core.monitor import pack_key, summarize_trace
 
 
 class TraceProbe:
@@ -62,7 +42,7 @@ class TraceProbe:
         # 用 epoch 當 key:出界重練退回已記錄過的 epoch 號時,重新賦值就是覆寫,
         # 不用另外分「新增」/「覆寫」兩條路。
         self._records: dict[int, dict[str, dict[str, np.ndarray]]] = {}
-        self._fields: list[str] | None = None   # 首次 _record 時從 acc 記下(單一來源:_summarise_one)
+        self._fields: list[str] | None = None   # 首次 _record 時從 acc 記下(單一來源:summarize_trace)
         self._cache_key = None            # 上次編譯對應的 layers 配置(值相等就不重編譯)
         self._summ_fn = None
         self._full_fn = None
@@ -92,7 +72,7 @@ class TraceProbe:
         @jax.jit
         def summ_fn(p, et, x, y, c, nr):
             stream = raw_events_to_stream(et, x, y, c, nr, h_in, w_in)
-            return [_summarise_one(t)
+            return [summarize_trace(t)
                     for t in run_network_traced(layers, stream, p)]
 
         @jax.jit

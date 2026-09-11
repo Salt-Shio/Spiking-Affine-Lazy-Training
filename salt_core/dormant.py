@@ -72,7 +72,7 @@ def dormant_report(layers, params, probe_batch, *, tau: float = 0.1,
     """在固定探測批次上量每個 conv 隱藏層的 dormant 統計。
 
     probe_batch: (event_times, x, y, c, n_real_events),leading axis = 樣本數。
-    分 chunk 做 vmap forward(對齊 salt_core.calibrate 避免整批建壓縮佇列 OOM)。
+    分 chunk 做 vmap forward(避免整批一次建構壓縮佇列 OOM)。
 
     回傳 {conv_layer_name: {"dormant_frac": float, "act_p90p10": float}}。
     """

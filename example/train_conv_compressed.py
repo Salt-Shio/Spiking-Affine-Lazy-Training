@@ -33,7 +33,6 @@ import optax
 import yaml
 
 from data.src.nmnist import NMNISTDataset
-from salt_core.calibrate import calibrate_network
 from salt_core.layers import ConvLayer
 from example.checkpoint import Checkpointer
 from salt_core.dormant import dormant_report
@@ -244,25 +243,9 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
 
     # 一列 layer 物件,形狀完全由 model_cfg["layers"] 決定(見
     # example.models.conv_net.build_network)。動態放大 = 用 grown_to_fit 重建這個
-    # list,跨 while 迴圈迭代持續累積(層名不變)。
+    # list,跨 while 迴圈迭代持續累積(層名不變)。init_k 是每層必填欄位(不校準,
+    # 委定值見 docs/問題紀錄.md §12),config 沒填會在 build_network 這一步就報錯。
     layers = build_network(model_cfg)
-
-    # 開訓前的 init_k 校準前置:config 沒填 init_k 的層,現在用它自己的
-    # calibration_measure 現算(forward-only、小樣本、壓縮路徑)。填了的層跳過。
-    # checkpoint 續練是完全另一回事(直接塞舊 weight),不會走到這裡——這個
-    # pre-pass 在 while 迴圈之前,解完之後 layers 一律帶具體 init_k。
-    # 算出來的值收進 resolved_init_k(進 run 紀錄),不塞回 config。
-    resolved_init_k = {}
-    if any(layer.init_k is None for layer in layers):
-        to_resolve = {l.name for l in layers if l.init_k is None}
-        n_calib = min(int(model_cfg.get("calib_size", 256)), data_cfg["train_size"])
-        calib_batch = (train_split.event_times[:n_calib], train_split.x[:n_calib],
-                       train_split.y[:n_calib], train_split.c[:n_calib],
-                       train_split.n_real_events[:n_calib])
-        band = tuple(model_cfg.get("calib_band", (0.20, 0.50)))
-        layers = calibrate_network(layers, calib_batch,
-                                    key=jax.random.PRNGKey(train_cfg["seed"]), band=band)
-        resolved_init_k = {l.name: float(l.init_k) for l in layers if l.name in to_resolve}
 
     layer_names = [layer.name for layer in layers]
     conv_names = [layer.name for layer in layers if isinstance(layer, ConvLayer)]
@@ -347,15 +330,14 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
 
     best_params, best_val_accuracy, best_epoch = best
     rows = metrics_log.rows
-    # 一份 write-once 的 run 紀錄:輸入 config 快照 + commit + 解出來的值 +
-    # 最終容量 + 最佳指標。輸入(raw_cfg)不被改;結果不塞回它。
+    # 一份 write-once 的 run 紀錄:輸入 config 快照 + commit + 最終容量 + 最佳
+    # 指標。輸入(raw_cfg)不被改;結果不塞回它。
     run_record = {
         "config": raw_cfg,
         "git_commit": get_git_commit_hash(str(REPO_ROOT)),
         "xla_flags": os.environ.get("XLA_FLAGS", ""),
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
         "best": {"val_accuracy": best_val_accuracy, "epoch": best_epoch},
-        "resolved_init_k": resolved_init_k,
         "final_capacity": {
             layer.name: {"L": layer.L, "max_out_spikes": layer.max_out_spikes}
             for layer in layers if isinstance(layer, ConvLayer)},

@@ -69,9 +69,9 @@
   都訓到 0.795,`init_k=5` 休眠會自己降)。冷 init 的壓縮佇列記憶體優勢隨網路深度
   複利,ReDo 讓冷 init 撐得起會休眠的隱藏層(尤其 FC→FC)。真的要疊深 FC / 更深
   conv 時再評估。見 [`math/初始權重尺度推導.md`](math/初始權重尺度推導.md) 步驟 8.4 / 10。
-- **`example/train_conv_compressed.py` 開訓前的 firing-rate 校準 pass 現在是 dead
-  code**(沒有 config 用 `init_k: null`)。要不要整段移除是選配清理;
-  `salt_core/calibrate.py` 本身留著給未來全新架構用。
+- ~~`example/train_conv_compressed.py` 開訓前的 firing-rate 校準 pass 現在是 dead
+  code`~~ **已處理(2026-09-11)**:確認沒有消費者之後,連同 `salt_core/calibrate.py`
+  整支移除,見 [`問題紀錄.md`](問題紀錄.md) §12 的更新。
 
 ## 需要 CSNN-FPGA 硬體做出來才能處理
 
