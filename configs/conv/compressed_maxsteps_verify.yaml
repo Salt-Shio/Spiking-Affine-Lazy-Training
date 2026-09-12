@@ -1,0 +1,79 @@
+run_name: compressed_maxsteps_verify
+# max_steps 跟 L 脫鉤這批改動的驗證用 config,複製自 compressed_baseline.yaml,
+# 不動 baseline 本身。跟 baseline 唯一的差異:conv2 的 max_out_spikes 改小。
+#
+# 改的理由:baseline 原本 conv2 max_out_spikes=45000,跟 conv1 的 9000 量級
+# 不合理——conv2 神經元數 1296 比 conv1 的 2312 少,buffer 卻是 5 倍大,不是
+# 「留餘裕」能解釋的落差。改成跟 conv1 同量級的保守起始猜測,交給
+# grown_to_fit 自己長,順便讓這次驗證跑到 max_out_spikes 的出界放大路徑
+# (baseline 原本的 45000 结构上打不到)。
+#
+# 其餘設定(L / max_steps_reestimate_every 用預設 1)都跟 baseline 一致,讓
+# Part 2(grown_to_fit 放大三個旋鈕)、Part 3(_reestimate_max_steps 縮小
+# max_steps)這次審過的路徑都有機會在這次跑裡被走到。
+#
+# 兩個 conv 層的 chunk_size 從 baseline 的 1 改成 4:chunk_size=1 時
+# spike_step_upper_bound 算出來的 min_steps_needed 數學上恆等於 L
+# (T = m* + ceil((L-m*)/1) = L,見 docs/math/掃描步數上界推導.md 第 4 節),
+# Part 3 的縮小機制在這個前提下 structurally 永遠不會觸發。要驗證縮小路徑
+# 真的能動,chunk_size 必須 > 1。
+
+model:
+  decoder: membrane_regression
+
+  input_shape: [2, 34, 34]
+
+  layers:
+    - type: conv
+      oc: 8
+      k: 3
+      s: 2
+      p: 1
+      tau: 16.0
+      v_th: 1.0
+      alpha: 2.0
+      chunk_size: 4            # 1 會讓 min_steps_needed 恆等於 L(見下方說明),改 >1
+      L: 185
+      max_out_spikes: 5000
+      init_k: 5.0
+      L_grow_factor: 1.5
+      out_grow_factor: 1.5
+    - type: conv
+      oc: 16
+      k: 3
+      s: 2
+      p: 1
+      tau: 16.0
+      v_th: 1.0
+      alpha: 2.0
+      chunk_size: 4            # 同上
+      L: 32
+      max_out_spikes: 5000    # baseline 是 45000,見檔頭說明
+      init_k: 5.0
+      L_grow_factor: 1.5
+      out_grow_factor: 1.5
+    - type: fc
+      name: out
+      n_out: 10
+      tau: 16.0
+      v_th: 1.0e+9
+      alpha: 2.0
+      chunk_size: 1024
+      init_k: 5.0
+
+data:
+  max_events: 2000
+  train_size: 1000
+  val_size: 200
+  seed_train: 0
+  seed_val: 0
+
+train:
+  lr: 1.0e-2
+  epochs: 40
+  batch_size: 4
+  seed: 42
+  probe_every: 5
+  probe_samples: 8
+  probe_full_every: 20
+  probe_full_samples: 2

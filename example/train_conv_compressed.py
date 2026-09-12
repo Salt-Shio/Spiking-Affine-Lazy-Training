@@ -3,14 +3,20 @@
 這支腳本比一般訓練多的東西,是所有壓縮容量旋鈕的**動態放大**機制(完整設計
 見 docs/math/conv事件佇列壓縮版推導.md 第 7.2 節):
 
-- 每個 conv 層有兩個會出界的容量:壓縮佇列長度 `L`、輸出 spike 上界
-  `max_out_spikes`。兩個出界訊號都在 forward 裡算出來、由 `LayerDiag` 帶出。
+- 每個 conv 層有三個會出界的容量:壓縮佇列長度 `L`、輸出 spike 上界
+  `max_out_spikes`、掃描步數上界 `max_steps`。三個出界訊號都在 forward 裡算
+  出來、由 `LayerDiag` 帶出。
 - 沒有「靜態精算一次永久有效」的做法(原本 `conv_param_search.py` 的 L1 靜態
   量測太慢已廢),一律:config 給起始猜測 → 訓練中某個 batch 偵測出界 →
   該層 `grown_to_fit` 放大 → 退回最近的 checkpoint → 用新的 layer list 重
   編譯續練。哪個旋鈕、放大多少是 `salt_core.layers.ConvLayer` 自己的知識,
   這裡只負責「作廢這個 batch、退 checkpoint、重編譯」這圈訓練編排,而且是對
   layer list 的一個**通用迴圈**,不寫死層名。
+- `max_steps` 多一條**選擇性縮小**的路(`_reestimate_max_steps`,數學推導見
+  docs/math/掃描步數上界推導.md):每 `train.max_steps_reestimate_every` 個
+  epoch(預設 1)開始、batch 迴圈之前,用當下權重對固定探測批重估一次,比
+  現有值小就縮、重編譯續跑。這條路跟出界不一樣,不需要退 checkpoint(用的是
+  已經確定沒問題的當下權重),但重編譯這件事借用同一條 while 外圈。
 
 用法(config 路徑相對於 repo 根目錄,或給絕對路徑):
   python -m example.train_conv_compressed configs/conv/compressed_baseline.yaml
@@ -32,7 +38,7 @@ import optax
 import yaml
 
 from data.src.nmnist import NMNISTDataset
-from salt_core.layers import ConvLayer
+from salt_core.layers import ConvLayer, raw_events_to_stream, run_network
 from example.checkpoint import Checkpointer
 from salt_core.dormant import dormant_report
 from example.metrics_log import MetricsLog
@@ -60,15 +66,16 @@ def make_train_step(net, optimizer, decoder):
         per_sample_loss = optax.softmax_cross_entropy(scores, batch_labels_onehot)
         loss = jnp.mean(per_sample_loss)
         # 每層一份「批次縮減後的 LayerDiag」:firing_rate / spike_count 取批次
-        # **平均**(給 metrics.csv 當哨兵指標),max_real_queue / n_out_spikes 取
-        # 批次**最大**(出界偵測:只要批次裡任何一筆樣本、任何一顆神經元超過
-        # 目前容量就算出界,不能被其他樣本的小值平均掉)。grown_to_fit 只看
-        # 後兩個欄位,logging 只看前兩個。
+        # **平均**(給 metrics.csv 當哨兵指標),max_real_queue / n_out_spikes /
+        # min_steps_needed 取批次**最大**(出界偵測:只要批次裡任何一筆樣本、
+        # 任何一顆神經元超過目前容量就算出界,不能被其他樣本的小值平均掉)。
+        # grown_to_fit 只看後三個欄位,logging 只看前兩個。
         reduced = [d._replace(
             spike_count=jnp.mean(d.spike_count),
             firing_rate=jnp.mean(d.firing_rate),
             max_real_queue=jnp.max(d.max_real_queue),
-            n_out_spikes=jnp.max(d.n_out_spikes)) for d in diagnostics]
+            n_out_spikes=jnp.max(d.n_out_spikes),
+            min_steps_needed=jnp.max(d.min_steps_needed)) for d in diagnostics]
         reduced_metrics = {k: jnp.mean(v) for k, v in dec_metrics.items()}
         return loss, (reduced, reduced_metrics)
 
@@ -109,6 +116,43 @@ def _describe_growth(old_layers: list, new_layers: list, reduced_diags: list) ->
         if new.max_out_spikes != old.max_out_spikes:
             parts.append(f"{old.name} max_out {old.max_out_spikes}->{new.max_out_spikes}"
                           f"(觀察 {int(d.n_out_spikes)})")
+        if new.max_steps != old.max_steps:
+            parts.append(f"{old.name} max_steps {old.max_steps}->{new.max_steps}"
+                          f"(觀察 {int(d.min_steps_needed)})")
+    return "; ".join(parts)
+
+
+def _reestimate_max_steps(layers: list, params, probe_batch, *, chunk: int = 16) -> list:
+    """`max_steps` 的選擇性縮小重估(見 docs/規格書.md「conv 層 max_steps」、
+    docs/math/掃描步數上界推導.md)。對固定探測批(跟 `dormant_report` 同一批、
+    同樣的 chunk 化 vmap 避免 FC 密集佇列 OOM)用當下權重跑一般 `run_network`,
+    取每個 conv 層這批樣本裡 `LayerDiag.min_steps_needed` 的最大值,交給
+    `shrink_max_steps` 決定要不要縮。不是每個 batch 都做,呼叫端(`run_epochs`)
+    決定頻率。"""
+    et, x, y, c, nr = probe_batch
+    first = layers[0]
+    n = int(et.shape[0])
+
+    @jax.jit
+    def chunk_diags(p, e, xx, yy, cc, rr):
+        streams = jax.vmap(raw_events_to_stream, in_axes=(0, 0, 0, 0, 0, None, None))(
+            e, xx, yy, cc, rr, first.h_in, first.w_in)
+        return jax.vmap(lambda s: run_network(layers, s, p)[1])(streams)
+
+    maxes: list[int] | None = None
+    for lo in range(0, n, chunk):
+        hi = min(lo + chunk, n)
+        diags = chunk_diags(params, et[lo:hi], x[lo:hi], y[lo:hi], c[lo:hi], nr[lo:hi])
+        batch_max = [int(jnp.max(d.min_steps_needed)) for d in diags]
+        maxes = batch_max if maxes is None else [max(a, b) for a, b in zip(maxes, batch_max)]
+
+    return [layer.shrink_max_steps(cand) for layer, cand in zip(layers, maxes)]
+
+
+def _describe_shrink(old_layers: list, new_layers: list) -> str:
+    """跟 `_describe_growth` 對應,格式:`conv1 max_steps 200->134`。"""
+    parts = [f"{old.name} max_steps {old.max_steps}->{new.max_steps}"
+             for old, new in zip(old_layers, new_layers) if old is not new]
     return "; ".join(parts)
 
 
@@ -121,16 +165,21 @@ class Best(NamedTuple):
 
 class EpochsOutcome(NamedTuple):
     overflowed: bool
-    grown_layers: list        # 出界 = 放大後的新 list;沒出界 = 原樣傳回
-    final_params: object       # 最後一個完成 epoch 的 params(出界時呼叫端不用)
+    grown_layers: list        # 出界 / 重估縮小 = 新 list;都沒有 = 原樣傳回
+    final_params: object       # 最後一個完成 epoch 的 params(出界/重估時呼叫端不用)
     best: Best
+    reestimated: bool = False  # max_steps 選擇性縮小觸發的重編譯,不是出界(見
+                               # _reestimate_max_steps);跟 overflowed 分開記,
+                               # 因為成因、要不要當「有問題」看待完全不同,不能
+                               # 共用同一個欄位混在一起。
 
 
 def run_epochs(*, layers, train_step, evaluate, params, opt_state,
                shuffle_key, start_epoch: int, total_epochs: int,
                train_split, val_split, batch_size: int, probe_batch,
                metrics_log, checkpointer, best: Best,
-               trace_probe: "TraceProbe | None" = None) -> EpochsOutcome:
+               trace_probe: "TraceProbe | None" = None,
+               max_steps_reestimate_every: int = 1) -> EpochsOutcome:
     """跑 `[start_epoch, total_epochs)` 的訓練迴圈。
 
     **不知道「長大」這回事**:偵測到某 batch 的真實用量超過壓縮容量,就用
@@ -139,6 +188,13 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
     重編譯,那是呼叫端 `train()` 的 while 外圈。跑完整段沒出界回
     `overflowed=False`,`final_params` 是最後一個 epoch 的權重。
 
+    **也不知道「縮小」這回事**:`max_steps_reestimate_every > 0` 時,每 N 個
+    epoch 開始、batch 迴圈之前,用當下權重對探測批重估一次 `max_steps`
+    (`_reestimate_max_steps`,見 docs/規格書.md「conv 層 max_steps」)。真的縮了
+    就印 `[縮小]`、回傳 `EpochsOutcome(reestimated=True, grown_layers=...)`,
+    一樣交給 `train()` 的 while 外圈重編譯續跑——用的是已經確定沒問題的當下
+    權重,不是修正錯誤,跟出界的處理理由不同,但重編譯這件事借用同一條路。
+
     每個成功 epoch:val 評估 → 更新 `best` → `metrics_log.finish_epoch` →
     `checkpointer.save`。
     """
@@ -146,6 +202,13 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
     n_batches = max(1, n_train // batch_size)
 
     for epoch in range(start_epoch, total_epochs):
+        if max_steps_reestimate_every > 0 and epoch % max_steps_reestimate_every == 0:
+            reestimated_layers = _reestimate_max_steps(layers, params, probe_batch)
+            if reestimated_layers != layers:
+                print(f"[縮小] epoch={epoch}: {_describe_shrink(layers, reestimated_layers)}")
+                return EpochsOutcome(overflowed=False, grown_layers=reestimated_layers,
+                                      final_params=params, best=best, reestimated=True)
+
         shuffle_key, subkey = jax.random.split(shuffle_key)
         perm = jax.random.permutation(subkey, n_train)
         metrics_log.start_epoch()
@@ -299,10 +362,11 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
             train_split=train_split, val_split=val_split, batch_size=batch_size,
             probe_batch=probe_batch,
             metrics_log=metrics_log, checkpointer=checkpointer, best=best,
-            trace_probe=trace_probe)
+            trace_probe=trace_probe,
+            max_steps_reestimate_every=int(train_cfg.get("max_steps_reestimate_every", 1)))
 
         best = outcome.best
-        if not outcome.overflowed:
+        if not outcome.overflowed and not outcome.reestimated:
             params = outcome.final_params
             break
         layers = outcome.grown_layers
@@ -318,7 +382,8 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
         "best": {"val_accuracy": best_val_accuracy, "epoch": best_epoch},
         "final_capacity": {
-            layer.name: {"L": layer.L, "max_out_spikes": layer.max_out_spikes}
+            layer.name: {"L": layer.L, "max_out_spikes": layer.max_out_spikes,
+                        "max_steps": layer.max_steps}
             for layer in layers if isinstance(layer, ConvLayer)},
         "last_epoch_obs": ({
             name: {"queue": rows[-1][f"{name}_obs_queue"],

@@ -85,6 +85,29 @@ def mask_pad_events(maps: AffineMap,
                       b=jnp.where(real_mask, maps.b, 0.0))
 
 
+def spike_step_upper_bound(b: jax.Array, v_th: float, chunk_size: int) -> jax.Array:
+    """一顆(或一批)神經元的掃描步數上界(證明見
+    docs/math/掃描步數上界推導.md)。`b`:shape `(..., L)`,佇列裡每筆事件自己的
+    仿射偏移(`AffineMap.b`,正負號 = 對應權重的正負號)。回傳比 `b`少最後一軸
+    的 int32 陣列。
+
+    推導的兩個獨立上界,取更緊的:
+      m   = #{b_i > 0}                         (只看正負號)
+      S/v_th = Σ_{b_i>0} b_i / v_th 再取 floor  (權重大小 / 門檻的能量預算)
+    取 m* = min(m, floor(S/v_th)),步數上界 = m* + ceil((L - m*) / chunk_size)。
+
+    `v_th` 遠大於典型 `b` 量級時(例如非 fire 層的 v_th=1e9),`floor(S/v_th)`
+    會壓到 0,正確反映「這層事實上不會 fire」。
+    """
+    L = b.shape[-1]
+    positive = jnp.where(b > 0, b, 0.0)
+    m = jnp.sum(b > 0, axis=-1)
+    energy_bound = jnp.floor(jnp.sum(positive, axis=-1) / v_th)
+    m_star = jnp.minimum(m.astype(jnp.float32), energy_bound)
+    steps = m_star + jnp.ceil((L - m_star) / chunk_size)
+    return steps.astype(jnp.int32)
+
+
 class ChunkForwardResult(NamedTuple):
     v_final: jax.Array     # chunk 結束後的膜電位(若有 spike,已套用硬重置)
     is_spiked: jax.Array   # bool scalar,這個 chunk 內是否有 spike

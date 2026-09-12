@@ -213,14 +213,33 @@ def test_grown_to_fit_bumps_only_the_overflowing_knob():
     _, conv2, _ = build_network(cfg["model"])
 
     same = conv2.grown_to_fit(LayerDiag(spike_count=jnp.array(0), firing_rate=jnp.array(0.0),
-                                         max_real_queue=jnp.array(50), n_out_spikes=jnp.array(10)))
+                                         max_real_queue=jnp.array(50), n_out_spikes=jnp.array(10),
+                                         min_steps_needed=jnp.array(conv2.max_steps)))
     assert same is conv2, "沒出界應回傳自己"
 
+    # 只有 L 出界:max_steps 沒有獨立超標,但 L 長大之後,這批用「舊、不夠大」
+    # 的佇列算出的 min_steps_needed 已經不可信,安全網要求 max_steps 直接
+    # 補到新 L(不是保留舊值,也不是信這批的 min_steps_needed)。
     grown = conv2.grown_to_fit(LayerDiag(spike_count=jnp.array(0), firing_rate=jnp.array(0.0),
-                                          max_real_queue=jnp.array(777), n_out_spikes=jnp.array(10)))
+                                          max_real_queue=jnp.array(777), n_out_spikes=jnp.array(10),
+                                          min_steps_needed=jnp.array(0)))
     assert grown is not conv2
     assert grown.L == int(math.ceil(max(777, 100) * 1.5)) == 1166
     assert grown.max_out_spikes == conv2.max_out_spikes, "max_out 沒出界不該動"
+    assert grown.max_steps == grown.L, "L 出界長大時,max_steps 安全網要補到新 L"
+
+    # 只有 max_steps 自己的診斷出界(L / max_out 都沒事):max_steps 補到
+    # min_steps_needed 本身,不乘放大倍率(它本來就是證明過的上界,見
+    # docs/math/掃描步數上界推導.md),L / max_out 原封不動。
+    grown_steps = conv2.grown_to_fit(LayerDiag(
+        spike_count=jnp.array(0), firing_rate=jnp.array(0.0),
+        max_real_queue=jnp.array(50), n_out_spikes=jnp.array(10),
+        min_steps_needed=jnp.array(conv2.max_steps + 7)))
+    assert grown_steps is not conv2
+    assert grown_steps.L == conv2.L, "L 沒出界不該動"
+    assert grown_steps.max_out_spikes == conv2.max_out_spikes, "max_out 沒出界不該動"
+    assert grown_steps.max_steps == conv2.max_steps + 7
+
     for f in ("name", "ic", "oc", "h_out", "w_out", "k", "s", "p", "tau", "v_th",
               "alpha", "chunk_size", "init_k", "L_grow_factor", "out_grow_factor"):
         assert getattr(grown, f) == getattr(conv2, f), f"{f} 不該被 grown_to_fit 改動"
