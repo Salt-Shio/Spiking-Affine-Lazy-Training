@@ -1,16 +1,23 @@
 run_name: compressed_maxsteps_verify
 # max_steps 跟 L 脫鉤這批改動的驗證用 config,複製自 compressed_baseline.yaml,
-# 不動 baseline 本身。跟 baseline 唯一的差異:conv2 的 max_out_spikes 改小。
+# 不動 baseline 本身。跟 baseline 的差異:conv2 的 max_out_spikes 改小、兩個
+# conv 層都明確給 max_steps 一個很小的起始猜測。
 #
-# 改的理由:baseline 原本 conv2 max_out_spikes=45000,跟 conv1 的 9000 量級
-# 不合理——conv2 神經元數 1296 比 conv1 的 2312 少,buffer 卻是 5 倍大,不是
-# 「留餘裕」能解釋的落差。改成跟 conv1 同量級的保守起始猜測,交給
+# max_out_spikes 改的理由:baseline 原本 conv2 max_out_spikes=45000,跟 conv1
+# 的 9000 量級不合理——conv2 神經元數 1296 比 conv1 的 2312 少,buffer 卻是
+# 5 倍大,不是「留餘裕」能解釋的落差。改成跟 conv1 同量級的保守起始猜測,交給
 # grown_to_fit 自己長,順便讓這次驗證跑到 max_out_spikes 的出界放大路徑
 # (baseline 原本的 45000 结构上打不到)。
 #
+# max_steps 起始值改的理由(2026-09-12 修掉「用 probe_batch 縮小造成無限
+# 循環」那個 bug 之後的設計):max_steps 不再靠 __post_init__ 的 self.L
+# fallback 打底,而是像 L / max_out_spikes 一樣給一個小的起始猜測,交給
+# grown_to_fit 用真實 batch 資料自己長到夠用——這裡故意設 1,確保這次驗證
+# 一定會在 epoch 0 batch 0 就走到 max_steps 的出界放大路徑。
+#
 # 其餘設定(L / max_steps_reestimate_every 用預設 1)都跟 baseline 一致,讓
-# Part 2(grown_to_fit 放大三個旋鈕)、Part 3(_reestimate_max_steps 縮小
-# max_steps)這次審過的路徑都有機會在這次跑裡被走到。
+# Part 2(grown_to_fit 放大三個旋鈕)、Part 3(epoch 成功跑完後用真實觀察值
+# 縮小 max_steps)這次審過的路徑都有機會在這次跑裡被走到。
 #
 # 兩個 conv 層的 chunk_size 從 baseline 的 1 改成 4:chunk_size=1 時
 # spike_step_upper_bound 算出來的 min_steps_needed 數學上恆等於 L
@@ -34,10 +41,13 @@ model:
       alpha: 2.0
       chunk_size: 4            # 1 會讓 min_steps_needed 恆等於 L(見下方說明),改 >1
       L: 185
-      max_out_spikes: 5000
+      max_out_spikes: 1
+      max_steps: 1             # 小起始猜測,交給 grown_to_fit 自己長(見檔頭說明)
       init_k: 5.0
       L_grow_factor: 1.5
       out_grow_factor: 1.5
+      max_steps_grow_factor: 1.5
+      max_steps_shrink_threshold: 0.5
     - type: conv
       oc: 16
       k: 3
@@ -48,10 +58,13 @@ model:
       alpha: 2.0
       chunk_size: 4            # 同上
       L: 32
-      max_out_spikes: 5000    # baseline 是 45000,見檔頭說明
+      max_out_spikes: 1    # baseline 是 45000,見檔頭說明
+      max_steps: 1             # 同上
       init_k: 5.0
       L_grow_factor: 1.5
       out_grow_factor: 1.5
+      max_steps_grow_factor: 1.5
+      max_steps_shrink_threshold: 0.5
     - type: fc
       name: out
       n_out: 10

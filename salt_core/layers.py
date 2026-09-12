@@ -100,11 +100,12 @@ class Layer(Protocol):
         沒出界回自己、出界回一個容量放大過的新層物件。"""
         ...
 
-    def shrink_max_steps(self, candidate: int) -> "Layer":
-        """給一個探測批算出來的候選 `max_steps`,比現有的小才真的縮,回一個
-        新層物件;沒有可縮欄位的層(例如 FC)原樣傳回自己。跟 `grown_to_fit`
-        是獨立的路:只在 `example/train_conv_compressed.py` 的 epoch 開始前
-        重估呼叫,不吃每個 batch 的 `LayerDiag`。"""
+    def shrink_max_steps(self, observed: int) -> "Layer":
+        """給一個成功跑完的 epoch 裡、所有真實 batch 觀察到的 `max_steps`
+        需求最大值,決定要不要縮、縮多少,回一個新層物件;沒有可縮欄位的層
+        (例如 FC)原樣傳回自己。跟 `grown_to_fit` 是獨立的路:只在
+        `example/train_conv_compressed.py` 的 epoch 成功跑完之後呼叫,吃的是
+        整個 epoch 累積的觀察值,不是單一 batch 的 `LayerDiag`。"""
         ...
 
 
@@ -155,14 +156,24 @@ class ConvLayer:
     max_out_spikes: int = 8192
     L_grow_factor: float = 1.5
     out_grow_factor: float = 1.5
-    # 跟 L 脫鉤的掃描步數上界(見 docs/math/掃描步數上界推導.md)。不是
-    # config 要填的東西——`None`(預設)代表「還沒重估過」,`__post_init__`
-    # 落到 `self.L`,精確對齊這個欄位存在之前的行為(safe fallback,永遠夠用)。
-    # `example/train_conv_compressed.py` 的 `train()` 在第一次編譯之前就會用
-    # 初始權重算一次真正的值蓋掉它;沒經過 `train()` 的呼叫端(例如
-    # `example/tests/verify_init_k.py` 直接用 `build_network`)拿到的就是這個
-    # 安全預設,不會因為這個欄位的新增而默默截斷掃描、算出錯的結果。
+    # 跟 L 脫鉤的掃描步數上界(見 docs/math/掃描步數上界推導.md)。`None`
+    # (預設)代表「沒特別設起始猜測」,`__post_init__` 落到 `self.L`,對齊這個
+    # 欄位存在之前的行為(safe fallback,永遠夠用)——這是給**沒有經過**
+    # `example/train_conv_compressed.py` 動態放大迴圈的呼叫端(例如
+    # `example/tests/verify_init_k.py` 直接用 `build_network`)用的安全預設,
+    # 不會因為這個欄位的新增而默默截斷掃描、算出錯的結果。訓練腳本要用小
+    # 起始值讓它自己長(跟 `L`/`max_out_spikes` 同一種「config 給起始猜測」
+    # 的用法),config 就直接填這個欄位,不要靠這個 fallback。
     max_steps: int | None = None
+    # 長大跟縮小共用同一個倍率:長大時補到 `ceil(觀察值 * factor)`(留餘裕,
+    # 不是補精確值);縮小時候選值也用同一個公式算(`ceil(觀察值 * factor)`),
+    # 保證「真實需求沒變 → 兩次算出來的目標值相等 → 不會縮」,不需要另外
+    # 調參數搭配才能防震盪(見 docs/規格書.md「conv 層 max_steps」的推導)。
+    max_steps_grow_factor: float = 1.5
+    # 縮小門檻:候選值要掉到現在 max_steps 的這個比例以下才值得縮(付一次
+    # 重編譯的代價換空間)。不影響防震盪(那是上面 factor 共用的效果),純粹是
+    #「值不值得縮」的效率取捨。
+    max_steps_shrink_threshold: float = 0.5
 
     def __post_init__(self) -> None:
         if self.max_steps is None:
@@ -276,9 +287,10 @@ class ConvLayer:
         new_out_spikes = (_grow(diag.n_out_spikes, self.max_out_spikes, self.out_grow_factor)
                    if int(diag.n_out_spikes) > self.max_out_spikes else self.max_out_spikes)
         # max_steps 的安全網:diag.min_steps_needed 是用「這個 batch 的實際權重」
-        # 算出來、保證夠用的步數上界(見 docs/math/掃描步數上界推導.md),不是
-        # 一個猜測值,所以超過現在的 max_steps 就直接補到這個值,不像 L /
-        # max_out_spikes 那樣需要再乘一個放大倍率留餘裕。
+        # 算出來、保證夠用的步數上界(見 docs/math/掃描步數上界推導.md),超過
+        # 現在的 max_steps 就補到 ceil(min_steps_needed * max_steps_grow_factor)
+        # ——留跟 L/max_out_spikes 同樣精神的餘裕,也讓長大跟縮小(見
+        # shrink_max_steps)用同一個公式,兩者目標值才可能相等而不互相震盪。
         # 但 L 這次如果也跟著長大,這批的 min_steps_needed 是在「舊、不夠大」
         # 的佇列上算出來的,沒看到長大後才會出現的額外真實事件,不能信——退回
         # 全保守值(= 新 L),下一批或下次 epoch 重估再用長大後的真實佇列重新
@@ -286,7 +298,7 @@ class ConvLayer:
         if new_L != self.L: # 目前 new_L 嚴格 > self.L
             new_max_steps = new_L
         elif int(diag.min_steps_needed) > self.max_steps:
-            new_max_steps = int(diag.min_steps_needed)
+            new_max_steps = _grow(diag.min_steps_needed, 0, self.max_steps_grow_factor)
         else:
             new_max_steps = self.max_steps
         if new_L == self.L and new_out_spikes == self.max_out_spikes and new_max_steps == self.max_steps:
@@ -296,14 +308,22 @@ class ConvLayer:
         # max_out_spikes: 作為輸入事件量的上界
         # max_steps: affine map 的 b 估算出來的上界，作為輸出事件上界
 
-    def shrink_max_steps(self, candidate: int) -> "ConvLayer":
-        """`max_steps` 的選擇性縮小路徑,給 `train_conv_compressed.py` 的
-        epoch 開始前重估用(見 docs/規格書.md「conv 層 max_steps」)。跟
-        `grown_to_fit` 是兩條獨立的路:這裡只縮不長,而且用的是探測批
-        算出來的候選值,不是每個 batch 的 `LayerDiag`。`candidate` 沒有比現在
-        小就原樣傳回(同一個物件,不觸發重編譯)。"""
-        candidate = int(candidate)
-        if candidate >= self.max_steps:
+    def shrink_max_steps(self, observed: int) -> "ConvLayer":
+        """`max_steps` 的選擇性縮小路徑,給 `train_conv_compressed.py` 在一個
+        **成功跑完的 epoch** 之後呼叫(見 docs/規格書.md「conv 層 max_steps」)。
+        跟 `grown_to_fit` 是兩條獨立的路:這裡只縮不長。
+
+        `observed`:這個 epoch 裡,所有真實 batch 的 `LayerDiag.min_steps_needed`
+        取過的最大值——不是探測批,是這個 epoch 真正跑過的訓練資料。
+
+        候選值用跟 `grown_to_fit` **同一個公式**算(`ceil(observed *
+        max_steps_grow_factor)`),不是 `observed` 本身:真實需求沒變時,兩次
+        算出來的目標值會相等,天然不會縮,不用另外湊參數防震盪。候選值還要
+        掉到現在 `max_steps` 的 `max_steps_shrink_threshold` 比例以下才真的
+        縮(值不值得付一次重編譯的效率門檻,不影響防震盪)。都沒過就原樣傳回
+        (同一個物件,不觸發重編譯)。"""
+        candidate = _grow(observed, 0, self.max_steps_grow_factor)
+        if candidate >= self.max_steps * self.max_steps_shrink_threshold:
             return self
         return replace(self, max_steps=candidate)
 
@@ -400,7 +420,7 @@ class FCLayer:
         # 上一層長大、重編譯時這層自動拿到更長的輸入流、更多 scan 步數。
         return self
 
-    def shrink_max_steps(self, candidate: int) -> "FCLayer":
+    def shrink_max_steps(self, observed: int) -> "FCLayer":
         # 沒有獨立的 max_steps 欄位(積分步數是上一層輸出容量現算的,見
         # _run_forward 的 scan_steps),沒東西可以縮。
         return self

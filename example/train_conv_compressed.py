@@ -12,11 +12,16 @@
   編譯續練。哪個旋鈕、放大多少是 `salt_core.layers.ConvLayer` 自己的知識,
   這裡只負責「作廢這個 batch、退 checkpoint、重編譯」這圈訓練編排,而且是對
   layer list 的一個**通用迴圈**,不寫死層名。
-- `max_steps` 多一條**選擇性縮小**的路(`_reestimate_max_steps`,數學推導見
+- `max_steps` 多一條**選擇性縮小**的路(`_shrink_layers`,數學推導見
   docs/math/掃描步數上界推導.md):每 `train.max_steps_reestimate_every` 個
-  epoch(預設 1)開始、batch 迴圈之前,用當下權重對固定探測批重估一次,比
-  現有值小就縮、重編譯續跑。這條路跟出界不一樣,不需要退 checkpoint(用的是
-  已經確定沒問題的當下權重),但重編譯這件事借用同一條 while 外圈。
+  **成功跑完的** epoch,用這個 epoch 裡所有真實 batch 的 `LayerDiag.
+  min_steps_needed` 觀察最大值(不是探測批,是真正的訓練資料)決定要不要縮,
+  比現有值小就縮、重編譯續跑。這條路跟出界不一樣,不需要退 checkpoint(用的
+  是已經確定沒問題的當下權重),但重編譯這件事借用同一條 while 外圈。長大/
+  縮小的目標值都用同一個 `ConvLayer.max_steps_grow_factor` 公式算
+  (`ceil(觀察值 * factor)`),真實需求沒變時兩次算出來的目標值會相等,天然
+  不會震盪;縮小還要另外掉到 `max_steps_shrink_threshold` 比例以下才值得
+  觸發(效率門檻,不影響防震盪)。
 
 用法(config 路徑相對於 repo 根目錄,或給絕對路徑):
   python -m example.train_conv_compressed configs/conv/compressed_baseline.yaml
@@ -38,7 +43,7 @@ import optax
 import yaml
 
 from data.src.nmnist import NMNISTDataset
-from salt_core.layers import ConvLayer, raw_events_to_stream, run_network
+from salt_core.layers import ConvLayer
 from example.checkpoint import Checkpointer
 from salt_core.dormant import dormant_report
 from example.metrics_log import MetricsLog
@@ -122,31 +127,13 @@ def _describe_growth(old_layers: list, new_layers: list, reduced_diags: list) ->
     return "; ".join(parts)
 
 
-def _reestimate_max_steps(layers: list, params, probe_batch, *, chunk: int = 16) -> list:
-    """`max_steps` 的選擇性縮小重估(見 docs/規格書.md「conv 層 max_steps」、
-    docs/math/掃描步數上界推導.md)。對固定探測批(跟 `dormant_report` 同一批、
-    同樣的 chunk 化 vmap 避免 FC 密集佇列 OOM)用當下權重跑一般 `run_network`,
-    取每個 conv 層這批樣本裡 `LayerDiag.min_steps_needed` 的最大值,交給
-    `shrink_max_steps` 決定要不要縮。不是每個 batch 都做,呼叫端(`run_epochs`)
-    決定頻率。"""
-    et, x, y, c, nr = probe_batch
-    first = layers[0]
-    n = int(et.shape[0])
-
-    @jax.jit
-    def chunk_diags(p, e, xx, yy, cc, rr):
-        streams = jax.vmap(raw_events_to_stream, in_axes=(0, 0, 0, 0, 0, None, None))(
-            e, xx, yy, cc, rr, first.h_in, first.w_in)
-        return jax.vmap(lambda s: run_network(layers, s, p)[1])(streams)
-
-    maxes: list[int] | None = None
-    for lo in range(0, n, chunk):
-        hi = min(lo + chunk, n)
-        diags = chunk_diags(params, et[lo:hi], x[lo:hi], y[lo:hi], c[lo:hi], nr[lo:hi])
-        batch_max = [int(jnp.max(d.min_steps_needed)) for d in diags]
-        maxes = batch_max if maxes is None else [max(a, b) for a, b in zip(maxes, batch_max)]
-
-    return [layer.shrink_max_steps(cand) for layer, cand in zip(layers, maxes)]
+def _shrink_layers(layers: list, epoch_min_steps_needed: dict) -> list:
+    """對每一層問一次 `shrink_max_steps`,回傳新的 layer list(沒縮的層原封
+    不動,是同一個物件)。`epoch_min_steps_needed`:層名 -> 這個**成功跑完的
+    epoch**裡,所有真實 batch 的 `LayerDiag.min_steps_needed` 觀察最大值——
+    不是探測批,是這個 epoch 真正跑過的訓練資料(見 docs/規格書.md「conv 層
+    max_steps」)。"""
+    return [layer.shrink_max_steps(epoch_min_steps_needed[layer.name]) for layer in layers]
 
 
 def _describe_shrink(old_layers: list, new_layers: list) -> str:
@@ -169,7 +156,7 @@ class EpochsOutcome(NamedTuple):
     final_params: object       # 最後一個完成 epoch 的 params(出界/重估時呼叫端不用)
     best: Best
     reestimated: bool = False  # max_steps 選擇性縮小觸發的重編譯,不是出界(見
-                               # _reestimate_max_steps);跟 overflowed 分開記,
+                               # _shrink_layers);跟 overflowed 分開記,
                                # 因為成因、要不要當「有問題」看待完全不同,不能
                                # 共用同一個欄位混在一起。
 
@@ -188,30 +175,28 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
     重編譯,那是呼叫端 `train()` 的 while 外圈。跑完整段沒出界回
     `overflowed=False`,`final_params` 是最後一個 epoch 的權重。
 
-    **也不知道「縮小」這回事**:`max_steps_reestimate_every > 0` 時,每 N 個
-    epoch 開始、batch 迴圈之前,用當下權重對探測批重估一次 `max_steps`
-    (`_reestimate_max_steps`,見 docs/規格書.md「conv 層 max_steps」)。真的縮了
-    就印 `[縮小]`、回傳 `EpochsOutcome(reestimated=True, grown_layers=...)`,
-    一樣交給 `train()` 的 while 外圈重編譯續跑——用的是已經確定沒問題的當下
-    權重,不是修正錯誤,跟出界的處理理由不同,但重編譯這件事借用同一條路。
+    **也不知道「縮小」這回事,但只在 epoch 成功跑完之後才問**:每個 epoch
+    的 batch 迴圈裡,順便累積這個 epoch 所有真實 batch 的 `LayerDiag.
+    min_steps_needed` 觀察最大值(`epoch_min_steps_needed`)。**epoch 成功跑
+    完**(checkpoint 存完)之後,`max_steps_reestimate_every > 0` 且這個 epoch
+    number 命中頻率時,拿這份累積值問 `_shrink_layers`(見 docs/規格書.md
+    「conv 層 max_steps」)——不是探測批,是這個 epoch 真正跑過的訓練資料。
+    真的縮了就印 `[縮小]`、回傳 `EpochsOutcome(reestimated=True,
+    grown_layers=...)`,一樣交給 `train()` 的 while 外圈重編譯續跑,從剛存的
+    checkpoint(下一個 epoch)接著練——用的是已經確定沒問題的當下權重,不是
+    修正錯誤,跟出界的處理理由不同,但重編譯這件事借用同一條路。
 
     每個成功 epoch:val 評估 → 更新 `best` → `metrics_log.finish_epoch` →
-    `checkpointer.save`。
+    `checkpointer.save` → 縮小檢查。
     """
     n_train = train_split.labels.shape[0]
     n_batches = max(1, n_train // batch_size)
 
     for epoch in range(start_epoch, total_epochs):
-        if max_steps_reestimate_every > 0 and epoch % max_steps_reestimate_every == 0:
-            reestimated_layers = _reestimate_max_steps(layers, params, probe_batch)
-            if reestimated_layers != layers:
-                print(f"[縮小] epoch={epoch}: {_describe_shrink(layers, reestimated_layers)}")
-                return EpochsOutcome(overflowed=False, grown_layers=reestimated_layers,
-                                      final_params=params, best=best, reestimated=True)
-
         shuffle_key, subkey = jax.random.split(shuffle_key)
         perm = jax.random.permutation(subkey, n_train)
         metrics_log.start_epoch()
+        epoch_min_steps_needed = {layer.name: 0 for layer in layers}
 
         for b in range(n_batches):
             idx = perm[b * batch_size:(b + 1) * batch_size]
@@ -232,6 +217,9 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
                                       final_params=params, best=best)
 
             params, opt_state = new_params, new_opt_state
+            for layer, d in zip(layers, reduced_diags):
+                epoch_min_steps_needed[layer.name] = max(
+                    epoch_min_steps_needed[layer.name], int(d.min_steps_needed))
             metrics_log.record_batch(loss=loss, layers=layers,
                                       reduced_diags=reduced_diags,
                                       grad_norms=grad_norms,
@@ -249,6 +237,15 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
         # 逐步軌跡探測(forward-only、另一個編譯目標,不影響上面的訓練熱路徑)。
         if trace_probe is not None and trace_probe.due(epoch):
             trace_probe.run(layers, params, epoch)
+
+        # 縮小檢查:只在這個 epoch 真正成功跑完、checkpoint 也存完之後才問,
+        # 用的是這個 epoch 累積的真實觀察值,不是探測批。
+        if max_steps_reestimate_every > 0 and epoch % max_steps_reestimate_every == 0:
+            shrunk = _shrink_layers(layers, epoch_min_steps_needed)
+            if shrunk != layers:
+                print(f"[縮小] epoch={epoch}: {_describe_shrink(layers, shrunk)}")
+                return EpochsOutcome(overflowed=False, grown_layers=shrunk,
+                                      final_params=params, best=best, reestimated=True)
 
     return EpochsOutcome(overflowed=False, grown_layers=layers,
                           final_params=params, best=best)
