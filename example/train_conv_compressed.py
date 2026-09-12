@@ -113,24 +113,23 @@ def _grow_layers(layers: list, reduced_diags: list) -> list:
     return [layer.grown_to_fit(diag) for layer, diag in zip(layers, reduced_diags)]
 
 
-def _describe_growth(old_layers: list, new_layers: list, reduced_diags: list) -> str:
-    """把哪些層的哪些容量旋鈕從多少放大到多少(附這個 batch 觀察到的真實值),
-    組成一行給 log/測試解析。格式:
-    `conv2 L 32->2100(觀察 1401); conv2 max_out 45000->68000(觀察 46500)`。
-    """
-    parts = []
+def _describe_growth(old_layers: list, new_layers: list, reduced_diags: list) -> list[str]:
+    """哪些層的哪些容量旋鈕從多少放大到多少(附這個 batch 觀察到的真實值),
+    一個旋鈕一行,給呼叫端縮排印出來/測試解析。格式:
+    `conv2 L 32->2100(觀察 1401)`。"""
+    lines = []
     for old, new, d in zip(old_layers, new_layers, reduced_diags):
         if old is new or not isinstance(old, ConvLayer):
             continue
         if new.L != old.L:
-            parts.append(f"{old.name} L {old.L}->{new.L}(觀察 {int(d.max_real_queue)})")
+            lines.append(f"{old.name} L {old.L}->{new.L}(觀察 {int(d.max_real_queue)})")
         if new.max_out_spikes != old.max_out_spikes:
-            parts.append(f"{old.name} max_out {old.max_out_spikes}->{new.max_out_spikes}"
+            lines.append(f"{old.name} max_out {old.max_out_spikes}->{new.max_out_spikes}"
                           f"(觀察 {int(d.n_out_spikes)})")
         if new.max_steps != old.max_steps:
-            parts.append(f"{old.name} max_steps {old.max_steps}->{new.max_steps}"
+            lines.append(f"{old.name} max_steps {old.max_steps}->{new.max_steps}"
                           f"(觀察 {int(d.min_steps_needed)})")
-    return "; ".join(parts)
+    return lines
 
 
 def _shrink_layers(layers: list, epoch_min_steps_needed: dict,
@@ -149,18 +148,18 @@ def _shrink_layers(layers: list, epoch_min_steps_needed: dict,
     return result
 
 
-def _describe_shrink(old_layers: list, new_layers: list) -> str:
-    """跟 `_describe_growth` 對應,格式:`conv1 max_steps 200->134; conv1
-    max_out 5000->3200`。"""
-    parts = []
+def _describe_shrink(old_layers: list, new_layers: list) -> list[str]:
+    """跟 `_describe_growth` 對應,一個旋鈕一行,格式:`conv1 max_steps
+    200->134`。"""
+    lines = []
     for old, new in zip(old_layers, new_layers):
         if old is new:
             continue
         if new.max_steps != old.max_steps:
-            parts.append(f"{old.name} max_steps {old.max_steps}->{new.max_steps}")
+            lines.append(f"{old.name} max_steps {old.max_steps}->{new.max_steps}")
         if new.max_out_spikes != old.max_out_spikes:
-            parts.append(f"{old.name} max_out {old.max_out_spikes}->{new.max_out_spikes}")
-    return "; ".join(parts)
+            lines.append(f"{old.name} max_out {old.max_out_spikes}->{new.max_out_spikes}")
+    return lines
 
 
 class Best(NamedTuple):
@@ -233,8 +232,9 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
             if grown != layers:
                 where = (f"退回 checkpoint(epoch={checkpointer.last_epoch})"
                          if checkpointer.exists() else "還沒有 checkpoint,退回訓練最初始狀態")
-                print(f"[出界] epoch={epoch} batch={b}: "
-                      f"{_describe_growth(layers, grown, reduced_diags)},{where}")
+                print(f"[出界] epoch={epoch} batch={b}: {where}")
+                for line in _describe_growth(layers, grown, reduced_diags):
+                    print(f"  {line}")
                 return EpochsOutcome(overflowed=True, grown_layers=grown,
                                       final_params=params, best=best)
 
@@ -267,7 +267,9 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
         if max_steps_reestimate_every > 0 and epoch % max_steps_reestimate_every == 0:
             shrunk = _shrink_layers(layers, epoch_min_steps_needed, epoch_n_out_spikes)
             if shrunk != layers:
-                print(f"[縮小] epoch={epoch}: {_describe_shrink(layers, shrunk)}")
+                print(f"[縮小] epoch={epoch}:")
+                for line in _describe_shrink(layers, shrunk):
+                    print(f"  {line}")
                 return EpochsOutcome(overflowed=False, grown_layers=shrunk,
                                       final_params=params, best=best, reestimated=True)
 

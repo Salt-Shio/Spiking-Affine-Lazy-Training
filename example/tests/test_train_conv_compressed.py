@@ -135,22 +135,24 @@ def _read_metrics_csv(exp_dir: str) -> list:
         return list(csv.DictReader(f))
 
 
-_OVERFLOW_LINE_RE = re.compile(r"\[出界\] epoch=(\d+) batch=(\d+): (.+)")
-_KNOB_RE = re.compile(r"(conv\d) (L|max_out) (\d+)->(\d+)\(觀察 (\d+)\)")
+_OVERFLOW_BLOCK_RE = re.compile(r"\[出界\] epoch=(\d+) batch=(\d+): (.+)\n((?:  .+\n?)*)")
+_KNOB_RE = re.compile(r"  (conv\d) (L|max_out|max_steps) (\d+)->(\d+)\(觀察 (\d+)\)")
 
 
 def _parse_overflows(stdout: str) -> list[dict]:
     """從 stdout 抓出每一次 `[出界]` 事件,解析成結構化紀錄。每筆帶
     `epoch`/`batch`/`had_checkpoint` 跟一個 `knobs` list:每個被放大的旋鈕的
-    (layer, knob, old, new, observed)。"""
+    (layer, knob, old, new, observed)。`[出界]` 那行只有 epoch/batch/是否退
+    checkpoint,底下每個被放大的旋鈕各自縮排一行(見
+    `train_conv_compressed._describe_growth`)。"""
     out = []
-    for m in _OVERFLOW_LINE_RE.finditer(stdout):
-        epoch, batch, rest = int(m.group(1)), int(m.group(2)), m.group(3)
+    for m in _OVERFLOW_BLOCK_RE.finditer(stdout):
+        epoch, batch, where, knob_block = int(m.group(1)), int(m.group(2)), m.group(3), m.group(4)
         knobs = [{"layer": k.group(1), "knob": k.group(2), "old": int(k.group(3)),
                   "new": int(k.group(4)), "observed": int(k.group(5))}
-                 for k in _KNOB_RE.finditer(rest)]
+                 for k in _KNOB_RE.finditer(knob_block)]
         out.append({"epoch": epoch, "batch": batch, "knobs": knobs,
-                    "had_checkpoint": "退回 checkpoint" in rest})
+                    "had_checkpoint": "退回 checkpoint" in where})
     return out
 
 

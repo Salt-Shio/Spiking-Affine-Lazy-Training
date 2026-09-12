@@ -15,6 +15,11 @@ import numpy as np
 from salt_core.layers import ConvLayer
 
 
+def _ratio(obs: int, cap: int) -> str:
+    """`已用/容量(百分比)`,`cap` 是 0(理論上不會發生,防禦性處理)就不算百分比。"""
+    return f"{obs}/{cap}({100.0 * obs / cap:.0f}%)" if cap else f"{obs}/{cap}"
+
+
 class MetricsLog:
     """一次訓練 run 的逐 epoch 指標。
 
@@ -37,7 +42,7 @@ class MetricsLog:
         self._firing = {n: [] for n in self._layer_names}
         self._grad = {n: [] for n in self._layer_names}
         self._dec: dict[str, list] = {}
-        self._obs = {n: {"queue": 0, "out": 0} for n in self._conv_names}
+        self._obs = {n: {"queue": 0, "out": 0, "steps": 0} for n in self._conv_names}
 
     def record_batch(self, *, loss, layers: list, reduced_diags: list,
                      grad_norms: dict, decoder_metrics: dict) -> None:
@@ -53,6 +58,7 @@ class MetricsLog:
                 o = self._obs[layer.name]
                 o["queue"] = max(o["queue"], int(d.max_real_queue))
                 o["out"] = max(o["out"], int(d.n_out_spikes))
+                o["steps"] = max(o["steps"], int(d.min_steps_needed))
         for name, g in grad_norms.items():
             self._grad[name].append(float(g))
 
@@ -72,8 +78,10 @@ class MetricsLog:
                 continue
             row[f"{layer.name}_L"] = layer.L
             row[f"{layer.name}_max_out"] = layer.max_out_spikes
+            row[f"{layer.name}_max_steps"] = layer.max_steps
             row[f"{layer.name}_obs_queue"] = self._obs[layer.name]["queue"]
             row[f"{layer.name}_obs_out"] = self._obs[layer.name]["out"]
+            row[f"{layer.name}_obs_steps"] = self._obs[layer.name]["steps"]
         for name in self._layer_names:
             row[f"{name}_firing_rate"] = float(np.mean(self._firing[name]))
         for name in self._layer_names:
@@ -90,19 +98,23 @@ class MetricsLog:
             self._print_progress(row, layers)
 
     def _print_progress(self, row: dict, layers: list) -> None:
-        cap_str = " ".join(
-            f"{l.name}:L={l.L}(用量{self._obs[l.name]['queue']})"
-            f",out={l.max_out_spikes}(用量{self._obs[l.name]['out']})"
-            for l in layers if isinstance(l, ConvLayer))
-        fr_str = " ".join(f"{n}_fr={row[f'{n}_firing_rate']:.4f}" for n in self._layer_names)
-        dorm_str = " ".join(
-            f"{n}_dorm={row[f'{n}_dormant_frac']:.3f}" for n in self._conv_names
-            if f"{n}_dormant_frac" in row and row[f"{n}_dormant_frac"] == row[f"{n}_dormant_frac"])
+        """人看的進度輸出,每層一行,固定 `已用/容量(百分比)` 格式(不用逗號
+        分隔,cap=0 時退化成 `已用/0`,避免除以零)。"""
         dec_str = " ".join(f"{k}={row[f'decoder_{k}']:.4f}" for k in self._dec)
         print(f"epoch {row['epoch']}: loss={row['train_loss']:.4f} "
-              f"val_acc={row['val_accuracy']:.4f} {cap_str} {fr_str}"
-              f"{(' ' + dorm_str) if dorm_str else ''}"
+              f"val_acc={row['val_accuracy']:.4f}"
               f"{(' ' + dec_str) if dec_str else ''}")
+        for l in layers:
+            if isinstance(l, ConvLayer):
+                o = self._obs[l.name]
+                dorm = row.get(f"{l.name}_dormant_frac", float("nan"))
+                dorm_str = f"  dorm={dorm:.3f}" if dorm == dorm else ""
+                print(f"  {l.name:<6} 佇列 {_ratio(o['queue'], l.L)}  "
+                      f"輸出spike {_ratio(o['out'], l.max_out_spikes)}  "
+                      f"掃描步數 {_ratio(o['steps'], l.max_steps)}  "
+                      f"fr={row[f'{l.name}_firing_rate']:.4f}{dorm_str}")
+            else:
+                print(f"  {l.name:<6} fr={row[f'{l.name}_firing_rate']:.4f}")
 
     @property
     def rows(self) -> list:
@@ -121,17 +133,17 @@ class MetricsLog:
         for layer in layers:
             if not isinstance(layer, ConvLayer):
                 continue
-            print(f"  {layer.name} 最終容量:L={layer.L} max_out_spikes={layer.max_out_spikes}")
+            print(f"  {layer.name} 最終容量:L={layer.L} max_out_spikes={layer.max_out_spikes} "
+                  f"max_steps={layer.max_steps}")
         if not self._rows:
             return
         last = self._rows[-1]
         for layer in layers:
             if not isinstance(layer, ConvLayer):
                 continue
-            oq, oo = last[f"{layer.name}_obs_queue"], last[f"{layer.name}_obs_out"]
-
-            def _ratio(obs, cap):
-                return f"{obs}/{cap} ({100.0 * obs / cap:.1f}%)" if cap else f"{obs}/{cap}"
-
+            oq = last[f"{layer.name}_obs_queue"]
+            oo = last[f"{layer.name}_obs_out"]
+            os_ = last[f"{layer.name}_obs_steps"]
             print(f"    {layer.name} 最後一個 epoch 用量:佇列 {_ratio(oq, layer.L)}、"
-                  f"輸出 spike {_ratio(oo, layer.max_out_spikes)}")
+                  f"輸出 spike {_ratio(oo, layer.max_out_spikes)}、"
+                  f"掃描步數 {_ratio(os_, layer.max_steps)}")
