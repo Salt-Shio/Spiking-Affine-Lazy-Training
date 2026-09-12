@@ -229,19 +229,23 @@ def test_grown_to_fit_bumps_only_the_overflowing_knob():
     assert grown.max_steps == grown.L, "L 出界長大時,max_steps 安全網要補到新 L"
 
     # 只有 max_steps 自己的診斷出界(L / max_out 都沒事):max_steps 補到
-    # min_steps_needed 本身,不乘放大倍率(它本來就是證明過的上界,見
-    # docs/math/掃描步數上界推導.md),L / max_out 原封不動。
+    # ceil(min_steps_needed * max_steps_grow_factor)(跟 L/max_out 同一種留
+    # 餘裕公式,不是精確值——見 shrink_max_steps 的防震盪設計),L / max_out
+    # 原封不動。
+    min_steps_needed = conv2.max_steps + 7
     grown_steps = conv2.grown_to_fit(LayerDiag(
         spike_count=jnp.array(0), firing_rate=jnp.array(0.0),
         max_real_queue=jnp.array(50), n_out_spikes=jnp.array(10),
-        min_steps_needed=jnp.array(conv2.max_steps + 7)))
+        min_steps_needed=jnp.array(min_steps_needed)))
     assert grown_steps is not conv2
     assert grown_steps.L == conv2.L, "L 沒出界不該動"
     assert grown_steps.max_out_spikes == conv2.max_out_spikes, "max_out 沒出界不該動"
-    assert grown_steps.max_steps == conv2.max_steps + 7
+    assert grown_steps.max_steps == int(
+        math.ceil(min_steps_needed * conv2.max_steps_grow_factor))
 
     for f in ("name", "ic", "oc", "h_out", "w_out", "k", "s", "p", "tau", "v_th",
-              "alpha", "chunk_size", "init_k", "L_grow_factor", "out_grow_factor"):
+              "alpha", "chunk_size", "init_k", "L_grow_factor", "out_grow_factor",
+              "out_shrink_threshold", "max_steps_grow_factor", "max_steps_shrink_threshold"):
         assert getattr(grown, f) == getattr(conv2, f), f"{f} 不該被 grown_to_fit 改動"
 
 

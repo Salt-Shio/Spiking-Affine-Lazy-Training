@@ -17,7 +17,12 @@ run_name: compressed_maxsteps_verify
 #
 # 其餘設定(L / max_steps_reestimate_every 用預設 1)都跟 baseline 一致,讓
 # Part 2(grown_to_fit 放大三個旋鈕)、Part 3(epoch 成功跑完後用真實觀察值
-# 縮小 max_steps)這次審過的路徑都有機會在這次跑裡被走到。
+# 縮小 max_steps / max_out_spikes)這次審過的路徑都有機會在這次跑裡被走到。
+#
+# max_out_spikes 縮小(2026-09-12 補上,見 docs/問題紀錄.md 第十四節):吃的是
+# 真實觀察值 LayerDiag.n_out_spikes,不是任何理論上界(曾經試過用 m* 算的
+# Σm*_i 當長大/縮小訊號,實測太鬆、已撤回)。out_shrink_threshold 明確填出來
+# 只是跟 max_steps_shrink_threshold 對齊寫法,值本身就是類別預設。
 #
 # 兩個 conv 層的 chunk_size 從 baseline 的 1 改成 4:chunk_size=1 時
 # spike_step_upper_bound 算出來的 min_steps_needed 數學上恆等於 L
@@ -46,6 +51,7 @@ model:
       init_k: 5.0
       L_grow_factor: 1.5
       out_grow_factor: 1.5
+      out_shrink_threshold: 0.5
       max_steps_grow_factor: 1.5
       max_steps_shrink_threshold: 0.5
     - type: conv
@@ -63,6 +69,7 @@ model:
       init_k: 5.0
       L_grow_factor: 1.5
       out_grow_factor: 1.5
+      out_shrink_threshold: 0.5
       max_steps_grow_factor: 1.5
       max_steps_shrink_threshold: 0.5
     - type: fc

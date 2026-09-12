@@ -60,15 +60,16 @@
   (`_run_layer_scan` 內部已有 `pointer`,`run_layer_forward` 目前沒往外傳),
   照現在 `L` 出界一樣的方式處理(退回 checkpoint、用當下權重重算、重編譯、
   續跑)。「數學上界當主力、出界重試當安全網」,不是純粹憑感覺猜一個數字。
-- **`max_out_spikes` 接上 `spike_step_upper_bound` 的 `m*`(上一項的後續,
-  優先度較低,先擱置)。** 洞見見 [`問題紀錄.md`](問題紀錄.md)「§十三」:
-  `m*`(`core.py` 的 `spike_step_upper_bound` 內部算的量)本身就是「這顆神經
-  元最多 fire 幾次」的證明上界,一層加總起來理論上就是 `max_out_spikes`
-  該有的上界,跟 `max_steps` 是同一個數學量,只是這次只把它接到 `max_steps`
-  (`T`),`max_out_spikes` 還是舊的純被動成長(`_grow`),也還沒有縮小路徑。
-  之後要做:`spike_step_upper_bound` 把 `m*` 也回傳出來,`ConvLayer.forward`
-  加總當這批的 `max_out_spikes` 上界,比照 `max_steps` 接上長大安全網 +
-  縮小重估。
+- ~~`max_out_spikes` 接上 `spike_step_upper_bound` 的 `m*`~~ **已嘗試、已撤
+  回,不要再做。** 洞見見 [`問題紀錄.md`](問題紀錄.md)「§十三」「§十四」:
+  `Σm*_i`(推論5)數學上是有效上界沒錯,但在這個專案實際權重規模
+  (`init_k=5.0` 量級跟門檻相近甚至更小)下鬆到離譜——實測某 batch 算出
+  90185,真實峰值只有 21706,把幾乎整份出界測試矩陣打壞成「一開始就誤判出
+  界重來」。`max_steps` 用的 `T=m*+⌈(L-m*)/chunk_size⌉` 沒有這個問題(對
+  `m*` 的敏感度被 `chunk_size` 打折、又天生封頂在 `L`),但 `Σm*_i` 是把已經
+  鬆的量對 N 顆神經元線性加總,沒有任何上限,兩者不能類比。`max_out_spikes`
+  該用的一直是 `n_out_spikes`(真實觀察值),不需要也不該借用 `max_steps`
+  的機制。
 - **`example/metrics_log.py` 沒跟上 `max_steps` 這個新容量旋鈕,而且現有排版
   本來就擠。** `ConvLayer` 這次多了 `max_steps` 欄位(第三個會出界的容量,
   見上面「`max_steps` 與 `chunk_size` 脫鉤」那條),但 `MetricsLog` 完全沒

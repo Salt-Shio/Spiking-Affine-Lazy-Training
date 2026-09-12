@@ -40,7 +40,8 @@ __all__ = ["N_CLASSES", "build_network", "build_decoder", "ConvNetCompressed"]
 # 原樣傳,讓層類別自己 TypeError。
 _LAYER_INT_FIELDS = ("chunk_size", "L", "max_out_spikes", "max_steps")
 _LAYER_FLOAT_FIELDS = ("tau", "v_th", "alpha", "init_k", "L_grow_factor", "out_grow_factor",
-                       "max_steps_grow_factor", "max_steps_shrink_threshold")
+                       "max_steps_grow_factor", "max_steps_shrink_threshold",
+                       "out_shrink_threshold")
 
 
 def _coerce_layer_opts(e: dict) -> dict:
@@ -69,8 +70,8 @@ def build_network(model_cfg: dict) -> list:
         - 其餘 key(`tau` / `v_th` / `alpha` / `chunk_size` / `L` /
           `max_out_spikes` / `max_steps` / `init_k` / `L_grow_factor` /
           `out_grow_factor` / `max_steps_grow_factor` /
-          `max_steps_shrink_threshold`)直接當關鍵字傳給層類別,沒填就吃類別
-          預設(見 `salt_core.layers`)。
+          `max_steps_shrink_threshold` / `out_shrink_threshold`)直接當關鍵字
+          傳給層類別,沒填就吃類別預設(見 `salt_core.layers`)。
         - `name` 選填,沒填自動 `conv1` / `conv2` / ... / `fc1` / ...。
 
     config 的格式 / key 命名 / 版本管理是開發者的事:entry 少了必填 key、或

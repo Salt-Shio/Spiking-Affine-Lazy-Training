@@ -108,6 +108,13 @@ class Layer(Protocol):
         整個 epoch 累積的觀察值,不是單一 batch 的 `LayerDiag`。"""
         ...
 
+    def shrink_max_out_spikes(self, observed: int) -> "Layer":
+        """跟 `shrink_max_steps` 同一套規則,縮的旋鈕換成 `max_out_spikes`,
+        `observed` 是這個 epoch 裡所有真實 batch 觀察到的 `LayerDiag.
+        n_out_spikes` 最大值(真實觀察值,不是理論上界)。沒有可縮欄位的層
+        (例如 FC)原樣傳回自己。"""
+        ...
+
 
 def _grow(observed: int, current: int, factor: float) -> int:
     """容量放大:放大到蓋過觀測值,再上浮 factor 倍留餘裕。對齊原
@@ -156,6 +163,13 @@ class ConvLayer:
     max_out_spikes: int = 8192
     L_grow_factor: float = 1.5
     out_grow_factor: float = 1.5
+    # max_out_spikes 縮小門檻(比照 max_steps_shrink_threshold):候選值要掉到
+    # 現在 max_out_spikes 的這個比例以下才值得縮。長大/縮小共用同一個
+    # out_grow_factor 公式(ceil(觀察值 * factor)),真實需求沒變時兩次算出來的
+    # 目標值相等,天然防震盪,道理跟 max_steps_grow_factor 一樣。跟 max_steps
+    # 縮小的差別:這裡吃的是真實觀察值 n_out_spikes,不是任何理論上界(見
+    # docs/問題紀錄.md 第十四節,為什麼 max_out_spikes 不能用 m*)。
+    out_shrink_threshold: float = 0.5
     # 跟 L 脫鉤的掃描步數上界(見 docs/math/掃描步數上界推導.md)。`None`
     # (預設)代表「沒特別設起始猜測」,`__post_init__` 落到 `self.L`,對齊這個
     # 欄位存在之前的行為(safe fallback,永遠夠用)——這是給**沒有經過**
@@ -327,6 +341,26 @@ class ConvLayer:
             return self
         return replace(self, max_steps=candidate)
 
+    def shrink_max_out_spikes(self, observed: int) -> "ConvLayer":
+        """`max_out_spikes` 的選擇性縮小路徑,規則跟 `shrink_max_steps` 逐項對應
+        (見 docs/規格書.md「conv 層 max_steps」)。跟 `max_steps` 唯一的差別:
+        這裡吃的是真實觀察值(`LayerDiag.n_out_spikes`),不是任何理論上界——
+        `max_out_spikes` 出界是「真實資料裝不下」的被動事實,不像 `max_steps`
+        非得靠證明過的上界不可(見 docs/問題紀錄.md 第十四節)。
+
+        `observed`:這個 epoch 裡,所有真實 batch 的 `LayerDiag.n_out_spikes`
+        取過的最大值——不是探測批,是這個 epoch 真正跑過的訓練資料。
+
+        候選值用跟 `grown_to_fit` 同一個公式算(`ceil(observed *
+        out_grow_factor)`),真實需求沒變時兩次算出來的目標值會相等,天然不會
+        縮,不用另外湊參數防震盪。候選值還要掉到現在 `max_out_spikes` 的
+        `out_shrink_threshold` 比例以下才真的縮。都沒過就原樣傳回(同一個
+        物件,不觸發重編譯)。"""
+        candidate = _grow(observed, 0, self.out_grow_factor)
+        if candidate >= self.max_out_spikes * self.out_shrink_threshold:
+            return self
+        return replace(self, max_out_spikes=candidate)
+
 
 @dataclass(frozen=True)
 class FCLayer:
@@ -423,6 +457,10 @@ class FCLayer:
     def shrink_max_steps(self, observed: int) -> "FCLayer":
         # 沒有獨立的 max_steps 欄位(積分步數是上一層輸出容量現算的,見
         # _run_forward 的 scan_steps),沒東西可以縮。
+        return self
+
+    def shrink_max_out_spikes(self, observed: int) -> "FCLayer":
+        # 沒有獨立的 max_out_spikes 欄位(輸出容量固定是 n_out),沒東西可以縮。
         return self
 
 
