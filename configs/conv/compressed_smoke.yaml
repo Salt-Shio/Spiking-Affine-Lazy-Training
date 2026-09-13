@@ -60,7 +60,5 @@ train:
                                   # 還能正常繼續、checkpoint 邏輯不會卡住。
   batch_size: 4
   seed: 42
-  probe_every: 1                 # 逐步軌跡探測(0 = 關):每幾個 epoch 對固定的前
-  probe_samples: 4               # probe_samples 筆 train 樣本跑 run_network_traced,
-  probe_full_every: 2            # 摘要疊進 traces/summary.npz;每 probe_full_every 個
-  probe_full_samples: 1          # epoch 另存 probe_full_samples 筆的完整 (n, max_steps) 陣列。
+  weight_snapshot_every: 1        # 逐 epoch 權重快照(0 = 關):每幾個 epoch 存一份純權重
+                                   # 到 weights/epoch_XXX.npz,給事後分析工具用。

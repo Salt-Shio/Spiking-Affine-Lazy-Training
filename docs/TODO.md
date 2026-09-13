@@ -22,14 +22,20 @@
   `salt_core/monitor.py`(逐層 `(n, max_steps)`:reset 後膜電位、是否 spike、`s_value`、
   對到的真實毫秒;forward-only、`stop_gradient`;`chunk_scan` 抽共用 scan 內核,
   `run_layer_forward` 逐位元不變)。測試 `test_dormant.py` / `test_monitor.py`。
-  `example` 消費端(訓練側 + 讀端)已完成:`example/trace_probe.py` 的 `TraceProbe`
-  週期性對固定前 K 筆 train 樣本跑 `run_network_traced`,逐神經元摘要疊進
-  `experiments/<run>/traces/summary.npz`、每隔幾個 epoch 另存
-  `full_epoch_XXX.npz`(完整 `(S, n, max_steps)`);`train.probe_every > 0` 才開。
-  `example/inspect_traces.py` 讀 `traces/`:休眠曲線(重用 `dormant_score`)、
-  整段沒醒的神經元、單神經元波形。測試 `test_trace_probe.py` / `test_inspect_traces.py`。
-  未完成:`eval_test.py` 加同一套 `--trace`(共用 dump 函式);`metrics.csv` 要不要多寫
-  欄位等 ReDo 準則定案再決定(§7.3);§7.3 的 dormant / ReDo 逐神經元活動來源串 ReDo 時再定。
+  **`example` 消費端 2026-09-13 整段改版**(見 [`監測規格.md`](監測規格.md) §7):
+  原本的 `example/trace_probe.py`(週期性探測、`summary.npz`/`full_epoch_XXX.npz`)、
+  `example/inspect_traces.py`、`example/notebooks/plot_channel_grid.ipynb` 已移除
+  ——`summary.npz` 的 `s_value_sum` 證明恆等於 `spike_count`(純重複),
+  `full_epoch_XXX.npz` 在 `chunk_size>1` 的層上會不可逆遺失逐事件細節。改成
+  `train_conv_compressed.py` 逐 epoch 存純權重快照(`train.weight_snapshot_every`)
+  +`example/replay_epoch.py` 事後強制 `chunk_size=1` 重跑 `run_network_traced`
+  (forward 結果跟 `chunk_size` 無關,逐位元相同,所以能拿到精確結果)。測試
+  `example/tests/test_replay_epoch.py`。
+  未完成:`eval_test.py` 加同一套 `--trace` 已確認不必要(`replay_epoch.py` 已經是
+  那個獨立分析工具,見監測規格 §7.3);`metrics.csv` 要不要多寫欄位等 ReDo 準則
+  定案再決定;§7.3 的 dormant / ReDo 逐神經元活動來源串 ReDo 時再定——監測規格
+  §7 已指出這個來源不能沿用 `replay_epoch.py`(頻率太低、非熱路徑),ReDo 真的要做
+  需要全新的逐神經元、但夠便宜塞進熱訓練迴圈的活動量設計。
 - ~~monitor 這批 code 要做一次結構重整(功能正確,但寫得急)~~ **已處理
   (2026-09-11)**:對照原列的 7 個難聞點逐一確認,6 個是具體技術債,已在這次
   trace 摘要邏輯收進 `salt_core/monitor.py`(§1)、`trace_store.py` 併入(§2)那批
@@ -44,48 +50,29 @@
   `trace_probe`/`inspect_traces` 五個檔)回頭看是 [`監測規格.md`](監測規格.md)
   §4.1 三 package 分工的自然結果,不是缺陷,不用併。`epochs` 印成
   `[np.int32(0), ...]` 的小 bug 也已用 `.tolist()` 修掉。
-- **`max_steps` 與 `chunk_size` 脫鉤(conv 層)。目前最優先。** `ConvLayer.__call__`
-  傳 `max_steps=self.L`,不看 `chunk_size`;FC 層已用
-  `ceil(輸入流長度 / chunk_size)`。現在 conv `chunk_size=1` 沒差,一調大就無效
-  ——`lax.scan` 不能提前退出,會 fire 的層最壞情況(每個事件都 fire)強制
-  `max_steps=L`,`chunk_size>1` 只是每步做更多事、步數不變(負優化)。
-  **數學推導(不是猜)見 [`math/掃描步數上界推導.md`](math/掃描步數上界推導.md)**:
-  用「進入任一事件前 $V<v_{th}$」的不變量證明「能 fire 的事件必要條件是
-  $b_i>0$」,推出比 $L$ 更緊的 spike 數上界 $m^*=\min(m,\lfloor S/v_{th}\rfloor)$
-  (數正負號 vs 用權重大小/門檻算能量預算,取更緊的),進而得到步數上界
-  $T\le m^*+\lceil(L-m^*)/\text{chunk\_size}\rceil$。實作規劃:建構層物件時用
-  初始權重算一次 $m^*$ 當起點;每次 `grown_to_fit` 的檢查點(`L` 變或想重估)
-  重算一次;中途權重正負號翻轉導致上次估的 `max_steps` 不夠(佇列在
-  `max_steps` 步內沒被吃完)時,新增一個「佇列有沒有吃完」的診斷訊號
-  (`_run_layer_scan` 內部已有 `pointer`,`run_layer_forward` 目前沒往外傳),
-  照現在 `L` 出界一樣的方式處理(退回 checkpoint、用當下權重重算、重編譯、
-  續跑)。「數學上界當主力、出界重試當安全網」,不是純粹憑感覺猜一個數字。
+- ~~`max_steps` 與 `chunk_size` 脫鉤(conv 層)~~ **已處理(2026-09-12)**:完整
+  數學推導見 [`math/掃描步數上界推導.md`](math/掃描步數上界推導.md),實作/
+  決策見 [`規格書.md`](規格書.md)「conv 層 `max_steps`」。
 - ~~`max_out_spikes` 接上 `spike_step_upper_bound` 的 `m*`~~ **已嘗試、已撤
-  回,不要再做。** 洞見見 [`問題紀錄.md`](問題紀錄.md)「§十三」「§十四」:
-  `Σm*_i`(推論5)數學上是有效上界沒錯,但在這個專案實際權重規模
-  (`init_k=5.0` 量級跟門檻相近甚至更小)下鬆到離譜——實測某 batch 算出
+  回,不要再做**,但 `max_out_spikes` 的縮小本身**已用另一條路做出來
+  (2026-09-12)**:直接吃真實觀察值 `n_out_spikes`(跟長大訊號同一個量,
+  只是取 epoch 累積最大值),不靠任何理論上界,見 `ConvLayer.
+  shrink_max_out_spikes`。洞見見 [`問題紀錄.md`](問題紀錄.md)「§十三」
+  「§十四」:`Σm*_i`(推論5)數學上是有效上界沒錯,但在這個專案實際權重
+  規模(`init_k=5.0` 量級跟門檻相近甚至更小)下鬆到離譜——實測某 batch 算出
   90185,真實峰值只有 21706,把幾乎整份出界測試矩陣打壞成「一開始就誤判出
-  界重來」。`max_steps` 用的 `T=m*+⌈(L-m*)/chunk_size⌉` 沒有這個問題(對
-  `m*` 的敏感度被 `chunk_size` 打折、又天生封頂在 `L`),但 `Σm*_i` 是把已經
-  鬆的量對 N 顆神經元線性加總,沒有任何上限,兩者不能類比。`max_out_spikes`
-  該用的一直是 `n_out_spikes`(真實觀察值),不需要也不該借用 `max_steps`
-  的機制。
-- **`example/metrics_log.py` 沒跟上 `max_steps` 這個新容量旋鈕,而且現有排版
-  本來就擠。** `ConvLayer` 這次多了 `max_steps` 欄位(第三個會出界的容量,
-  見上面「`max_steps` 與 `chunk_size` 脫鉤」那條),但 `MetricsLog` 完全沒
-  更新去接:`start_epoch`/`record_batch` 的 `_obs` 只累積 `queue`/`out`
-  兩欄,沒有 `steps`;`finish_epoch` 組的 row 只有 `{name}_L`/`{name}_max_out`,
-  沒有 `{name}_max_steps`,`min_steps_needed` 的批次觀察值也沒被記錄,`.csv`
-  自然也沒有這欄;`_print_progress` 的 `cap_str` 跟 `print_summary` 都只印
-  `L`/`max_out_spikes`,看不到 `max_steps` 現在是多少、用量多接近它。
-  同時 `_print_progress`(`example/metrics_log.py`)現在這行本身已經很擠——
-  一行塞 loss/val_acc/每層兩個容量(逗號分隔跟空白分隔混用)/每層 firing
-  rate/dormant,越後面的欄越難掃到,直接照抄現有格式再加一個 `max_steps`
-  只會更難讀,要重新想排版(例如每層一個容量小區塊、或分行),不是單純加
-  一段字串接上去。 現在 `grown_to_fit` 只單向長大。fire rate 訓練中
-  單調下降 → 下游事件變少 → `max_real_queue` 掉,L 有收縮空間(偵測訊號現成)。要做成
-  有 hysteresis 的啟發式(連續 N epoch `max_real_queue < L × 比例` 才縮一階),否則縮完
-  又要長回來 = thrash + 重編譯。
+  界重來」,已完全撤除。
+- ~~`example/metrics_log.py` 沒跟上 `max_steps` 這個新容量旋鈕,而且現有排版
+  本來就擠~~ **已處理(2026-09-12)**:`_obs`/CSV/`_print_progress`/
+  `print_summary` 都補上 `max_steps` 的追蹤;`_print_progress` 改成每層一行、
+  固定 `已用/容量(百分比)` 格式,`L`/`out`/`steps` 換成中文標籤(`佇列`/
+  `輸出spike`/`掃描步數`),不再逗號空白混用擠成一行。
+- **`L` 目前仍只長不縮。** firing rate 訓練中單調下降(見
+  [`問題紀錄.md`](問題紀錄.md)第十節)→ 下游事件變少 → `max_real_queue`
+  掉,`L` 理論上有收縮空間,偵測訊號(`max_real_queue`)現成。要做成有
+  hysteresis 的啟發式(連續 N epoch `max_real_queue < L × 比例` 才縮一階),
+  否則縮完又要長回來 = thrash + 重編譯。優先度低,`max_steps`/
+  `max_out_spikes` 都已經有縮小路徑,`L` 是唯一還沒有的。
 - **`example/` 單元測試覆蓋缺口。** `example/tests/` 只有一個 e2e 檔
   (`test_train_conv_compressed.py`);`metrics_log` / `checkpoint` / `run_epochs` /
   `build_network` / `build_decoder` / `dormant` / `verify_init_k` 都沒單元測試。
@@ -95,6 +82,32 @@
   一件事的兩半。低優先。
 - **`docs/math/` 幾份推導文件還有前身時代的殘留**:`D:\...` 絕對路徑、`event_lif/`
   舊資料夾名、指向已廢棄 firing-rate 準則的段落。要清一輪。
+- **`metrics.csv` 欄名對人不友善,`_print_progress` 的可讀格式沒同步進檔案。**
+  開發 `viz`/`example/notebooks/plot_metrics.ipynb`(2026-09-13)時發現:
+  `MetricsLog._print_progress` 已經把 `conv1_obs_queue`/`conv1_L` 這類欄位轉成
+  中文標籤 + `已用/容量(百分比)` 格式印給人看,`finish_epoch` 組進 csv 的 row
+  卻還是原始程式碼欄名,兩邊沒對齊。要改的話會動到 `example/metrics_log.py`
+  的欄名(訓練側程式碼),連帶 `example/notebooks/plot_metrics.ipynb` 現在照
+  欄名字尾(`_L`/`_max_out`/`_firing_rate`/...)分組的 `group_metrics_columns`
+  要跟著改——這次只做了 viz 讀取端,沒動這塊。
+- **`act_p90p10`(`salt_core/dormant.py` 的 `dormant_score`)可以拔掉。** 定義
+  是 `p90/p10`,`p10 == 0` 時直接回傳 `inf`(`dormant.py:48`);畫成 `metrics.csv`
+  的訓練曲線後發現這條線幾乎每個 epoch 都是 `inf`,只有零星幾個 epoch 有限,
+  實務上沒有訊息量。要拔的話要一併清 `dormant_score` 的回傳欄、
+  `dormant_report`、`MetricsLog`(`_dormant`/csv 欄)、
+  `example/notebooks/plot_metrics.ipynb` 的分組清單,還有對應的測試斷言
+  (`example/inspect_traces.py` 原本也印這欄,已在 2026-09-13 隨監測規格
+  §7 改版移除)。
+- **部分視覺化呼叫端程式碼,是不是本來就該用 notebook 處理,要評估。**
+  `example/plot_metrics.py`(讀 csv、分組、呼叫 `viz` 畫圖)已經整支搬進
+  `example/notebooks/plot_metrics.ipynb`,不再是可以被 pytest 測的獨立模組
+  (2026-09-13 討論定案:呼叫端邏輯直接寫在 notebook cell 裡,不留一份可測試的
+  `.py`)。這是刻意的取捨,不是疏漏,但代表這類「一次性呼叫、給人看」的程式碼
+  跟平常要求的單元測試覆蓋率有衝突,還沒有明確原則判斷「這段邏輯該留在
+  `example/*.py`(可測試)還是該進 notebook(互動、不測試)」,之後接觸更多
+  視覺化工具會持續碰到,要找時間定一個判準。(原本設想的 `traces/` 那兩種
+  資料性質——`summary.npz`/`full_epoch_XXX.npz`——2026-09-13 已經整個移除,
+  見監測規格 §7;這個判準問題留給以後其他視覺化工具碰到時再定案。)
 
 ## 開放題(往下走才需要)
 

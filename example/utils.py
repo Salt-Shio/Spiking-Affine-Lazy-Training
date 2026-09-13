@@ -11,16 +11,19 @@
   現在收進同一份函式。
 - `load_run_record`/`rebuild_layers`/`load_run_params`:從 `exp_dir` 重建
   一次訓練 run 的 layers/params,原本是 `eval_test.py` 私有的
-  `_load_run_record`/`_rebuild_layers`/`_load_params`,`監測規格.md` §7.3
-  就寫好「等第二個消費者出現再搬」——`example/notebooks/plot_channel_grid.ipynb`
-  (讀 conv 層幾何做空間圖)是第二個消費者,搬過來共用。
+  `_load_run_record`/`_rebuild_layers`/`_load_params`,現在給任何要重建
+  layer 幾何/權重的呼叫端共用(例如逐 epoch 重跑 traced forward 的分析工具)。
+- `weight_snapshot_path`:`experiments/<run>/weights/epoch_XXX.npz` 的命名
+  慣例——訓練那邊(`train_conv_compressed.py`)週期性寫,事後分析工具讀,
+  兩邊靠這個函式對齊路徑,不是各自重複拼字串。
 
-`TRAIN_DIRNAME`/`TRACES_DIRNAME`/`EVAL_DIRNAME`:`experiments/<run>/` 底下
+`TRAIN_DIRNAME`/`WEIGHTS_DIRNAME`/`EVAL_DIRNAME`:`experiments/<run>/` 底下
 三個子資料夾的名字——訓練產物(`run.yaml`/`metrics.csv`/`checkpoint.npz`/
-`params.npz`/`best_params.npz`)、`trace_probe.py` 的週期性探測、
-`eval_test.py`/`plot_eval.py` 的事後評估,各自獨立一個資料夾。寫的一邊
-(`train_conv_compressed.py`)跟讀的一邊(`eval_test.py`/`plot_eval.py`/
-測試)都從這裡拿名字,不是各自重複寫字串常數,才不會兩邊漂移。
+`params.npz`/`best_params.npz`)、逐 epoch 權重快照(給事後重跑 forward 的
+分析工具用,見 `docs/監測規格.md`)、`eval_test.py`/`plot_eval.py` 的事後
+評估,各自獨立一個資料夾。寫的一邊(`train_conv_compressed.py`)跟讀的一邊
+(`eval_test.py`/`plot_eval.py`/測試)都從這裡拿名字,不是各自重複寫字串
+常數,才不會兩邊漂移。
 """
 import dataclasses
 import os
@@ -37,7 +40,7 @@ from salt_core.layers import ConvLayer
 from example.models.conv_net import build_network
 
 TRAIN_DIRNAME = "train"
-TRACES_DIRNAME = "traces"
+WEIGHTS_DIRNAME = "weights"
 EVAL_DIRNAME = "eval"
 
 
@@ -81,6 +84,15 @@ def load_params_npz(path: str, layers: list) -> tuple:
     """`save_params_npz` 的反函式:讀回對齊 `layers` 的位置 tuple。"""
     data = np.load(path)
     return tuple(data[layer.name] for layer in layers)
+
+
+def weight_snapshot_path(weights_dir: str, epoch: int) -> str:
+    """`experiments/<run>/weights/epoch_XXX.npz` 的路徑命名慣例(不含 optimizer
+    state,格式跟 `params.npz`/`best_params.npz` 一樣是 `save_params_npz` 存的
+    純權重)——訓練那邊每 `train.weight_snapshot_every` 個 epoch 存一份,事後
+    要精確重現某個 epoch 當下的 forward(例如強制 `chunk_size=1` 重跑
+    `run_network_traced` 拿逐事件軌跡)就讀對應的這一份。"""
+    return os.path.join(weights_dir, f"epoch_{epoch:03d}.npz")
 
 
 def load_run_record(exp_dir: str) -> dict:

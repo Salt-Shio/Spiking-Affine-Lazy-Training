@@ -55,7 +55,7 @@ from example.models.conv_net import ConvNetCompressed, build_network
 from example.paths import CONFIGS_DIR, EXPERIMENTS_DIR
 from example.checkpoint import Checkpointer
 from example.train_conv_compressed import train
-from example.utils import TRACES_DIRNAME, TRAIN_DIRNAME
+from example.utils import TRAIN_DIRNAME, WEIGHTS_DIRNAME, weight_snapshot_path
 
 # 這份 e2e 測試會呼叫真正的 train(),每個案例吐一個 conv_compressed_*_<時間戳>
 # 目錄。全部關進 experiments/TEST_TEMP,而且「一次只留最後一批」——模組載入
@@ -430,9 +430,9 @@ def test_end_to_end_smoke_produces_expected_artifacts():
                   "params.npz"):
         assert os.path.isfile(os.path.join(exp_dir, TRAIN_DIRNAME, fname)), f"缺少 train/{fname}"
 
-    # compressed_smoke.yaml 有開 probe_every -> traces/ 該有東西
-    assert os.path.isfile(os.path.join(exp_dir, TRACES_DIRNAME, "summary.npz")), "缺少 traces/summary.npz"
-    assert os.path.isfile(os.path.join(exp_dir, TRACES_DIRNAME, "full_epoch_000.npz")), "缺少 traces/full_epoch_000.npz"
+    # compressed_smoke.yaml 有開 weight_snapshot_every=1 -> weights/ 每個 epoch 都該有一份
+    weights_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
+    assert os.path.isfile(weight_snapshot_path(weights_dir, 0)), "缺少 weights/epoch_000.npz"
 
     rows = _read_metrics_csv(exp_dir)
     assert len(rows) > 0

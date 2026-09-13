@@ -78,6 +78,37 @@ def test_render_empty_images_raises():
         raise AssertionError("預期 render([]) 要拋 ValueError")
 
 
+def test_render_bool_image_uses_two_value_colorbar():
+    img = np.array([[True, False], [False, True]])
+
+    fig = ImageGridPlot(ncols=1).render([img])
+
+    cbar_axes = [ax for ax in fig.axes if ax.get_label() == "<colorbar>"]
+    assert len(cbar_axes) == 1
+    assert [t.get_text() for t in cbar_axes[0].get_yticklabels()] == ["False", "True"]
+
+
+def test_render_float_image_with_only_zero_one_values_uses_two_value_colorbar():
+    # chunk_size=1 時 s_value 的 forward 數值恆為 0.0/1.0(見
+    # example/notebooks/plot_full_epoch_animation.ipynb 的說明)——判斷依值域,
+    # 不依 dtype,float 陣列只要值域是 {0,1} 也要走離散色階。
+    img = np.array([[0.0, 1.0], [1.0, 0.0]])
+
+    fig = ImageGridPlot(ncols=1).render([img])
+
+    cbar_axes = [ax for ax in fig.axes if ax.get_label() == "<colorbar>"]
+    assert [t.get_text() for t in cbar_axes[0].get_yticklabels()] == ["False", "True"]
+
+
+def test_render_continuous_image_keeps_default_colorbar():
+    img = np.array([[0.1, 0.5], [0.9, 1.0]])
+
+    fig = ImageGridPlot(ncols=1).render([img])
+
+    cbar_axes = [ax for ax in fig.axes if ax.get_label() == "<colorbar>"]
+    assert [t.get_text() for t in cbar_axes[0].get_yticklabels()] != ["False", "True"]
+
+
 TESTS = [
     test_unflatten_channels_matches_channel_major_order,
     test_unflatten_channels_wrong_length_raises,
@@ -85,6 +116,9 @@ TESTS = [
     test_render_without_titles_defaults_to_blank,
     test_render_mismatched_titles_length_raises,
     test_render_empty_images_raises,
+    test_render_bool_image_uses_two_value_colorbar,
+    test_render_float_image_with_only_zero_one_values_uses_two_value_colorbar,
+    test_render_continuous_image_keeps_default_colorbar,
 ]
 
 if __name__ == "__main__":

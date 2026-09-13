@@ -265,7 +265,7 @@ class ConvLayer:
             w, in_stream, trace=True)
         event_ms = resolve_ms_compressed(
             pointer_steps, cq.local_to_global_j, cq.n_real_events, in_stream.event_times)
-        trace = LayerForwardTrace(spike_mask=result.spike_mask, s_value=result.s_value,
+        trace = LayerForwardTrace(spike_mask=result.spike_mask,
                                    v_steps=v_steps, event_ms=event_ms)
         return out_stream, trace
 
@@ -445,7 +445,7 @@ class FCLayer:
         n_real = jnp.broadcast_to(
             jnp.asarray(in_stream.n_real_events, jnp.int32), (self.n_out,))
         event_ms = resolve_ms_dense(pointer_steps, n_real, in_stream.event_times)
-        trace = LayerForwardTrace(spike_mask=result.spike_mask, s_value=result.s_value,
+        trace = LayerForwardTrace(spike_mask=result.spike_mask,
                                    v_steps=v_steps, event_ms=event_ms)
         return out_stream, trace
 

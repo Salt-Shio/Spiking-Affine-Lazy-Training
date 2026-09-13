@@ -54,10 +54,10 @@ from example.checkpoint import Checkpointer
 from salt_core.dormant import dormant_report
 from example.metrics_log import MetricsLog
 from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
-from example.trace_probe import TraceProbe
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR, REPO_ROOT, resolve_config
-from example.utils import (TRACES_DIRNAME, TRAIN_DIRNAME, get_git_commit_hash,
-                           make_evaluate, save_params_npz, set_seed)
+from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, get_git_commit_hash,
+                           make_evaluate, save_params_npz, set_seed,
+                           weight_snapshot_path)
 
 
 def load_config(path: str) -> dict:
@@ -184,7 +184,7 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
                shuffle_key, start_epoch: int, total_epochs: int,
                train_split, val_split, batch_size: int, probe_batch,
                metrics_log, checkpointer, best: Best,
-               trace_probe: "TraceProbe | None" = None,
+               weights_dir: str | None = None, weight_snapshot_every: int = 0,
                max_steps_reestimate_every: int = 1) -> EpochsOutcome:
     """跑 `[start_epoch, total_epochs)` 的訓練迴圈。
 
@@ -207,7 +207,7 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
     修正錯誤,跟出界的處理理由不同,但重編譯這件事借用同一條路。
 
     每個成功 epoch:val 評估 → 更新 `best` → `metrics_log.finish_epoch` →
-    `checkpointer.save` → 縮小檢查。
+    `checkpointer.save` → 權重快照(`weight_snapshot_every>0` 才存)→ 縮小檢查。
     """
     n_train = train_split.labels.shape[0]
     n_batches = max(1, n_train // batch_size)
@@ -258,9 +258,13 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
         checkpointer.save(params=params, opt_state=opt_state,
                           shuffle_key=shuffle_key, epoch=epoch)
 
-        # 逐步軌跡探測(forward-only、另一個編譯目標,不影響上面的訓練熱路徑)。
-        if trace_probe is not None and trace_probe.due(epoch):
-            trace_probe.run(layers, params, epoch)
+        # 逐 epoch 權重快照(純權重,不含 optimizer state):給事後分析工具用
+        # (例如強制 chunk_size=1 重跑 run_network_traced 拿逐事件精確軌跡,
+        # 見 docs/監測規格.md)。跟 checkpointer 的 checkpoint.npz 是兩回事——
+        # checkpoint.npz 只為了續練,每個 epoch 覆寫;這裡逐 epoch 各自保留
+        # 一份,才能事後回頭看任何一個存過的 epoch。
+        if weight_snapshot_every > 0 and epoch % weight_snapshot_every == 0:
+            save_params_npz(weight_snapshot_path(weights_dir, epoch), layers, params)
 
         # 縮小檢查:只在這個 epoch 真正成功跑完、checkpoint 也存完之後才問,
         # 用的是這個 epoch 累積的真實觀察值,不是探測批。
@@ -283,8 +287,8 @@ def _make_exp_dir(run_name: str, exp_root=EXPERIMENTS_DIR) -> str:
     `experiments/TEST_TEMP` 進來,把測試產物跟正式 run 隔開。
 
     只在這裡先建 `train/`(訓練產物每個 epoch 都要寫,是唯一保證一定會用到
-    的子資料夾)。`traces/`(`TraceProbe`)、`eval/`(`eval_test.py`)是條件式
-    的,各自的消費者第一次要寫的時候自己建。"""
+    的子資料夾)。`weights/`(逐 epoch 權重快照)、`eval/`(`eval_test.py`)是
+    條件式的,各自的消費者第一次要寫的時候自己建。"""
     date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     exp_dir = os.path.join(exp_root, f"conv_compressed_{run_name}_{date_str}")
     os.makedirs(os.path.join(exp_dir, TRAIN_DIRNAME), exist_ok=True)
@@ -333,20 +337,13 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
 
     exp_dir = _make_exp_dir(run_name, exp_root)
 
-    # 逐步軌跡探測(docs/監測規格.md §6/§7):train.probe_every > 0 才開,對固定的
-    # 前 K 筆 train 樣本週期性跑 run_network_traced,dump experiments/<run>/traces/。
-    trace_probe = None
-    probe_every = int(train_cfg.get("probe_every", 0))
-    if probe_every > 0:
-        k_trace = min(int(train_cfg.get("probe_samples", 8)), data_cfg["train_size"])
-        trace_probe = TraceProbe(
-            traces_dir=os.path.join(exp_dir, TRACES_DIRNAME),
-            probe_batch=(train_split.event_times[:k_trace], train_split.x[:k_trace],
-                         train_split.y[:k_trace], train_split.c[:k_trace],
-                         train_split.n_real_events[:k_trace]),
-            every=probe_every, total_epochs=train_cfg["epochs"],
-            full_every=int(train_cfg.get("probe_full_every", 0)),
-            full_samples=int(train_cfg.get("probe_full_samples", 2)))
+    # 逐 epoch 權重快照(docs/監測規格.md):train.weight_snapshot_every > 0 才開。
+    # 只存純權重(save_params_npz,跟 params.npz 同格式),不含 optimizer state——
+    # 事後要精確重現某個 epoch 當下的 forward,只需要權重,不需要訓練狀態。
+    weight_snapshot_every = int(train_cfg.get("weight_snapshot_every", 0))
+    weights_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
+    if weight_snapshot_every > 0:
+        os.makedirs(weights_dir, exist_ok=True)
     # checkpoint 每個 epoch 覆蓋寫一份最新的;出界就退回它重編譯續練。
     # exp_dir 每次新目錄,所以 checkpointer.exists() 等價於「這次 run 存過沒」:
     # 沒存過就出界 -> 退回訓練最初始狀態(同一顆 seed 重新 init)。
@@ -385,7 +382,7 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
             train_split=train_split, val_split=val_split, batch_size=batch_size,
             probe_batch=probe_batch,
             metrics_log=metrics_log, checkpointer=checkpointer, best=best,
-            trace_probe=trace_probe,
+            weights_dir=weights_dir, weight_snapshot_every=weight_snapshot_every,
             max_steps_reestimate_every=int(train_cfg.get("max_steps_reestimate_every", 1)))
 
         best = outcome.best

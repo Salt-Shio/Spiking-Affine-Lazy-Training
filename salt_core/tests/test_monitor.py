@@ -1,12 +1,19 @@
 """salt_core 逐步軌跡監測(docs/監測規格.md §6)的測試。
 
-三層:
+四層:
 
 - `run_layer_forward_traced` vs `run_layer_forward`:同參數下 `LayerForwardResult`
   五欄逐位元相同(共用 scan 內核),`v_steps` 的最後一欄膜電位 == `v_final`。
 - `resolve_ms_*`:掃描步指標 -> 真實毫秒的還原,手算小例子 + 空轉步 = nan。
 - `ConvLayer.forward_traced` / `FCLayer.forward_traced` / `run_network_traced`:
   輸出事件流跟 `forward` 一致、`LayerForwardTrace` 形狀對、`stop_gradient` 生效。
+- `summarize_trace_scalars`:純歸約函式,手算小例子 + 非有限值計數。
+
+`LayerForwardTrace` 2026-09-13 拔掉 `s_value` 欄位(這個架構下 forward 數值
+恆等於 `spike_mask`,而且整條 trace 本身已經 `stop_gradient`,留著沒有實際
+資訊量,見 `salt_core/monitor.py` 開頭說明);`summarize_trace`/`pack_key`/
+`unpack_key`/`layer_names` 隨同一批改動一併移除(唯一呼叫端 `example/
+trace_probe.py` 已刪除)。
 """
 import jax
 import jax.numpy as jnp
@@ -16,10 +23,8 @@ from salt_core.chunk_scan import run_layer_forward, run_layer_forward_traced
 from salt_core.connectivity.fc import build_fc_queue
 from salt_core.layers import (ConvLayer, FCLayer, raw_events_to_stream,
                                run_network, run_network_traced)
-from salt_core.monitor import (LayerForwardTrace, layer_names, pack_key,
-                                resolve_ms_compressed, resolve_ms_dense,
-                                summarize_trace, summarize_trace_scalars,
-                                unpack_key)
+from salt_core.monitor import (LayerForwardTrace, resolve_ms_compressed,
+                                resolve_ms_dense, summarize_trace_scalars)
 
 TOL = 1e-6
 
@@ -159,7 +164,6 @@ def test_conv_forward_traced_agrees_with_forward():
     assert trace.v_steps.shape == (n, steps)
     assert trace.event_ms.shape == (n, steps)
     np.testing.assert_array_equal(np.asarray(trace.spike_mask), np.asarray(result.spike_mask))
-    np.testing.assert_allclose(np.asarray(trace.s_value), np.asarray(result.s_value), atol=TOL)
     np.testing.assert_allclose(np.asarray(trace.v_steps[:, -1]), np.asarray(result.v_final), atol=TOL)
 
 
@@ -195,7 +199,7 @@ def test_run_network_traced_stops_gradient():
 
     def loss(ps):
         traces = run_network_traced(layers, stream, ps)
-        return sum(jnp.nansum(t.v_steps) + jnp.sum(t.s_value) for t in traces)
+        return sum(jnp.nansum(t.v_steps) for t in traces)
 
     grads = jax.grad(loss)(params)
     for g in grads:
@@ -217,38 +221,15 @@ def test_run_network_traced_forward_matches_run_network():
 
 
 # ============================================================================
-# D. summarize_trace / summarize_trace_scalars
+# D. summarize_trace_scalars
 # ============================================================================
 
 def _toy_trace():
     spike_mask = jnp.array([[True, False, True], [False, False, False]])
-    s_value = jnp.array([[0.6, 0.1, 0.7], [0.2, 0.3, 0.4]], dtype=jnp.float32)
     v_steps = jnp.array([[0.1, 0.2, 0.9], [0.05, 0.05, 0.05]], dtype=jnp.float32)
     event_ms = jnp.array([[1.0, 2.0, jnp.nan], [jnp.nan, jnp.nan, jnp.nan]],
                         dtype=jnp.float32)
-    return LayerForwardTrace(spike_mask=spike_mask, s_value=s_value,
-                             v_steps=v_steps, event_ms=event_ms)
-
-
-def test_summarize_trace_hand():
-    out = summarize_trace(_toy_trace())
-    np.testing.assert_array_equal(np.asarray(out["spike_count"]), [2.0, 0.0])
-    np.testing.assert_allclose(np.asarray(out["s_value_sum"]), [1.4, 0.9], atol=TOL)
-    np.testing.assert_allclose(np.asarray(out["v_final"]), [0.9, 0.05], atol=TOL)
-    np.testing.assert_allclose(np.asarray(out["idle_frac"]), [1 / 3, 1.0], atol=TOL)
-
-
-def test_summarize_trace_matches_forward_traced():
-    """對真的 layer.forward_traced 輸出跑,不只是手算的玩具例子。"""
-    layers = _layers()
-    params = _params(layers)
-    stream = _stream0(_raw_batch(jax.random.PRNGKey(6), 3, 20, 34, 34, 2), layers[0])
-    _out, trace = layers[0].forward_traced(params[0], stream)
-    out = summarize_trace(trace)
-    np.testing.assert_array_equal(np.asarray(out["spike_count"]),
-                                  np.asarray(trace.spike_mask).sum(axis=1))
-    np.testing.assert_allclose(np.asarray(out["v_final"]),
-                               np.asarray(trace.v_steps[:, -1]), atol=TOL)
+    return LayerForwardTrace(spike_mask=spike_mask, v_steps=v_steps, event_ms=event_ms)
 
 
 def test_summarize_trace_scalars_hand():
@@ -258,7 +239,7 @@ def test_summarize_trace_scalars_hand():
     np.testing.assert_array_equal(out["fired"], [0])          # 只有神經元 0 有 fire
     np.testing.assert_allclose(out["idle_frac"], 4 / 6, atol=TOL)   # 6 格裡 4 個 nan
     np.testing.assert_allclose(out["v_range"], (0.05, 0.9), atol=TOL)
-    assert out["nonfinite_v"] == 0 and out["nonfinite_s"] == 0
+    assert out["nonfinite_v"] == 0
 
 
 def test_summarize_trace_scalars_nonfinite_counts():
@@ -266,27 +247,6 @@ def test_summarize_trace_scalars_nonfinite_counts():
     trace = _toy_trace()._replace(v_steps=bad_v)
     out = summarize_trace_scalars(trace)
     assert out["nonfinite_v"] == 2          # 一個 inf + 一個 nan
-
-
-# ============================================================================
-# E. pack_key / unpack_key / layer_names
-# ============================================================================
-
-def test_pack_unpack_roundtrip():
-    key = pack_key("conv1", "spike_count")
-    assert key == "conv1__spike_count"
-    assert unpack_key(key) == ("conv1", "spike_count")
-
-
-def test_layer_names_dedupes_and_skips_non_keys():
-    files = ["epochs", "conv1__spike_count", "conv1__v_final",
-             "conv2__spike_count", "out__idle_frac"]
-    assert layer_names(files) == ["conv1", "conv2", "out"]
-
-
-def test_layer_names_empty():
-    assert layer_names([]) == []
-    assert layer_names(["epochs"]) == []
 
 
 TESTS = [
@@ -299,13 +259,8 @@ TESTS = [
     test_run_network_traced_shape_and_alignment,
     test_run_network_traced_stops_gradient,
     test_run_network_traced_forward_matches_run_network,
-    test_summarize_trace_hand,
-    test_summarize_trace_matches_forward_traced,
     test_summarize_trace_scalars_hand,
     test_summarize_trace_scalars_nonfinite_counts,
-    test_pack_unpack_roundtrip,
-    test_layer_names_dedupes_and_skips_non_keys,
-    test_layer_names_empty,
 ]
 
 

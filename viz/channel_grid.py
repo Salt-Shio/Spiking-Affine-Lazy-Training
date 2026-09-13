@@ -8,7 +8,7 @@
 並排本身。
 
 哪個 `(epoch, quantity, channel)` 三元組要解析成哪一張圖、網格要擺幾格,都是
-呼叫端(`example/`)的知識,見 `example/notebooks/plot_channel_grid.ipynb`。
+呼叫端(`example/`)的知識,不在這裡假設。
 """
 import math
 
@@ -19,6 +19,19 @@ matplotlib.use("Agg")
 matplotlib.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei", "DejaVu Sans"]
 matplotlib.rcParams["axes.unicode_minus"] = False
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
+
+# 只有 False/True 兩種值的圖(例如 spike_mask)用固定兩色 + 兩檔 tick 的
+# 色階,不套連續色階(不然色條會冒出 0.25/0.75 這種對兩值資料沒有意義的
+# 小數刻度)。判斷用「值域是不是 {0,1} 的子集」,不看資料來源叫什麼
+# 名字——這裡不知道 spike_mask/s_value 這些字眼。
+_TWO_VALUE_CMAP = ListedColormap(["#d9d9d9", "#d62728"])
+
+
+def _is_two_valued(img: np.ndarray) -> bool:
+    if img.dtype == bool:
+        return True
+    return bool(np.isin(np.unique(img), [0.0, 1.0]).all())
 
 
 def unflatten_channels(flat: np.ndarray, oc: int, h: int, w: int) -> np.ndarray:
@@ -63,12 +76,18 @@ class ImageGridPlot:
         flat_axes = list(axes.flat)
 
         for ax, img, title in zip(flat_axes, images, titles):
-            im = ax.imshow(img, cmap=self._cmap)
+            img = np.asarray(img)
+            if _is_two_valued(img):
+                im = ax.imshow(img, cmap=_TWO_VALUE_CMAP, vmin=0, vmax=1)
+                cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, ticks=[0, 1])
+                cbar.ax.set_yticklabels(["False", "True"])
+            else:
+                im = ax.imshow(img, cmap=self._cmap)
+                fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
             if title:
                 ax.set_title(title, fontsize=9)
             ax.set_xticks([])
             ax.set_yticks([])
-            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
         for ax in flat_axes[n:]:
             ax.set_visible(False)

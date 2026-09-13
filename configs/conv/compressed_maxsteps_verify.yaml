@@ -93,7 +93,4 @@ train:
   epochs: 40
   batch_size: 4
   seed: 42
-  probe_every: 5
-  probe_samples: 8
-  probe_full_every: 20
-  probe_full_samples: 2
+  weight_snapshot_every: 5
