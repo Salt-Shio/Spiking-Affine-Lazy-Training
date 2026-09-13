@@ -23,8 +23,10 @@ packages = [
     "example",
     "example.models",
     "example.tests",
+    "viz",
+    "viz.tests",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["salt_core/tests", "example/tests", "data/tests"]
+testpaths = ["salt_core/tests", "example/tests", "data/tests", "viz/tests"]
 addopts = "-ra"
