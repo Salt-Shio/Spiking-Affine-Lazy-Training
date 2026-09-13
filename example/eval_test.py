@@ -22,48 +22,20 @@ epoch 對 val split 的檢查)共用同一份——兩邊要的計算完全一�
 scores、導出 accuracy/loss/preds),只是誰用哪個回傳值不同。
 """
 import argparse
-import dataclasses
 import datetime
 import os
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import numpy as np
-import yaml
 
 from data.src.nmnist import NMNISTDataset
-from salt_core.layers import ConvLayer
-from example.models.conv_net import N_CLASSES, ConvNetCompressed, build_decoder, build_network
+from example.models.conv_net import N_CLASSES, ConvNetCompressed, build_decoder
 from example.paths import DATASET_ROOT
-from example.utils import EVAL_DIRNAME, TRAIN_DIRNAME, load_params_npz, make_evaluate
+from example.utils import (EVAL_DIRNAME, load_run_params, load_run_record,
+                           make_evaluate, rebuild_layers)
 
 TEST_POOL_SIZE = 10000   # N-MNIST Test/ 全量(見 data.src.nmnist.build_split）
-
-
-def _load_run_record(exp_dir: str) -> dict:
-    with open(os.path.join(exp_dir, TRAIN_DIRNAME, "run.yaml"), "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def _rebuild_layers(run_record: dict) -> list:
-    """從 run.yaml 重建 layer list:形狀吃 config 快照,壓縮容量吃訓練結束的
-    最終值(final_capacity)。init_k 不用套——評估的權重直接從 npz 載入,
-    init_k 只在 init_weight / 校準時才有意義。"""
-    layers = build_network(run_record["config"]["model"])
-    final_capacity = run_record.get("final_capacity", {})
-    rebuilt = []
-    for layer in layers:
-        cap = final_capacity.get(layer.name)
-        if cap is not None and isinstance(layer, ConvLayer):
-            layer = dataclasses.replace(
-                layer, L=int(cap["L"]), max_out_spikes=int(cap["max_out_spikes"]))
-        rebuilt.append(layer)
-    return rebuilt
-
-
-def _load_params(exp_dir: str, layers: list, which_params: str) -> tuple:
-    fname = "best_params.npz" if which_params == "best" else "params.npz"
-    return load_params_npz(os.path.join(exp_dir, TRAIN_DIRNAME, fname), layers)
 
 
 def _confusion_matrix(labels: np.ndarray, preds: np.ndarray, n_classes: int) -> np.ndarray:
@@ -75,15 +47,15 @@ def _confusion_matrix(labels: np.ndarray, preds: np.ndarray, n_classes: int) -> 
 
 def evaluate_run(exp_dir: str, which: str, n_samples: int | None,
                   seed: int, which_params: str) -> dict:
-    run_record = _load_run_record(exp_dir)
+    run_record = load_run_record(exp_dir)
     model_cfg = run_record["config"]["model"]
     data_cfg = run_record["config"]["data"]
 
-    layers = _rebuild_layers(run_record)
+    layers = rebuild_layers(run_record)
     net = ConvNetCompressed(layers)
     decoder = build_decoder(model_cfg, layers)
     decoder.validate(layers[-1])
-    params = _load_params(exp_dir, layers, which_params)
+    params = load_run_params(exp_dir, layers, which_params)
 
     dataset = NMNISTDataset(DATASET_ROOT, max_events=int(data_cfg["max_events"]))
     if n_samples is None:

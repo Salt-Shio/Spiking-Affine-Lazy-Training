@@ -9,6 +9,11 @@
 - `save_params_npz`/`load_params_npz`:`params.npz`/`best_params.npz` 的
   寫讀,key = 層名——訓練那邊寫、eval_test 這邊讀,約定只靠人記得對齊,
   現在收進同一份函式。
+- `load_run_record`/`rebuild_layers`/`load_run_params`:從 `exp_dir` 重建
+  一次訓練 run 的 layers/params,原本是 `eval_test.py` 私有的
+  `_load_run_record`/`_rebuild_layers`/`_load_params`,`監測規格.md` §7.3
+  就寫好「等第二個消費者出現再搬」——`example/notebooks/plot_channel_grid.ipynb`
+  (讀 conv 層幾何做空間圖)是第二個消費者,搬過來共用。
 
 `TRAIN_DIRNAME`/`TRACES_DIRNAME`/`EVAL_DIRNAME`:`experiments/<run>/` 底下
 三個子資料夾的名字——訓練產物(`run.yaml`/`metrics.csv`/`checkpoint.npz`/
@@ -17,12 +22,19 @@
 (`train_conv_compressed.py`)跟讀的一邊(`eval_test.py`/`plot_eval.py`/
 測試)都從這裡拿名字,不是各自重複寫字串常數,才不會兩邊漂移。
 """
+import dataclasses
+import os
 import subprocess
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import yaml
+
+from salt_core.layers import ConvLayer
+
+from example.models.conv_net import build_network
 
 TRAIN_DIRNAME = "train"
 TRACES_DIRNAME = "traces"
@@ -69,6 +81,34 @@ def load_params_npz(path: str, layers: list) -> tuple:
     """`save_params_npz` 的反函式:讀回對齊 `layers` 的位置 tuple。"""
     data = np.load(path)
     return tuple(data[layer.name] for layer in layers)
+
+
+def load_run_record(exp_dir: str) -> dict:
+    """讀 `<exp_dir>/train/run.yaml`,回傳整份 config 快照 + 訓練中繼資料。"""
+    with open(os.path.join(exp_dir, TRAIN_DIRNAME, "run.yaml"), "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def rebuild_layers(run_record: dict) -> list:
+    """從 `run.yaml` 重建 layer list:形狀吃 config 快照,壓縮容量吃訓練結束的
+    最終值(`final_capacity`)。init_k 不用套——重建出來的 layers 只用來讀取
+    幾何/評估權重,不重新初始化。"""
+    layers = build_network(run_record["config"]["model"])
+    final_capacity = run_record.get("final_capacity", {})
+    rebuilt = []
+    for layer in layers:
+        cap = final_capacity.get(layer.name)
+        if cap is not None and isinstance(layer, ConvLayer):
+            layer = dataclasses.replace(
+                layer, L=int(cap["L"]), max_out_spikes=int(cap["max_out_spikes"]))
+        rebuilt.append(layer)
+    return rebuilt
+
+
+def load_run_params(exp_dir: str, layers: list, which_params: str) -> tuple:
+    """`which_params` 是 `"best"`(`best_params.npz`)或其他(`params.npz`)。"""
+    fname = "best_params.npz" if which_params == "best" else "params.npz"
+    return load_params_npz(os.path.join(exp_dir, TRAIN_DIRNAME, fname), layers)
 
 
 def make_evaluate(net, decoder, eval_batch_size: int):

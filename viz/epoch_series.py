@@ -11,8 +11,8 @@ int,其餘欄是 float,含 inf/nan)。
 
 哪些欄該疊在同一張子圖裡比較(例如同一種指標、不同層)不是這裡的知識——那是
 特定資料來源命名慣例的知識,由呼叫端透過 `groups` 傳入(見
-`example/plot_metrics.py` 怎麼替 `metrics.csv` 的欄位組出分組)。不傳的話
-退化成一欄一張子圖。
+`example/notebooks/plot_metrics.ipynb` 怎麼替 `metrics.csv` 的欄位組出分組)。
+不傳的話退化成一欄一張子圖。
 
 現況:只接了「讀 csv 靜態畫一次」這條路(`read_epoch_series_csv`)。接訓練中
 即時來源(例如包一層薄殼讀 `MetricsLog.rows`)是之後的事,還沒做。
