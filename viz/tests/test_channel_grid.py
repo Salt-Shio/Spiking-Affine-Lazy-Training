@@ -351,6 +351,45 @@ def test_animation_duplicate_position_raises():
         raise AssertionError("預期兩個 panel 搶同一個 position 要拋 ValueError")
 
 
+def test_animation_spanning_panel_does_not_inflate_spanned_columns():
+    # 對應「conv 兩個緊靠、FC 橫跨兩欄上下並排」的真實情境:FC 橫跨欄 0~1
+    # 時,不該逼任一欄單獨變寬——欄寬維持 conv 自己算出來的 1.0,不會因為
+    # FC 的 size_ratio 寬倍率(2.0)被拉大。
+    conv_a = _FakePanel(np.zeros((3, 10, 10)))
+    conv_b = _FakePanel(np.zeros((3, 10, 10)))
+    fc = _FakePanel(np.zeros((3, 10, 21)), position=(1, slice(0, 2)), size_ratio=(2.0, 0.5))
+
+    anim = ChannelGridAnimation(ncols=2).build([conv_a, conv_b, fc])
+
+    gs = _grid_axes(anim._fig)[0].get_gridspec()
+    assert gs.get_width_ratios() == [1.0, 1.0]   # 沒有被 FC 的寬倍率拉大
+    assert gs.get_height_ratios() == [1.0, 0.5]  # FC 自己那一列還是採用明講的高倍率
+
+
+def test_animation_spanning_panel_placed_across_requested_columns():
+    conv_a = _FakePanel(np.zeros((3, 10, 10)))
+    conv_b = _FakePanel(np.zeros((3, 10, 10)))
+    fc = _FakePanel(np.zeros((3, 10, 21)), position=(1, slice(0, 2)))
+
+    anim = ChannelGridAnimation(ncols=2).build([conv_a, conv_b, fc])
+
+    fc_ax = _grid_axes(anim._fig)[2]
+    spec = fc_ax.get_subplotspec()
+    assert list(spec.rowspan) == [1]
+    assert list(spec.colspan) == [0, 1]
+
+
+def test_animation_spanning_position_conflict_raises():
+    panels = [_FakePanel(np.zeros((3, 4, 4)), position=(0, 0)),
+              _FakePanel(np.zeros((3, 4, 4)), position=(0, slice(0, 2)))]
+    try:
+        ChannelGridAnimation(ncols=2).build(panels)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("預期橫跨範圍跟另一個 panel 的格子重疊要拋 ValueError")
+
+
 def test_animation_empty_panels_raises():
     try:
         ChannelGridAnimation().build([])
@@ -407,6 +446,9 @@ TESTS = [
     test_animation_manual_size_ratio_overrides_auto_aspect,
     test_animation_stacked_fc_panels_get_position_and_size_override,
     test_animation_duplicate_position_raises,
+    test_animation_spanning_panel_does_not_inflate_spanned_columns,
+    test_animation_spanning_panel_placed_across_requested_columns,
+    test_animation_spanning_position_conflict_raises,
     test_animation_empty_panels_raises,
     test_animation_mismatched_n_frames_raises,
     test_animation_mismatched_frame_labels_length_raises,

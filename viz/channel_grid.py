@@ -80,6 +80,15 @@ def _make_grid_axes(n: int, ncols: int, subplot_size: tuple):
     return fig, flat_axes[:n]
 
 
+def _cells_spanned(row_spec, col_spec) -> list:
+    """`row_spec`/`col_spec` 各自是 `int`(單一格)或 `slice`(橫跨一段範圍,
+    跟 `gridspec[row, col]` 原生語法一致)。回傳這個 position 實際佔用的所有
+    `(row, col)` 格子,給重疊檢查/自動排版避讓用。"""
+    rows = [row_spec] if isinstance(row_spec, int) else list(range(row_spec.start, row_spec.stop))
+    cols = [col_spec] if isinstance(col_spec, int) else list(range(col_spec.start, col_spec.stop))
+    return [(r, c) for r in rows for c in cols]
+
+
 def _make_ratio_grid_axes(panels: list, shapes: list, ncols: int, subplot_size: tuple):
     """`ChannelGridAnimation` 用的版面配置:每一格分到的實際空間跟著這一格
     panel 自己的長寬比例走,不是每格都用同一個尺寸硬套——不然形狀差很多的
@@ -93,25 +102,37 @@ def _make_ratio_grid_axes(panels: list, shapes: list, ncols: int, subplot_size: 
     取最大值(要放得下最需要空間的那個)。
 
     想手動蓋掉自動規則的話,在 panel 物件自己身上設(不是這裡的參數):
-    `panel.position = (row, col)` 指定要放在第幾列第幾欄(沒設的 panel 自動
-    排進剩下沒被佔用的格子,可以只挑幾個 panel 設,其他維持自動);
-    `panel.size_ratio = (寬倍率, 高倍率)` 直接指定這一格的寬高倍率,蓋掉用
-    圖片形狀自動算出來的比重。兩者都是 panel 物件的一般屬性,`viz/` 這裡只是
-    讀,不知道也不管是誰、為什麼設的。回傳 `(fig, 對齊 panels 順序的
-    axes list)`。"""
+
+    - `panel.position = (row, col)` 指定要放在第幾列第幾欄。`row`/`col`
+      各自可以是單一整數,也可以是 `slice(start, stop)` 橫跨好幾列/欄(例如
+      `slice(0, 2)` 橫跨欄 0~1)——橫跨的那個維度不會貢獻寬/高比重給任何
+      單一欄/列(橫跨多欄本來就沒有「這一欄該多寬」這種單一答案),而是直接
+      吃橫跨範圍內、由其他沒有橫跨的 panel 已經決定好的總寬度,不會逼任何
+      一欄/列被迫跟著變寬/變高。沒設 `position` 的 panel 自動排進剩下沒被
+      佔用的格子,可以只挑幾個 panel 設,其他維持自動。
+    - `panel.size_ratio = (寬倍率, 高倍率)` 直接指定這一格的寬高倍率,蓋掉
+      用圖片形狀自動算出來的比重(橫跨多欄/列的那個維度會被忽略,理由同上)。
+
+    兩者都是 panel 物件的一般屬性,`viz/` 這裡只是讀,不知道也不管是誰、為
+    什麼設的。回傳 `(fig, 對齊 panels 順序的 axes list)`。"""
     n = len(panels)
     positions = [getattr(p, "position", None) for p in panels]
-    explicit = [pos for pos in positions if pos is not None]
-    if len(explicit) != len(set(explicit)):
-        raise ValueError(f"panel.position 不能重複,收到 {explicit}")
+
+    occupied = set()
+    for pos in positions:
+        if pos is None:
+            continue
+        for cell in _cells_spanned(pos[0], pos[1]):
+            if cell in occupied:
+                raise ValueError(f"panel.position 有重疊的格子:{cell}")
+            occupied.add(cell)
 
     auto_ncols = min(ncols, n)
-    max_explicit_row = max((r for r, _ in explicit), default=-1)
-    max_explicit_col = max((c for _, c in explicit), default=-1)
+    max_explicit_row = max((r for r, _ in occupied), default=-1)
+    max_explicit_col = max((c for _, c in occupied), default=-1)
     nrows = max(math.ceil(n / auto_ncols), max_explicit_row + 1)
     ncols = max(auto_ncols, max_explicit_col + 1)
 
-    occupied = set(explicit)
     free_cells = ((row, col) for row in range(nrows) for col in range(ncols)
                   if (row, col) not in occupied)
     resolved_positions = []
@@ -130,15 +151,20 @@ def _make_ratio_grid_axes(panels: list, shapes: list, ncols: int, subplot_size: 
     # 裡曾經真的這樣壞過)。真的沒有 panel 落在的欄/列才補回 1.0 當預設。
     width_ratios = [None] * ncols
     height_ratios = [None] * nrows
-    for panel, (h, w), (row, col) in zip(panels, shapes, resolved_positions):
+    for panel, (h, w), (row_spec, col_spec) in zip(panels, shapes, resolved_positions):
         size_ratio = getattr(panel, "size_ratio", None)
         if size_ratio is not None:
             width_ratio, height_ratio = size_ratio
         else:
             aspect = h / w
             width_ratio, height_ratio = 1.0 / math.sqrt(aspect), math.sqrt(aspect)
-        width_ratios[col] = width_ratio if width_ratios[col] is None else max(width_ratios[col], width_ratio)
-        height_ratios[row] = height_ratio if height_ratios[row] is None else max(height_ratios[row], height_ratio)
+        # 橫跨多欄/列的那個維度不貢獻比重(見上面說明),只有單一格的維度才算。
+        if isinstance(col_spec, int):
+            width_ratios[col_spec] = (width_ratio if width_ratios[col_spec] is None
+                                      else max(width_ratios[col_spec], width_ratio))
+        if isinstance(row_spec, int):
+            height_ratios[row_spec] = (height_ratio if height_ratios[row_spec] is None
+                                       else max(height_ratios[row_spec], height_ratio))
     width_ratios = [1.0 if r is None else r for r in width_ratios]
     height_ratios = [1.0 if r is None else r for r in height_ratios]
 
