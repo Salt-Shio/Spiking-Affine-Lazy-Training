@@ -5,14 +5,14 @@
 標題,排成網格畫出來,每一格完全獨立、各自的色階範圍——不假設同一批圖之間
 有任何關係(可能是不同 epoch、不同 quantity、不同 channel 的任意組合),所以
 不像 `epoch_series` 的 `groups` 那樣把同組疊在一起比較,這裡「同時比較」就是
-並排本身。`ChannelGridAnimation` 是同一套版面/色階邏輯的動畫版:吃一串疊起來
-的 frame,逐 frame `set_data` 更新,給「依 `event_ms` 重取樣出來的一串快照」
-播放用(見 `viz/time_resample.py`)。
-
-哪個 `(epoch, quantity, channel)` 三元組要解析成哪一張圖、網格要擺幾格,都是
-呼叫端(`example/`)的知識,不在這裡假設。
+並排本身。`ChannelGridAnimation` 是同一套版面/色階邏輯的動畫版,但吃的是一串
+`AnimatedPanel`(見該類別的說明)——每個 panel 自己知道要顯示什麼內容、要不要
+離散色階、座標範圍、標籤,這裡只負責排版、播放,完全不知道 panel 裡面裝的是
+conv 還是 FC。`(epoch, quantity, channel)` 這種三元組要解析成哪一張圖,是
+`example/` 那邊實作 panel 物件時才知道的語意,不在這裡假設。
 """
 import math
+from typing import Protocol
 
 import numpy as np
 
@@ -67,8 +67,9 @@ def _normalize_extents(extents: tuple | list | None, n: int) -> list:
 
 
 def _make_grid_axes(n: int, ncols: int, subplot_size: tuple):
-    """`ImageGridPlot`/`ChannelGridAnimation` 共用的版面配置:算 nrows/ncols、
-    開 `Figure`,補不滿的格子隱藏。回傳 `(fig, 前 n 格的 axes list)`。"""
+    """`ImageGridPlot` 用的版面配置:算 nrows/ncols、開 `Figure`,補不滿的格子
+    隱藏,每一格固定同一個尺寸(`ImageGridPlot` 排的是任意不相關的圖,沒有
+    「這格該多寬多高」這種資訊可以參考)。回傳 `(fig, 前 n 格的 axes list)`。"""
     ncols = min(ncols, n)
     nrows = math.ceil(n / ncols)
     w, h = subplot_size
@@ -77,6 +78,81 @@ def _make_grid_axes(n: int, ncols: int, subplot_size: tuple):
     for ax in flat_axes[n:]:
         ax.set_visible(False)
     return fig, flat_axes[:n]
+
+
+def _make_ratio_grid_axes(panels: list, shapes: list, ncols: int, subplot_size: tuple):
+    """`ChannelGridAnimation` 用的版面配置:每一格分到的實際空間跟著這一格
+    panel 自己的長寬比例走,不是每格都用同一個尺寸硬套——不然形狀差很多的
+    panel(conv 接近正方形、FC 窗口又寬又扁)雖然靠 `set_box_aspect` 不會被拉
+    伸變形,但硬塞進同樣大的格子裡,形狀跟原本比例差越多的那格,實際能用的
+    面積就越小,看起來像是被「壓縮」。
+
+    自動規則:把每個 panel 的長寬比例 `aspect = h/w` 換算成一組寬/高的配置
+    比重(`1/sqrt(aspect)`、`sqrt(aspect)`),讓每個 panel 分到的『面積』大致
+    相等,只有形狀(寬高比)不同。同一欄/列裡有多個 panel 時,那欄/列的寬/高
+    取最大值(要放得下最需要空間的那個)。
+
+    想手動蓋掉自動規則的話,在 panel 物件自己身上設(不是這裡的參數):
+    `panel.position = (row, col)` 指定要放在第幾列第幾欄(沒設的 panel 自動
+    排進剩下沒被佔用的格子,可以只挑幾個 panel 設,其他維持自動);
+    `panel.size_ratio = (寬倍率, 高倍率)` 直接指定這一格的寬高倍率,蓋掉用
+    圖片形狀自動算出來的比重。兩者都是 panel 物件的一般屬性,`viz/` 這裡只是
+    讀,不知道也不管是誰、為什麼設的。回傳 `(fig, 對齊 panels 順序的
+    axes list)`。"""
+    n = len(panels)
+    positions = [getattr(p, "position", None) for p in panels]
+    explicit = [pos for pos in positions if pos is not None]
+    if len(explicit) != len(set(explicit)):
+        raise ValueError(f"panel.position 不能重複,收到 {explicit}")
+
+    auto_ncols = min(ncols, n)
+    max_explicit_row = max((r for r, _ in explicit), default=-1)
+    max_explicit_col = max((c for _, c in explicit), default=-1)
+    nrows = max(math.ceil(n / auto_ncols), max_explicit_row + 1)
+    ncols = max(auto_ncols, max_explicit_col + 1)
+
+    occupied = set(explicit)
+    free_cells = ((row, col) for row in range(nrows) for col in range(ncols)
+                  if (row, col) not in occupied)
+    resolved_positions = []
+    for pos in positions:
+        if pos is not None:
+            resolved_positions.append(pos)
+            continue
+        try:
+            resolved_positions.append(next(free_cells))
+        except StopIteration:
+            raise ValueError("自動排版的格子不夠放——明講的 panel.position "
+                             "跟自動排版的其他 panel 衝突太多") from None
+
+    # `None` = 這欄/列還沒有任何 panel 貢獻過比重——不能拿固定的 1.0 當底線
+    # 再取 max,不然明講 `size_ratio` 想要小於 1.0 的高度會被硬拉回 1.0(這
+    # 裡曾經真的這樣壞過)。真的沒有 panel 落在的欄/列才補回 1.0 當預設。
+    width_ratios = [None] * ncols
+    height_ratios = [None] * nrows
+    for panel, (h, w), (row, col) in zip(panels, shapes, resolved_positions):
+        size_ratio = getattr(panel, "size_ratio", None)
+        if size_ratio is not None:
+            width_ratio, height_ratio = size_ratio
+        else:
+            aspect = h / w
+            width_ratio, height_ratio = 1.0 / math.sqrt(aspect), math.sqrt(aspect)
+        width_ratios[col] = width_ratio if width_ratios[col] is None else max(width_ratios[col], width_ratio)
+        height_ratios[row] = height_ratio if height_ratios[row] is None else max(height_ratios[row], height_ratio)
+    width_ratios = [1.0 if r is None else r for r in width_ratios]
+    height_ratios = [1.0 if r is None else r for r in height_ratios]
+
+    base_w, base_h = subplot_size
+    # 用 constrained layout,不要事後呼叫 fig.tight_layout()——tight_layout
+    # 對「格子寬高比例不一致 + 每格都掛了 colorbar」這種自訂 GridSpec 會重新
+    # 推算版面,把明講的 position/size_ratio 排版整個打亂(實測會發生,不是
+    # 猜的)。constrained layout 從一開始就照著這個 GridSpec 調間距,不會事後
+    # 重新洗牌。
+    fig = plt.figure(figsize=(base_w * sum(width_ratios), base_h * sum(height_ratios)),
+                      layout="constrained")
+    gridspec = fig.add_gridspec(nrows, ncols, width_ratios=width_ratios, height_ratios=height_ratios)
+    axes = [fig.add_subplot(gridspec[row, col]) for row, col in resolved_positions]
+    return fig, axes
 
 
 def _style_axis(fig, ax, img: np.ndarray, title: str | None, is_discrete: bool,
@@ -162,62 +238,95 @@ class ImageGridPlot:
         return fig
 
 
+class AnimatedPanel(Protocol):
+    """`ChannelGridAnimation.build` 吃的最小介面。任何物件只要有這些屬性 +
+    `frame(t)` 方法就能丟進去——這裡不知道也不需要知道實際是什麼型別(conv
+    層的某個 channel、FC 層的某段 neuron 時間窗口,或別的東西),那些語意
+    知識是呼叫端(`example/`)的事,不在 `viz/` 假設。"""
+    title: str | None
+    discrete: bool
+    extent: tuple | None
+    xlabel: str | None
+    ylabel: str | None
+    #: 連續值的色階固定範圍 `(vmin, vmax)`;離散值不需要,填 `None`。
+    value_range: tuple | None
+    n_frames: int
+
+    def frame(self, t: int) -> np.ndarray:
+        """回傳第 `t` 幀的 `(H, W)` 圖。同一個 panel 每次呼叫的形狀要一致
+        (跨 panel 可以不一樣——不同形狀的 panel 混在同一組動畫時,各自維持
+        自己該有的長寬比例,不會被拉伸,見 `ChannelGridAnimation.build`)。"""
+        ...
+
+    # 以下兩個是選填的,不設就維持自動排版(見 `_make_ratio_grid_axes`)——
+    # 不是每個 panel 都要有,`viz/` 用 `getattr(panel, "position", None)` 讀,
+    # 沒設就是 `None`。
+    #: 手動指定要放在第幾列第幾欄 `(row, col)`,蓋掉自動照 list 順序排列。
+    position: tuple | None
+    #: 手動指定這一格的 `(寬倍率, 高倍率)`,蓋掉根據圖片形狀自動算出來的比重。
+    size_ratio: tuple | None
+
+
 class ChannelGridAnimation:
-    """跟 `ImageGridPlot` 同一套版面/色階邏輯(`discrete` 明講,不猜),但吃
-    一串疊起來的 frame,用 `imshow.set_data` 逐 frame 更新畫成動畫,不用每個
-    frame 重新畫整張圖。給「依 `event_ms` 重取樣出來的一串 `(oc,h,w)` 快照」
-    這種資料排成網格動畫用,不知道 `spike_mask`/`v_steps`/真實毫秒這些字眼。"""
+    """跟 `ImageGridPlot` 同一套版面/色階邏輯,但吃一串「知道怎麼呈現自己」
+    的 panel 物件(見 `AnimatedPanel`),用 `imshow.set_data` 逐 frame 更新
+    畫成動畫,不用每個 frame 重新畫整張圖。這裡完全不知道 panel 裡面裝的是
+    conv 還是 FC、`spike_mask`/`v_steps`/真實毫秒這些字眼——只負責排版、
+    播放、colorbar/座標軸這些純繪圖的事。"""
 
     def __init__(self, ncols: int = 4, subplot_size: tuple = (3.2, 2.8), cmap: str = "viridis"):
         self._ncols = ncols
         self._subplot_size = subplot_size
         self._cmap = cmap
 
-    def build(self, frames: np.ndarray, titles: list | None = None,
-              discrete: bool | list | None = None, frame_labels: list | None = None,
-              extents: tuple | list | None = None, xlabel: str | None = None,
-              ylabel: str | None = None, interval: int = 50) -> FuncAnimation:
-        """`frames` 形狀 `(n_frames, n_images, H, W)`。`titles`/`discrete`/
-        `extents`(座標軸刻度,見 `ImageGridPlot.render`)/`xlabel`/`ylabel`
-        跟 `ImageGridPlot.render` 同一套規則,逐格(`n_images`)指定,不逐
-        frame 變動(窗口本身的座標範圍不會隨播放改變,只有畫面內容變)。
-        `frame_labels`(跟 `n_frames` 對齊的字串 list,例如真實毫秒的顯示
-        文字)給了就畫在 `fig.suptitle` 上隨 frame 更新,不給就不顯示。連續值
-        (非 discrete)的色階範圍用整段 `frames` 的 min/max 固定住,動畫全程
-        顏色可比較,不會每個 frame 自動重新縮放。回傳
+    def build(self, panels: list, frame_labels: list | None = None,
+              interval: int = 50) -> FuncAnimation:
+        """`panels`:一串 `AnimatedPanel`。`frame_labels`(跟 panel 的
+        `n_frames` 對齊的字串 list,例如真實毫秒的顯示文字)給了就畫在
+        `fig.suptitle` 上隨 frame 更新,不給就不顯示。回傳
         `matplotlib.animation.FuncAnimation`,不存檔(呼叫端的事)。"""
-        frames = np.asarray(frames)
-        if frames.ndim != 4:
-            raise ValueError(f"frames 要是 (n_frames, n_images, H, W) 4 維,收到 shape={frames.shape}")
-        n_frames, n_images = frames.shape[:2]
-        if n_frames == 0 or n_images == 0:
-            raise ValueError("frames 是空的,沒有東西可畫")
-        titles = _normalize_titles(titles, n_images)
-        discrete = _normalize_discrete(discrete, n_images)
-        extents = _normalize_extents(extents, n_images)
+        if not panels:
+            raise ValueError("panels 是空的,沒有東西可畫")
+        n_frames_seen = {p.n_frames for p in panels}
+        if len(n_frames_seen) != 1:
+            raise ValueError(f"每個 panel 的 n_frames 要一樣,收到 {sorted(n_frames_seen)}")
+        n_frames = n_frames_seen.pop()
+        if n_frames == 0:
+            raise ValueError("n_frames 是 0,沒有東西可畫")
         if frame_labels is not None and len(frame_labels) != n_frames:
             raise ValueError(f"frame_labels 長度({len(frame_labels)})要跟 "
                              f"n_frames({n_frames})一樣")
 
-        fig, axes = _make_grid_axes(n_images, self._ncols, self._subplot_size)
+        frame0s = [np.asarray(p.frame(0)) for p in panels]
+        fig, axes = _make_ratio_grid_axes(panels, [img0.shape for img0 in frame0s],
+                                           self._ncols, self._subplot_size)
         ims = []
-        for j, (ax, title, is_discrete, extent) in enumerate(zip(axes, titles, discrete, extents)):
-            vmin = vmax = None
-            if not is_discrete:
-                vmin = float(np.nanmin(frames[:, j]))
-                vmax = float(np.nanmax(frames[:, j]))
-            ims.append(_style_axis(fig, ax, frames[0, j], title, is_discrete,
-                                    self._cmap, vmin, vmax, extent=extent,
-                                    xlabel=xlabel, ylabel=ylabel))
+        for ax, panel, img0 in zip(axes, panels, frame0s):
+            vmin, vmax = (None, None) if panel.discrete else panel.value_range
+            im = _style_axis(fig, ax, img0, panel.title, panel.discrete, self._cmap,
+                              vmin, vmax, extent=panel.extent, xlabel=panel.xlabel,
+                              ylabel=panel.ylabel)
+            # 不同 panel 形狀可能差很多(conv 接近正方形、FC 窗口又寬又扁)——
+            # 沒有明講 size_ratio 時,讓每個 panel 維持自己真正的長寬比例,
+            # 不會被同一格的框硬拉伸;明講了 size_ratio 就是呼叫端自己選擇要
+            # 拉寬/壓扁,box 形狀改跟著 size_ratio 走,不是被資料的真實比例
+            # 卡住。
+            size_ratio = getattr(panel, "size_ratio", None)
+            if size_ratio is not None:
+                width_ratio, height_ratio = size_ratio
+                ax.set_box_aspect(height_ratio / width_ratio)
+            else:
+                h, w = img0.shape
+                ax.set_box_aspect(h / w)
+            ims.append(im)
 
         suptitle = fig.suptitle(frame_labels[0]) if frame_labels else None
 
         def _update(frame_idx):
-            for j, im in enumerate(ims):
-                im.set_data(frames[frame_idx, j])
+            for im, panel in zip(ims, panels):
+                im.set_data(panel.frame(frame_idx))
             if frame_labels:
                 suptitle.set_text(frame_labels[frame_idx])
             return ims
 
-        fig.tight_layout()
         return FuncAnimation(fig, _update, frames=n_frames, interval=interval, blit=False)
