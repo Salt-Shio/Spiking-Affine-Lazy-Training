@@ -33,6 +33,29 @@ def build_frame_grid(t_start: float, t_end: float, dt: float) -> np.ndarray:
     return t_start + np.arange(n_frames) * dt
 
 
+def pad_events_by_neuron(neuron_idx: np.ndarray, event_ms: np.ndarray, n_neurons: int) -> np.ndarray:
+    """把一串扁平的事件(每筆事件一個 `(neuron_idx, event_ms)`,例如原始輸入
+    的 AER 事件流——不是逐神經元先分好的)按 `neuron_idx` 分組、組內按時間
+    遞增排序,重排成 `resample_pulse` 吃的 `(n_neurons, max_steps)` 形狀(跟
+    `LayerForwardTrace.event_ms` 同一種形狀;不夠長的神經元用 `nan` 補
+    滿)。純粹重排,不做任何模擬——每筆事件屬於哪個神經元、幾點發生已經
+    直接給定。"""
+    neuron_idx = np.asarray(neuron_idx).astype(np.int64)
+    event_ms = np.asarray(event_ms, dtype=np.float64)
+    order = np.lexsort((event_ms, neuron_idx))  # 先按 neuron_idx,同神經元內再按時間遞增
+    sorted_idx = neuron_idx[order]
+    sorted_ms = event_ms[order]
+    counts = np.bincount(neuron_idx, minlength=n_neurons)
+    max_steps = int(counts.max()) if counts.size > 0 else 0
+    out = np.full((n_neurons, max_steps), np.nan, dtype=np.float64)
+    if max_steps == 0:
+        return out
+    starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    within_neuron_pos = np.arange(sorted_idx.shape[0]) - starts[sorted_idx]
+    out[sorted_idx, within_neuron_pos] = sorted_ms
+    return out
+
+
 def _last_event_before(event_ms_row: np.ndarray, values_row: np.ndarray,
                         frame_ms: np.ndarray, before_first):
     """單一神經元:對每個 frame 找「最後一筆 `<= frame_ms` 的真實事件」,回傳

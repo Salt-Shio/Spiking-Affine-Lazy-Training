@@ -32,7 +32,7 @@ matplotlib.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei", "DejaVu Sans"]
 matplotlib.rcParams["axes.unicode_minus"] = False
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from matplotlib.colors import ListedColormap
+from matplotlib.colors import ListedColormap, to_rgb
 
 # 離散值(例如 spike_mask)用固定兩色 + 兩檔 tick 的色階,不套連續色階(不然
 # 色條會冒出 0.25/0.75 這種對兩值資料沒有意義的小數刻度)。哪一格是離散值
@@ -44,7 +44,10 @@ from matplotlib.colors import ListedColormap
 # 呼叫端一眼看出「這裡沒有神經元」,不能讓它悄悄融進灰色(離散值的 False)
 # 或 viridis 深色端(連續值的低值)裡變得無法分辨。
 _PAD_COLOR = "#ff00ff"
-_TWO_VALUE_CMAP = ListedColormap(["#d9d9d9", "#d62728"]).with_extremes(bad=_PAD_COLOR)
+# 離散值「False」的底色——跟 ColorOverlayPanel 沒有任何 channel 亮的底色共用
+# 同一個常數,兩種畫法看起來才是同一套視覺語言,不是疊色圖另外挑了一個顏色。
+_DISCRETE_OFF_COLOR = "#d9d9d9"
+_TWO_VALUE_CMAP = ListedColormap([_DISCRETE_OFF_COLOR, "#d62728"]).with_extremes(bad=_PAD_COLOR)
 
 
 def _normalize_titles(titles: list | None, n: int) -> list:
@@ -104,9 +107,17 @@ def _style_axis(fig, ax, img: np.ndarray, title: str | None, is_discrete: bool,
     本身已經決定了顯示比例,所以連帶用 `aspect='auto'`(不套用 `imshow`
     預設的 `aspect='equal'`,不然座標軸的等比例會跟資料的 pixel 形狀打架);
     沒給 `extent` 就沿用 conv 那種「pixel 位置本身沒有座標意義」的預設,直接
-    拿掉刻度,形狀改由呼叫端另外用 `ax.set_box_aspect` 控制。"""
+    拿掉刻度,形狀改由呼叫端另外用 `ax.set_box_aspect` 控制。
+
+    `img` 形狀 `(H, W)` 時走色階(離散/連續)+ colorbar 這條路;形狀
+    `(H, W, 3)` 時代表已經是算好的 RGB 合成圖(例如 `ColorOverlayPanel` 把
+    幾個 channel 疊成一張圖)——顏色本身就是最終呈現,不是「數值 map 到
+    顏色」,不套 `cmap`/`vmin`/`vmax`,也不畫 colorbar(沒有單一數值刻度
+    可以標)。"""
     aspect = "auto" if extent is not None else None
-    if is_discrete:
+    if img.ndim == 3:
+        im = ax.imshow(np.clip(img, 0.0, 1.0), extent=extent, aspect=aspect)
+    elif is_discrete:
         im = ax.imshow(img, cmap=_TWO_VALUE_CMAP, vmin=0, vmax=1, extent=extent, aspect=aspect)
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, ticks=[0, 1])
         cbar.ax.set_yticklabels(["False", "True"])
@@ -195,10 +206,62 @@ class AnimatedPanel(Protocol):
     n_frames: int
 
     def frame(self, t: int) -> np.ndarray:
-        """回傳第 `t` 幀的 `(H, W)` 圖。同一個 panel 每次呼叫的形狀要一致
+        """回傳第 `t` 幀的圖:`(H, W)`(套色階,見 `discrete`/`value_range`)
+        或已經算好的 `(H, W, 3)` RGB 合成圖(例如 `ColorOverlayPanel`,顏色
+        本身就是最終呈現,不套色階)。同一個 panel 每次呼叫的形狀要一致
         (跨 panel 可以不一樣——不同形狀的 panel 混在同一組動畫時,各自維持
         自己該有的長寬比例,不會被拉伸,見 `ChannelGridAnimation.build`)。"""
         ...
+
+
+class ColorOverlayPanel:
+    """把幾個形狀一致的 `AnimatedPanel` 疊成一張 RGB 合成圖:每個 panel 配一
+    個顏色(`(r, g, b)`,各 0~1),該 panel 的值當亮度乘上這個顏色疊加——
+    多個 panel 同時在同一個像素有值,顏色直接相加(超過 1.0 的部分裁切到
+    1.0)。不知道被疊的 panel 裡面裝的是 input 的哪個 channel、conv 的哪個
+    channel——只是把幾個既有的 scalar panel 組合成一個新的、`frame(t)` 回傳
+    RGB 的 panel,一樣可以丟進 `ChannelGridAnimation.add_row`(跟其他 panel
+    同一排、或自己一排都行)。
+
+    全部 panel 在某個像素都是 0(沒有任何 channel 亮)的地方畫 `background`
+    (預設跟 `_DISCRETE_OFF_COLOR` 同一個顏色,離散圖「False」的底色)——
+    不能讓「疊起來剛好全部是 0」跟「數學上加總出來的黑色」搞混,前者是
+    「這裡沒事發生」,後者只是加法的副作用,兩者視覺上要跟其他離散圖的底色
+    一致,不是另外發明一個黑色底。"""
+
+    def __init__(self, panels: list, colors: list, background: tuple = to_rgb(_DISCRETE_OFF_COLOR)):
+        if not panels:
+            raise ValueError("panels 是空的,沒有東西可疊")
+        if len(panels) != len(colors):
+            raise ValueError(f"panels 數量({len(panels)})要跟 colors 數量({len(colors)})一樣")
+        n_frames_seen = {p.n_frames for p in panels}
+        if len(n_frames_seen) != 1:
+            raise ValueError(f"每個 panel 的 n_frames 要一樣,收到 {sorted(n_frames_seen)}")
+        self._panels = panels
+        self._colors = colors
+        self._background = background
+        self.n_frames = n_frames_seen.pop()
+        self.discrete = True   # 疊完是 RGB 圖,不套色階,這個欄位不影響呈現
+        self.title = " + ".join(p.title for p in panels if p.title)
+        self.extent = None
+        self.xlabel = None
+        self.ylabel = None
+        self.value_range = None
+
+    def frame(self, t: int) -> np.ndarray:
+        frames = [np.asarray(p.frame(t), dtype=np.float64) for p in self._panels]
+        shapes = {f.shape for f in frames}
+        if len(shapes) != 1:
+            raise ValueError(f"被疊的 panel 圖形狀要一致,收到 {sorted(shapes)}")
+        h, w = frames[0].shape
+        out = np.zeros((h, w, 3), dtype=np.float64)
+        for frame, color in zip(frames, self._colors):
+            for k in range(3):
+                out[:, :, k] += frame * color[k]
+        out = np.clip(out, 0.0, 1.0)
+        any_active = np.any([f != 0 for f in frames], axis=0)
+        out[~any_active] = self._background
+        return out
 
 
 class ChannelGridAnimation:
@@ -273,7 +336,7 @@ class ChannelGridAnimation:
                 # 沒給的維持圖片自己真正的長寬比例,不會被同一排的其他 panel
                 # 拉伸。
                 if panel.extent is None:
-                    h, w = img0.shape
+                    h, w = img0.shape[:2]  # RGB 合成圖是 (h, w, 3),只取前兩維
                     ax.set_box_aspect(h / w)
                 ims.append((im, panel))
 

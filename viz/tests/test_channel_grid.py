@@ -5,13 +5,15 @@ import matplotlib
 matplotlib.use("Agg")
 
 from matplotlib.animation import FuncAnimation
-from matplotlib.colors import to_rgba
+from matplotlib.colors import to_rgb, to_rgba
 
-from viz.channel_grid import ChannelGridAnimation, ImageGridPlot, unflatten_channels
+from viz.channel_grid import ChannelGridAnimation, ColorOverlayPanel, ImageGridPlot, unflatten_channels
 
-# 跟 viz/channel_grid.py 的 _PAD_COLOR 對齊——這裡故意寫死字面值而不是 import
-# 私有常數,測的是「呼叫端看得到的顏色」這個外部行為,不是內部實作細節。
+# 跟 viz/channel_grid.py 的 _PAD_COLOR/_DISCRETE_OFF_COLOR 對齊——這裡故意
+# 寫死字面值而不是 import 私有常數,測的是「呼叫端看得到的顏色」這個外部
+# 行為,不是內部實作細節。
 _PAD_COLOR_RGBA = to_rgba("#ff00ff")
+_DISCRETE_OFF_RGB = to_rgb("#d9d9d9")
 
 
 def test_unflatten_channels_matches_channel_major_order():
@@ -365,6 +367,95 @@ def test_add_row_mismatched_widths_length_raises():
         raise AssertionError("預期 widths 長度跟 panel 數量不一致要拋 ValueError")
 
 
+def test_color_overlay_panel_combines_colors_at_each_pixel():
+    # 2x2 圖,panel_a 只有 (0,0) 是 1、panel_b 只有 (1,1) 是 1。紅/藍疊起來,
+    # 兩個像素應該各自變成純紅/純藍;完全沒有 channel 亮的像素該是底色
+    # (跟離散圖 False 用的同一個灰色),不是加法算出來的黑色。
+    panel_a = _FakePanel(np.array([[[1.0, 0.0], [0.0, 0.0]]]))
+    panel_b = _FakePanel(np.array([[[0.0, 0.0], [0.0, 1.0]]]))
+
+    overlay = ColorOverlayPanel([panel_a, panel_b], colors=[(1.0, 0.0, 0.0), (0.0, 0.0, 1.0)])
+    frame = overlay.frame(0)
+
+    assert frame.shape == (2, 2, 3)
+    assert np.array_equal(frame[0, 0], [1.0, 0.0, 0.0])
+    assert np.array_equal(frame[1, 1], [0.0, 0.0, 1.0])
+    assert np.allclose(frame[0, 1], _DISCRETE_OFF_RGB)
+
+
+def test_color_overlay_panel_custom_background_overrides_default():
+    panel_a = _FakePanel(np.array([[[0.0]]]))
+
+    overlay = ColorOverlayPanel([panel_a], colors=[(1.0, 0.0, 0.0)], background=(1.0, 1.0, 1.0))
+
+    assert np.array_equal(overlay.frame(0)[0, 0], [1.0, 1.0, 1.0])
+
+
+def test_color_overlay_panel_overlapping_pixels_clip_to_one():
+    # 同一個像素兩個 panel 都是 1,紅+紅疊起來不能超過 1.0。
+    panel_a = _FakePanel(np.array([[[1.0]]]))
+    panel_b = _FakePanel(np.array([[[1.0]]]))
+
+    overlay = ColorOverlayPanel([panel_a, panel_b], colors=[(1.0, 0.0, 0.0), (1.0, 0.0, 0.0)])
+
+    assert np.array_equal(overlay.frame(0)[0, 0], [1.0, 0.0, 0.0])
+
+
+def test_color_overlay_panel_mismatched_panels_and_colors_length_raises():
+    try:
+        ColorOverlayPanel([_FakePanel(np.zeros((1, 2, 2)))], colors=[(1, 0, 0), (0, 0, 1)])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("預期 panels/colors 數量不一致要拋 ValueError")
+
+
+def test_color_overlay_panel_empty_panels_raises():
+    try:
+        ColorOverlayPanel([], colors=[])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("預期 panels 是空的要拋 ValueError")
+
+
+def test_color_overlay_panel_mismatched_n_frames_raises():
+    panel_a = _FakePanel(np.zeros((3, 2, 2)))
+    panel_b = _FakePanel(np.zeros((4, 2, 2)))
+    try:
+        ColorOverlayPanel([panel_a, panel_b], colors=[(1, 0, 0), (0, 0, 1)])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("預期 panel 之間 n_frames 不一致要拋 ValueError")
+
+
+def test_color_overlay_panel_mismatched_frame_shapes_raises():
+    panel_a = _FakePanel(np.zeros((1, 2, 2)))
+    panel_b = _FakePanel(np.zeros((1, 3, 3)))
+    overlay = ColorOverlayPanel([panel_a, panel_b], colors=[(1, 0, 0), (0, 0, 1)])
+    try:
+        overlay.frame(0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("預期被疊的 panel 圖形狀不一致要拋 ValueError")
+
+
+def test_animation_rgb_panel_renders_without_colorbar():
+    panel_a = _FakePanel(np.zeros((2, 3, 3)))
+    panel_b = _FakePanel(np.zeros((2, 3, 3)))
+    overlay = ColorOverlayPanel([panel_a, panel_b], colors=[(1, 0, 0), (0, 0, 1)])
+
+    anim = ChannelGridAnimation().add_row(overlay).build()
+
+    cbar_axes = [ax for ax in anim._fig.axes if ax.get_label() == "<colorbar>"]
+    assert len(cbar_axes) == 0
+    ax = _grid_axes(anim._fig)[0]
+    assert ax.get_box_aspect() == 3 / 3
+    assert ax.images[0].get_array().shape == (3, 3, 3)
+
+
 def test_add_row_without_panels_raises():
     try:
         ChannelGridAnimation().add_row()
@@ -430,6 +521,14 @@ TESTS = [
     test_animation_row_height_weight_scales_row_relative_to_others,
     test_animation_widths_scale_columns_within_same_row,
     test_add_row_mismatched_widths_length_raises,
+    test_color_overlay_panel_combines_colors_at_each_pixel,
+    test_color_overlay_panel_custom_background_overrides_default,
+    test_color_overlay_panel_overlapping_pixels_clip_to_one,
+    test_color_overlay_panel_mismatched_panels_and_colors_length_raises,
+    test_color_overlay_panel_empty_panels_raises,
+    test_color_overlay_panel_mismatched_n_frames_raises,
+    test_color_overlay_panel_mismatched_frame_shapes_raises,
+    test_animation_rgb_panel_renders_without_colorbar,
     test_add_row_without_panels_raises,
     test_animation_no_rows_raises,
     test_animation_mismatched_n_frames_raises,

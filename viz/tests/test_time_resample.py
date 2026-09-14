@@ -1,7 +1,8 @@
 """viz/time_resample.py 的單元測試(合成陣列,不需要訓練 run)。"""
 import numpy as np
 
-from viz.time_resample import build_frame_grid, resample_decay, resample_pulse, sliding_windows
+from viz.time_resample import (build_frame_grid, pad_events_by_neuron, resample_decay,
+                               resample_pulse, sliding_windows)
 
 
 def test_build_frame_grid_exact_multiple():
@@ -99,6 +100,49 @@ def test_resample_decay_no_real_events_decays_before_first_from_t_zero():
     assert np.allclose(out[0], 1.0 * decay ** frame_ms)
 
 
+def test_pad_events_by_neuron_groups_and_sorts_per_neuron():
+    # 扁平事件(不按神經元分好、也不按時間排):neuron 1 在 t=5, neuron 0 在
+    # t=3, neuron 0 在 t=1, neuron 1 在 t=2。neuron 0 應該變成 [1,3]、
+    # neuron 1 應該變成 [2,5](組內按時間遞增,不是照原始出現順序)。
+    neuron_idx = np.array([1, 0, 0, 1])
+    event_ms = np.array([5.0, 3.0, 1.0, 2.0])
+
+    out = pad_events_by_neuron(neuron_idx, event_ms, n_neurons=2)
+
+    assert out.shape == (2, 2)
+    assert np.array_equal(out[0], [1.0, 3.0])
+    assert np.array_equal(out[1], [2.0, 5.0])
+
+
+def test_pad_events_by_neuron_pads_shorter_neurons_with_nan():
+    # neuron 0 有 2 筆事件,neuron 1 只有 1 筆——neuron 1 該用 nan 補到跟
+    # neuron 0 一樣長,不能悄悄補 0 或別的數字。
+    neuron_idx = np.array([0, 0, 1])
+    event_ms = np.array([1.0, 2.0, 3.0])
+
+    out = pad_events_by_neuron(neuron_idx, event_ms, n_neurons=2)
+
+    assert np.array_equal(out[0], [1.0, 2.0])
+    assert out[1, 0] == 3.0
+    assert np.isnan(out[1, 1])
+
+
+def test_pad_events_by_neuron_neuron_with_no_events_is_all_nan():
+    neuron_idx = np.array([0])
+    event_ms = np.array([1.0])
+
+    out = pad_events_by_neuron(neuron_idx, event_ms, n_neurons=3)
+
+    assert np.isnan(out[1]).all()
+    assert np.isnan(out[2]).all()
+
+
+def test_pad_events_by_neuron_no_events_at_all_returns_empty_columns():
+    out = pad_events_by_neuron(np.array([], dtype=int), np.array([]), n_neurons=2)
+
+    assert out.shape == (2, 0)
+
+
 def test_sliding_windows_fully_inside_bounds():
     # 2 列,每列 10 欄,值 0..9(row0)/10..19(row1)。
     array = np.array([np.arange(10), np.arange(10, 20)])
@@ -159,6 +203,10 @@ TESTS = [
     test_resample_pulse_two_events_in_same_bucket_last_one_wins,
     test_resample_decay_matches_hand_computed_values,
     test_resample_decay_no_real_events_decays_before_first_from_t_zero,
+    test_pad_events_by_neuron_groups_and_sorts_per_neuron,
+    test_pad_events_by_neuron_pads_shorter_neurons_with_nan,
+    test_pad_events_by_neuron_neuron_with_no_events_is_all_nan,
+    test_pad_events_by_neuron_no_events_at_all_returns_empty_columns,
     test_sliding_windows_fully_inside_bounds,
     test_sliding_windows_left_boundary_pads,
     test_sliding_windows_right_boundary_pads,
