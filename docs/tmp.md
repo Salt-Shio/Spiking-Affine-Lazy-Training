@@ -1,9 +1,10 @@
 1. train/metrics.csv —— 唯一逐 epoch 的表格
 每個 epoch 一列。
 欄位:epoch / train_loss / val_accuracy。
-每個 conv 層:L / max_out / obs_queue / obs_out(容量 vs 實際用量)。
+每個 conv 層:max_event_queue / max_layer_spikes / max_steps / obs_event_queue /
+obs_layer_spikes / obs_steps(容量 vs 實際用量)。
 每一層:firing_rate、grad_norm。
-每個 conv 層:dormant_frac、act_p90p10。
+每個 conv 層:dormant_frac。
 decoder 自己的指標(decoder_*,依 decoder 種類而定)。
 是目前唯一能直接畫「隨 epoch 變化」折線圖的來源。
 

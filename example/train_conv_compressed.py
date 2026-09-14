@@ -406,8 +406,8 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
                         "max_steps": layer.max_steps}
             for layer in layers if isinstance(layer, ConvLayer)},
         "last_epoch_obs": ({
-            name: {"queue": rows[-1][f"{name}_obs_queue"],
-                   "out": rows[-1][f"{name}_obs_out"]}
+            name: {"queue": rows[-1][f"{name}_obs_event_queue"],
+                   "out": rows[-1][f"{name}_obs_layer_spikes"]}
             for name in conv_names} if rows else {}),
     }
     metrics_log.write_csv(os.path.join(exp_dir, TRAIN_DIRNAME, "metrics.csv"))

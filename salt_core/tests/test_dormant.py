@@ -52,24 +52,14 @@ def _synthetic_raw_batch(key, n_samples, max_len, h_in, w_in, ic):
     return et, xs, ys, cs, jnp.array(nr, dtype=jnp.int32)
 
 
-def _close(a: float, b: float, atol: float = 1e-3) -> bool:
-    """nan / 同號 inf 視為相等(p10=0 時 act_p90p10 會是 inf)。"""
-    if np.isnan(a) and np.isnan(b):
-        return True
-    if np.isinf(a) or np.isinf(b):
-        return a == b
-    return abs(a - b) < atol
-
-
 # ============================================================================
 # A. dormant_score:純歸約
 # ============================================================================
 
 def test_dormant_score_uniform_activity_zero_dormant():
-    """全部一樣活躍 -> score 恆 1、dormant 比例 0、p90/p10 = 1。"""
+    """全部一樣活躍 -> score 恆 1、dormant 比例 0。"""
     stats = dormant_score(np.full(100, 0.37), tau=0.1)
     assert stats["dormant_frac"] == 0.0
-    assert abs(stats["act_p90p10"] - 1.0) < TOL
     np.testing.assert_allclose(stats["score"], 1.0, atol=TOL)
 
 
@@ -78,13 +68,11 @@ def test_dormant_score_bimodal_matches_fraction():
     act = np.concatenate([np.full(20, 1.0), np.full(80, 0.02)])
     stats = dormant_score(act, tau=0.1)
     assert abs(stats["dormant_frac"] - 0.8) < TOL
-    assert stats["act_p90p10"] > 10.0
 
 
 def test_dormant_score_all_zero_is_fully_dormant():
     stats = dormant_score(np.zeros(50), tau=0.1)
     assert stats["dormant_frac"] == 1.0
-    assert np.isnan(stats["act_p90p10"])
     np.testing.assert_array_equal(stats["score"], np.zeros(50))
 
 
@@ -111,7 +99,6 @@ def test_dormant_report_only_conv_layers_and_valid_shape():
     assert set(report) == {"conv1", "conv2"}, "FC 輸出層不該出現"
     for r in report.values():
         assert 0.0 <= r["dormant_frac"] <= 1.0
-        assert r["act_p90p10"] > 0.0 or np.isnan(r["act_p90p10"])
 
 
 def test_dormant_report_chunking_is_invariant():
@@ -123,8 +110,7 @@ def test_dormant_report_chunking_is_invariant():
     one = dormant_report(layers, params, batch, chunk=6)
     many = dormant_report(layers, params, batch, chunk=2)
     for name in one:
-        assert _close(one[name]["dormant_frac"], many[name]["dormant_frac"], TOL)
-        assert _close(one[name]["act_p90p10"], many[name]["act_p90p10"])
+        assert abs(one[name]["dormant_frac"] - many[name]["dormant_frac"]) < TOL
 
 
 def test_dormant_report_matches_manual_reduction():
@@ -147,7 +133,6 @@ def test_dormant_report_matches_manual_reduction():
     expect = dormant_score(activity, tau=0.1)
     got = dormant_report(layers, params, batch, chunk=4)["conv1"]
     assert abs(got["dormant_frac"] - expect["dormant_frac"]) < TOL
-    assert _close(got["act_p90p10"], expect["act_p90p10"])
 
 
 def test_dormant_report_s_value_activity_runs():

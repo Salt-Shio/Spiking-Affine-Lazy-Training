@@ -347,9 +347,9 @@ def test_conv2_L_overflow_after_checkpoint_resumes_from_disk_not_reinit():
     assert epochs_seen == list(range(epochs)), (
         f"epoch 編號應該 0..{epochs - 1} 各一次,實際 {epochs_seen}——重複代表 resume 錯成重新 init")
 
-    assert int(rows[0]["conv2_L"]) == 1011, "出界前(epoch0)的 row 記錄舊值"
-    assert int(rows[ov["epoch"]]["conv2_L"]) == k["new"], "出界那個 epoch 續練完記錄新值"
-    assert int(rows[-1]["conv2_L"]) == k["new"]
+    assert int(rows[0]["conv2_max_event_queue"]) == 1011, "出界前(epoch0)的 row 記錄舊值"
+    assert int(rows[ov["epoch"]]["conv2_max_event_queue"]) == k["new"], "出界那個 epoch 續練完記錄新值"
+    assert int(rows[-1]["conv2_max_event_queue"]) == k["new"]
     assert final_cfg["final_capacity"]["conv2"]["L"] == k["new"]
 
     final_ckpt = np.load(os.path.join(exp_dir, TRAIN_DIRNAME, "checkpoint.npz"))
@@ -370,7 +370,8 @@ def test_conv2_L_overflow_multiple_times_eventually_converges():
     rows = _read_metrics_csv(exp_dir)
     assert [int(r["epoch"]) for r in rows] == [0, 1], "最終應正常跑完 2 個 epoch"
     assert all(not math.isnan(float(r["train_loss"])) for r in rows), "loss 不該 NaN"
-    assert int(rows[0]["conv2_L"]) == int(rows[1]["conv2_L"]), "收斂後 conv2_L 不該再變"
+    assert int(rows[0]["conv2_max_event_queue"]) == int(rows[1]["conv2_max_event_queue"]), \
+        "收斂後 conv2_max_event_queue 不該再變"
 
 
 def test_conv2_L_overflow_on_final_epoch_still_detected():
@@ -429,9 +430,9 @@ def test_metrics_csv_capacity_columns_reflect_growth_after_overflow():
     ov = ovs[0]
     assert ov["epoch"] >= 1
     k = next(kk for kk in ov["knobs"] if kk["layer"] == "conv2" and kk["knob"] == "L")
-    assert int(rows[0]["conv2_L"]) == 1011, "出界前(epoch0)記錄舊值"
-    assert int(rows[ov["epoch"]]["conv2_L"]) == k["new"], "出界那個 epoch 記錄新值"
-    assert int(rows[-1]["conv2_L"]) == k["new"], "之後也是新值,不會又變回舊值"
+    assert int(rows[0]["conv2_max_event_queue"]) == 1011, "出界前(epoch0)記錄舊值"
+    assert int(rows[ov["epoch"]]["conv2_max_event_queue"]) == k["new"], "出界那個 epoch 記錄新值"
+    assert int(rows[-1]["conv2_max_event_queue"]) == k["new"], "之後也是新值,不會又變回舊值"
 
 
 # ============================================================================
@@ -471,7 +472,7 @@ def test_conv_output_buffer_overflow_detected_and_grown():
     assert [int(r["epoch"]) for r in rows] == [0, 1]
     for r in rows:
         assert not math.isnan(float(r["train_loss"]))
-    assert int(rows[-1]["conv2_max_out"]) == final_cfg["final_capacity"]["conv2"]["max_out_spikes"]
+    assert int(rows[-1]["conv2_max_layer_spikes"]) == final_cfg["final_capacity"]["conv2"]["max_out_spikes"]
 
 
 def test_conv_output_buffer_grow_result_matches_generous_start():

@@ -68,19 +68,19 @@ class MetricsLog:
         逐層 firing rate → 逐層 grad norm → 逐 conv dormant 指標 → 解碼器指標),
         append,該印就印。
 
-        `dormant`:{conv_layer_name: {"dormant_frac": float, "act_p90p10": float}}
-        (見 salt_core/dormant.py),沒傳則對應欄位填 nan。
+        `dormant`:{conv_layer_name: {"dormant_frac": float}}(見
+        salt_core/dormant.py),沒傳則對應欄位填 nan。
         """
         row = {"epoch": epoch, "train_loss": float(np.mean(self._losses)),
                "val_accuracy": val_accuracy}
         for layer in layers:
             if not isinstance(layer, ConvLayer):
                 continue
-            row[f"{layer.name}_L"] = layer.L
-            row[f"{layer.name}_max_out"] = layer.max_out_spikes
+            row[f"{layer.name}_max_event_queue"] = layer.L
+            row[f"{layer.name}_max_layer_spikes"] = layer.max_out_spikes
             row[f"{layer.name}_max_steps"] = layer.max_steps
-            row[f"{layer.name}_obs_queue"] = self._obs[layer.name]["queue"]
-            row[f"{layer.name}_obs_out"] = self._obs[layer.name]["out"]
+            row[f"{layer.name}_obs_event_queue"] = self._obs[layer.name]["queue"]
+            row[f"{layer.name}_obs_layer_spikes"] = self._obs[layer.name]["out"]
             row[f"{layer.name}_obs_steps"] = self._obs[layer.name]["steps"]
         for name in self._layer_names:
             row[f"{name}_firing_rate"] = float(np.mean(self._firing[name]))
@@ -89,7 +89,6 @@ class MetricsLog:
         d = dormant or {}
         for name in self._conv_names:
             row[f"{name}_dormant_frac"] = float(d.get(name, {}).get("dormant_frac", float("nan")))
-            row[f"{name}_act_p90p10"] = float(d.get(name, {}).get("act_p90p10", float("nan")))
         for k, vals in self._dec.items():
             row[f"decoder_{k}"] = float(np.mean(vals))
         self._rows.append(row)
@@ -141,8 +140,8 @@ class MetricsLog:
         for layer in layers:
             if not isinstance(layer, ConvLayer):
                 continue
-            oq = last[f"{layer.name}_obs_queue"]
-            oo = last[f"{layer.name}_obs_out"]
+            oq = last[f"{layer.name}_obs_event_queue"]
+            oo = last[f"{layer.name}_obs_layer_spikes"]
             os_ = last[f"{layer.name}_obs_steps"]
             print(f"    {layer.name} 最後一個 epoch 用量:佇列 {_ratio(oq, layer.L)}、"
                   f"輸出 spike {_ratio(oo, layer.max_out_spikes)}、"

@@ -18,17 +18,17 @@ def _write_csv(path: str, header: list, rows: list) -> None:
 
 def test_read_epoch_series_csv_parses_types(tmp_path):
     path = str(tmp_path / "metrics.csv")
-    _write_csv(path, ["epoch", "train_loss", "act_p90p10"],
-               [{"epoch": 0, "train_loss": 1.5, "act_p90p10": "inf"},
-                {"epoch": 1, "train_loss": 0.7, "act_p90p10": 3.2}])
+    _write_csv(path, ["epoch", "train_loss", "example_ratio"],
+               [{"epoch": 0, "train_loss": 1.5, "example_ratio": "inf"},
+                {"epoch": 1, "train_loss": 0.7, "example_ratio": 3.2}])
 
     rows = read_epoch_series_csv(path)
 
     assert len(rows) == 2
-    assert rows[0] == {"epoch": 0, "train_loss": 1.5, "act_p90p10": math.inf}
+    assert rows[0] == {"epoch": 0, "train_loss": 1.5, "example_ratio": math.inf}
     assert isinstance(rows[0]["epoch"], int)
     assert isinstance(rows[0]["train_loss"], float)
-    assert rows[1]["act_p90p10"] == 3.2
+    assert rows[1]["example_ratio"] == 3.2
 
 
 def test_render_ungrouped_creates_one_subplot_per_column():
@@ -66,7 +66,7 @@ def test_render_grouped_overlays_lines_with_legend():
 
 
 def test_render_handles_inf_values_without_crashing():
-    rows = [{"epoch": 0, "act_p90p10": math.inf}, {"epoch": 1, "act_p90p10": 2.0}]
+    rows = [{"epoch": 0, "example_ratio": math.inf}, {"epoch": 1, "example_ratio": 2.0}]
 
     fig = EpochSeriesPlot().render(rows)
 

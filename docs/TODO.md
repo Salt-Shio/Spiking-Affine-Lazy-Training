@@ -82,22 +82,21 @@
   一件事的兩半。低優先。
 - **`docs/math/` 幾份推導文件還有前身時代的殘留**:`D:\...` 絕對路徑、`event_lif/`
   舊資料夾名、指向已廢棄 firing-rate 準則的段落。要清一輪。
-- **`metrics.csv` 欄名對人不友善,`_print_progress` 的可讀格式沒同步進檔案。**
-  開發 `viz`/`example/notebooks/plot_metrics.ipynb`(2026-09-13)時發現:
-  `MetricsLog._print_progress` 已經把 `conv1_obs_queue`/`conv1_L` 這類欄位轉成
-  中文標籤 + `已用/容量(百分比)` 格式印給人看,`finish_epoch` 組進 csv 的 row
-  卻還是原始程式碼欄名,兩邊沒對齊。要改的話會動到 `example/metrics_log.py`
-  的欄名(訓練側程式碼),連帶 `example/notebooks/plot_metrics.ipynb` 現在照
-  欄名字尾(`_L`/`_max_out`/`_firing_rate`/...)分組的 `group_metrics_columns`
-  要跟著改——這次只做了 viz 讀取端,沒動這塊。
-- **`act_p90p10`(`salt_core/dormant.py` 的 `dormant_score`)可以拔掉。** 定義
-  是 `p90/p10`,`p10 == 0` 時直接回傳 `inf`(`dormant.py:48`);畫成 `metrics.csv`
-  的訓練曲線後發現這條線幾乎每個 epoch 都是 `inf`,只有零星幾個 epoch 有限,
-  實務上沒有訊息量。要拔的話要一併清 `dormant_score` 的回傳欄、
-  `dormant_report`、`MetricsLog`(`_dormant`/csv 欄)、
-  `example/notebooks/plot_metrics.ipynb` 的分組清單,還有對應的測試斷言
-  (`example/inspect_traces.py` 原本也印這欄,已在 2026-09-13 隨監測規格
-  §7 改版移除)。
+- ~~`metrics.csv` 欄名對人不友善,`_print_progress` 的可讀格式沒同步進檔案~~
+  **已處理(2026-09-14)**:容量/用量六欄改名成 `max_event_queue`/
+  `obs_event_queue`/`max_layer_spikes`/`obs_layer_spikes`/`max_steps`/
+  `obs_steps`(`example/metrics_log.py`),`example/train_conv_compressed.py`
+  的 `last_epoch_obs` 跟 `example/tests/test_train_conv_compressed.py` 的斷言
+  一併跟著改;`plot_metrics.ipynb` 的 `group_metrics_columns` 從「單一字尾對
+  單一分組」改成「分組名對字尾清單」(`_METRIC_GROUPS`),同一個資源的
+  `max_*`/`obs_*` 現在疊在同一張子圖裡對照,順便補上一直沒跟上的
+  `max_steps`/`obs_steps`(2026-09-12 加欄時漏掉,一直各自變成獨立子圖)。
+- ~~`act_p90p10`(`salt_core/dormant.py` 的 `dormant_score`)可以拔掉~~
+  **已處理(2026-09-14)**:`dormant_score`/`dormant_report` 回傳值、
+  `MetricsLog` csv 欄、`plot_metrics.ipynb` 分組清單、
+  `salt_core/tests/test_dormant.py`(含拔掉後變死碼的 `_close` helper)、
+  `viz/tests/test_epoch_series.py`(借用這個名字當「有 inf 值的欄」範例,改名
+  `example_ratio`)、`docs/tmp.md` 的 schema 說明都清掉了。
 - **部分視覺化呼叫端程式碼,是不是本來就該用 notebook 處理,要評估。**
   `example/plot_metrics.py`(讀 csv、分組、呼叫 `viz` 畫圖)已經整支搬進
   `example/notebooks/plot_metrics.ipynb`,不再是可以被 pytest 測的獨立模組
@@ -108,6 +107,24 @@
   視覺化工具會持續碰到,要找時間定一個判準。(原本設想的 `traces/` 那兩種
   資料性質——`summary.npz`/`full_epoch_XXX.npz`——2026-09-13 已經整個移除,
   見監測規格 §7;這個判準問題留給以後其他視覺化工具碰到時再定案。)
+
+- **訓練中期梯度突然炸開,炸完 val_accuracy 回不到炸之前的水準。** 2026-09-14
+  用改名後的新版 `metrics.csv`(`configs/conv/baseline.yaml`,40 epochs)第一次
+  被人眼看出來——這正是欄名改名/`plot_metrics.ipynb` 分組改版想要達成的效果
+  (資料本身早就在,只是之前沒對齊、沒疊在一起看不出趨勢)。實際數字(見
+  `experiments/conv_compressed_compressed_maxsteps_verify_20260914_122946/train/metrics.csv`):
+  epoch 26 是全程最好的一個 epoch(`val_accuracy=0.845`、`train_loss≈0.0002`,
+  幾乎完美自信的分類器);epoch 27 三層 `grad_norm` 同時放大 10 倍以上
+  (`out_grad_norm` 0.0017→0.032);epoch 28 徹底炸開(`out_grad_norm=2.74`、
+  `train_loss=1.05`、`val_accuracy` 掉到 0.715);之後 12 個 epoch loss 慢慢
+  降回 0.01~0.07,但 `val_accuracy` 只回升到 0.75~0.76,再沒回到 0.845。已
+  排除是動態放大/出界重跑觸發的(`conv1`/`conv2` 的
+  `max_event_queue`/`max_layer_spikes`/`max_steps` 在 epoch 22~32 全程沒變),
+  看起來是 loss 逼近 0(近乎完美自信)之後某個 batch 算出異常大梯度,把權重
+  跟 optimizer(Adam)動量狀態推到回不去的區域,典型的「過度自信 cross
+  entropy 梯度爆炸」模式。還沒查:optimizer 有沒有配 gradient clipping、
+  實際去 replay 那個 batch 看數值。優先度看之後要不要繼續訓更深/更久的網路
+  再決定。
 
 ## 開放題(往下走才需要)
 

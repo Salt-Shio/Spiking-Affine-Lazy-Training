@@ -31,21 +31,17 @@ def dormant_score(activity, *, tau: float = 0.1) -> dict:
 
     純歸約,不跑 forward —— ReDo 挑回收對象、`dormant_report` 寫紀錄都用這個。
 
-    回傳 {"dormant_frac": float, "act_p90p10": float, "score": (n,) ndarray}:
-      dormant_frac = #{score_i <= tau} / n,score_i = activity_i / 層平均;
-      act_p90p10   = activity 的 90/10 百分位比值(連續版伴隨指標)。
-    層平均為 0(整層全死)時 dormant_frac = 1.0、act_p90p10 = nan、score 全 0。
+    回傳 {"dormant_frac": float, "score": (n,) ndarray}:
+      dormant_frac = #{score_i <= tau} / n,score_i = activity_i / 層平均。
+    層平均為 0(整層全死)時 dormant_frac = 1.0、score 全 0。
     """
     activity = np.abs(np.asarray(activity, dtype=np.float64))
     denom = float(np.mean(activity))
     if denom <= 0.0:
-        return {"dormant_frac": 1.0, "act_p90p10": float("nan"),
-                "score": np.zeros_like(activity)}
+        return {"dormant_frac": 1.0, "score": np.zeros_like(activity)}
     score = activity / denom
-    p10, p90 = np.percentile(activity, [10.0, 90.0])
     return {
         "dormant_frac": float(np.mean(score <= tau)),
-        "act_p90p10": float(p90 / p10) if p10 > 0.0 else float("inf"),
         "score": score,
     }
 
@@ -74,7 +70,7 @@ def dormant_report(layers, params, probe_batch, *, tau: float = 0.1,
     probe_batch: (event_times, x, y, c, n_real_events),leading axis = 樣本數。
     分 chunk 做 vmap forward(避免整批一次建構壓縮佇列 OOM)。
 
-    回傳 {conv_layer_name: {"dormant_frac": float, "act_p90p10": float}}。
+    回傳 {conv_layer_name: {"dormant_frac": float}}。
     """
     if activity not in ("spike", "s_value"):
         raise ValueError(f"activity 必須是 'spike' 或 's_value',給的是 {activity!r}")
@@ -101,6 +97,5 @@ def dormant_report(layers, params, probe_batch, *, tau: float = 0.1,
     report = {}
     for name, tot in (totals or {}).items():
         stats = dormant_score(np.abs(tot) / n, tau=tau)
-        report[name] = {"dormant_frac": stats["dormant_frac"],
-                        "act_p90p10": stats["act_p90p10"]}
+        report[name] = {"dormant_frac": stats["dormant_frac"]}
     return report

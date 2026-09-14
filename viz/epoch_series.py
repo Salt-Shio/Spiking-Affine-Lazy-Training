@@ -31,7 +31,7 @@ def read_epoch_series_csv(path: str) -> list[dict]:
     """把逐 epoch 一列的 csv 讀成 `list[dict[str, float]]`。
 
     `epoch` 欄轉 int,其餘欄轉 float(`float()` 原生看得懂 `inf`/`nan` 字串,
-    像 `metrics.csv` 裡休眠層的 `act_p90p10` 就會出現)。欄位有哪些、有幾欄
+    整層休眠的 `dormant_frac` 全死層有時就會出現 nan)。欄位有哪些、有幾欄
     不在這裡假設,照檔案表頭本身。
     """
     rows = []
