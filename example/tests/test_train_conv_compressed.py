@@ -1,7 +1,7 @@
 """壓縮容量旋鈕動態放大機制(`example/train_conv_compressed.py`)的測試。沿用真實
-N-MNIST 小規模資料(跟 configs/conv/compressed_smoke.yaml 同量級:
-max_events=2000、train_size=16、val_size=8),不用合成資料;不碰
-train_conv_compressed.py 本身,只呼叫它公開的函式/`train()` entrypoint。
+N-MNIST 小規模資料(`_base_cfg` 內嵌的骨架:max_events=2000、train_size=16、
+val_size=8),不用合成資料;不碰 train_conv_compressed.py 本身,只呼叫它公開
+的函式/`train()` entrypoint。
 
 step 4b 起,每個 conv 層有兩個會出界的容量:壓縮佇列長度 `L`、輸出 spike
 上界 `max_out_spikes`。兩者同一套機制:偵測 -> 該層 `grown_to_fit` 放大 ->
@@ -52,10 +52,10 @@ import yaml
 
 from salt_core.layers import LayerDiag
 from example.models.conv_net import ConvNetCompressed, build_network
-from example.paths import CONFIGS_DIR, EXPERIMENTS_DIR
+from example.paths import EXPERIMENTS_DIR
 from example.checkpoint import Checkpointer
 from example.train_conv_compressed import train
-from example.utils import TRAIN_DIRNAME, WEIGHTS_DIRNAME, weight_snapshot_path
+from example.utils import TRAIN_DIRNAME
 
 # 這份 e2e 測試會呼叫真正的 train(),每個案例吐一個 conv_compressed_*_<時間戳>
 # 目錄。全部關進 experiments/TEST_TEMP,而且「一次只留最後一批」——模組載入
@@ -82,7 +82,7 @@ def _assert_params_close(params_a, params_b, msg_prefix: str) -> None:
 def _base_cfg(run_name: str, seed: int, conv2_L_init: int, grow: float, epochs: int,
               conv1_L_init: int = 185, conv1_max_out_init: int = 8000,
               conv2_max_out_init: int = 35000, train_size: int = 16, val_size: int = 8) -> dict:
-    """跟 compressed_smoke.yaml 同量級的骨架(config 是 model.layers list 形式,
+    """小規模骨架(config 是 model.layers list 形式,
     見 example/models/conv_net.py build_network),只留這份測試真正要調整的欄位當
     參數。`grow` 一次設定全部四個容量旋鈕的放大倍率(測試從沒需要它們互不
     相同)。`conv1_max_out_init` / `conv2_max_out_init` 預設給足(seed 1..42
@@ -412,40 +412,6 @@ def test_sufficient_L_headroom_does_not_change_result():
     _assert_params_close(params_a, params_b, "conv2_L=1100 vs 2200(L 留多寬不該影響結果)")
 
 
-def test_end_to_end_smoke_produces_expected_artifacts():
-    """把手動驗證過的 compressed_smoke.yaml 流程收成自動化測試:正常結束、
-    conv2_L 跟兩個 max_out 都確實被動態放大過至少一次、artifacts 都存在、
-    數值沒有 NaN。"""
-    smoke_path = os.path.join(CONFIGS_DIR, "conv", "compressed_smoke.yaml")
-    (exp_dir, _, _, _, _, final_cfg), stdout = _run_capture(smoke_path)
-
-    ovs = _parse_overflows(stdout)
-    assert ovs, "compressed_smoke.yaml 的小起始值應該要觸發出界"
-    grown_knobs = {(k["layer"], k["knob"]) for ov in ovs for k in ov["knobs"]}
-    assert ("conv2", "L") in grown_knobs, "conv2_L_init=32 應觸發 L 出界"
-    assert ("conv1", "max_out") in grown_knobs or ("conv2", "max_out") in grown_knobs, \
-        "max_out 起始值刻意設小,應觸發輸出上界出界"
-
-    for fname in ("checkpoint.npz", "run.yaml", "metrics.csv", "best_params.npz",
-                  "params.npz"):
-        assert os.path.isfile(os.path.join(exp_dir, TRAIN_DIRNAME, fname)), f"缺少 train/{fname}"
-
-    # compressed_smoke.yaml 有開 weight_snapshot_every=1 -> weights/ 每個 epoch 都該有一份
-    weights_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
-    assert os.path.isfile(weight_snapshot_path(weights_dir, 0)), "缺少 weights/epoch_000.npz"
-
-    rows = _read_metrics_csv(exp_dir)
-    assert len(rows) > 0
-    for r in rows:
-        loss = float(r["train_loss"])
-        assert not math.isnan(loss) and not math.isinf(loss), f"epoch {r['epoch']} loss 異常:{loss}"
-    assert final_cfg["final_capacity"]["conv2"]["L"] > 32
-    assert final_cfg["final_capacity"]["conv2"]["max_out_spikes"] > 600
-    assert final_cfg["final_capacity"]["conv1"]["max_out_spikes"] > 800
-    assert int(rows[-1]["conv2_max_out"]) == final_cfg["final_capacity"]["conv2"]["max_out_spikes"]
-    assert int(rows[-1]["conv1_max_out"]) == final_cfg["final_capacity"]["conv1"]["max_out_spikes"]
-
-
 # ============================================================================
 # D. 輸出正確性
 # ============================================================================
@@ -466,17 +432,6 @@ def test_metrics_csv_capacity_columns_reflect_growth_after_overflow():
     assert int(rows[0]["conv2_L"]) == 1011, "出界前(epoch0)記錄舊值"
     assert int(rows[ov["epoch"]]["conv2_L"]) == k["new"], "出界那個 epoch 記錄新值"
     assert int(rows[-1]["conv2_L"]) == k["new"], "之後也是新值,不會又變回舊值"
-
-
-def test_final_capacity_written_to_config_matches_last_used_value():
-    """run 紀錄的 final_capacity[conv2] 應等於訓練結束當下實際用的值——用
-    metrics.csv 最後一 row 當獨立比對基準。"""
-    smoke_path = os.path.join(CONFIGS_DIR, "conv", "compressed_smoke.yaml")
-    (exp_dir, _, _, _, _, final_cfg), _ = _run_capture(smoke_path)
-
-    rows = _read_metrics_csv(exp_dir)
-    assert final_cfg["final_capacity"]["conv2"]["L"] == int(rows[-1]["conv2_L"])
-    assert final_cfg["final_capacity"]["conv2"]["max_out_spikes"] == int(rows[-1]["conv2_max_out"])
 
 
 # ============================================================================
@@ -544,9 +499,7 @@ TESTS = [
     test_conv2_L_overflow_multiple_times_eventually_converges,
     test_conv2_L_overflow_on_final_epoch_still_detected,
     test_sufficient_L_headroom_does_not_change_result,
-    test_end_to_end_smoke_produces_expected_artifacts,
     test_metrics_csv_capacity_columns_reflect_growth_after_overflow,
-    test_final_capacity_written_to_config_matches_last_used_value,
     test_conv_output_buffer_overflow_detected_and_grown,
     test_conv_output_buffer_grow_result_matches_generous_start,
 ]

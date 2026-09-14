@@ -1,7 +1,7 @@
 """viz/time_resample.py 的單元測試(合成陣列,不需要訓練 run)。"""
 import numpy as np
 
-from viz.time_resample import build_frame_grid, resample_decay, resample_pulse
+from viz.time_resample import build_frame_grid, resample_decay, resample_pulse, sliding_windows
 
 
 def test_build_frame_grid_exact_multiple():
@@ -99,6 +99,56 @@ def test_resample_decay_no_real_events_decays_before_first_from_t_zero():
     assert np.allclose(out[0], 1.0 * decay ** frame_ms)
 
 
+def test_sliding_windows_fully_inside_bounds():
+    # 2 列,每列 10 欄,值 0..9(row0)/10..19(row1)。
+    array = np.array([np.arange(10), np.arange(10, 20)])
+
+    out = sliding_windows(array, center_indices=[5], half_width=2, pad_value=np.nan)
+
+    assert out.shape == (1, 2, 5)
+    assert np.array_equal(out[0], array[:, 3:8])
+
+
+def test_sliding_windows_left_boundary_pads():
+    array = np.array([np.arange(10), np.arange(10, 20)])
+
+    out = sliding_windows(array, center_indices=[1], half_width=2, pad_value=np.nan)
+
+    # center=1, half_width=2 -> 理論窗口是欄 [-1..3],左邊那格(index -1)不存在。
+    assert np.isnan(out[0, :, 0]).all()
+    assert np.array_equal(out[0, :, 1:], array[:, 0:4])
+
+
+def test_sliding_windows_right_boundary_pads():
+    array = np.array([np.arange(10), np.arange(10, 20)])
+
+    out = sliding_windows(array, center_indices=[9], half_width=2, pad_value=np.nan)
+
+    # center=9(最後一欄), 理論窗口是欄 [7..11],右邊 10、11 不存在。
+    assert np.array_equal(out[0, :, 0:3], array[:, 7:10])
+    assert np.isnan(out[0, :, 3:]).all()
+
+
+def test_sliding_windows_multiple_centers_stacked():
+    array = np.array([np.arange(10)])
+
+    out = sliding_windows(array, center_indices=[2, 5], half_width=1, pad_value=-1)
+
+    assert out.shape == (2, 1, 3)
+    assert np.array_equal(out[0, 0], [1, 2, 3])
+    assert np.array_equal(out[1, 0], [4, 5, 6])
+
+
+def test_sliding_windows_bool_array_with_nan_pad_promotes_dtype():
+    array = np.array([[True, False, True]])
+
+    out = sliding_windows(array, center_indices=[0], half_width=1, pad_value=np.nan)
+
+    assert np.isnan(out[0, 0, 0])
+    assert out[0, 0, 1] == 1.0
+    assert out[0, 0, 2] == 0.0
+
+
 TESTS = [
     test_build_frame_grid_exact_multiple,
     test_build_frame_grid_last_frame_not_exceeding_t_end,
@@ -109,6 +159,11 @@ TESTS = [
     test_resample_pulse_two_events_in_same_bucket_last_one_wins,
     test_resample_decay_matches_hand_computed_values,
     test_resample_decay_no_real_events_decays_before_first_from_t_zero,
+    test_sliding_windows_fully_inside_bounds,
+    test_sliding_windows_left_boundary_pads,
+    test_sliding_windows_right_boundary_pads,
+    test_sliding_windows_multiple_centers_stacked,
+    test_sliding_windows_bool_array_with_nan_pad_promotes_dtype,
 ]
 
 if __name__ == "__main__":

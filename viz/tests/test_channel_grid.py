@@ -127,6 +127,39 @@ def test_render_discrete_mismatched_length_raises():
         raise AssertionError("預期 discrete 長度不對要拋 ValueError")
 
 
+def test_render_without_extent_strips_ticks():
+    fig = ImageGridPlot(ncols=1).render([np.zeros((3, 3))])
+
+    ax = fig.axes[0]
+    assert len(ax.get_xticks()) == 0
+    assert len(ax.get_yticks()) == 0
+
+
+def test_render_with_extent_keeps_real_axis_coordinates():
+    img = np.zeros((5, 21))  # 模擬「5 顆神經元 x 21 欄時間窗」
+
+    fig = ImageGridPlot(ncols=1).render(
+        [img], extents=(-10.0, 10.0, 104.0, 99.0), xlabel="ms offset", ylabel="neuron index")
+
+    ax = fig.axes[0]
+    assert len(ax.get_xticks()) > 0
+    assert ax.get_xlabel() == "ms offset"
+    assert ax.get_ylabel() == "neuron index"
+    im = ax.images[0]
+    assert im.get_extent() == [-10.0, 10.0, 104.0, 99.0]
+
+
+def test_animation_extent_stays_fixed_across_frame_updates():
+    frames = _animation_frames()
+
+    anim = ChannelGridAnimation(ncols=2).build(
+        frames, discrete=[False, True], extents=(0.0, 2.0, 1.0, 0.0))
+    anim._func(2)
+
+    for ax in _grid_axes(anim._fig):
+        assert ax.images[0].get_extent() == [0.0, 2.0, 1.0, 0.0]
+
+
 def test_render_nan_pixel_uses_pad_color_for_continuous_image():
     img = np.array([[0.1, np.nan], [0.9, 0.5]])
 
@@ -253,6 +286,9 @@ TESTS = [
     test_render_without_discrete_keeps_default_colorbar_even_for_bool,
     test_render_discrete_list_applies_per_image,
     test_render_discrete_mismatched_length_raises,
+    test_render_without_extent_strips_ticks,
+    test_render_with_extent_keeps_real_axis_coordinates,
+    test_animation_extent_stays_fixed_across_frame_updates,
     test_render_nan_pixel_uses_pad_color_for_continuous_image,
     test_render_nan_pixel_uses_pad_color_for_discrete_image,
     test_animation_nan_region_uses_pad_color,

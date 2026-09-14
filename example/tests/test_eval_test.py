@@ -34,7 +34,7 @@ def _write_yaml(cfg: dict) -> str:
 
 
 def _tiny_cfg(run_name: str) -> dict:
-    """跟 compressed_smoke.yaml 同量級,容量給足避免出界——動態放大機制是
+    """小規模、容量給足避免出界——動態放大機制是
     test_train_conv_compressed.py 的事,這裡只要一個能訓練完、能評估的 exp_dir。
     """
     def _conv(oc, init_k):

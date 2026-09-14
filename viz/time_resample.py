@@ -12,6 +12,12 @@ fire」,是單純沒發生任何事),所以某個 frame 有沒有落到真實事
 的值往前衰減——電位是真的連續存在、持續衰減的物理量,「沿用前一筆事件的值
 再衰減」才有意義,這點跟 spike 不一樣)。兩者都不知道 `spike_mask`/`v_steps`
 這些字眼,只吃 `(event_ms, values)` 這組通用資料。
+
+`sliding_windows` 是給「神經元數量/時間範圍不受控制地變大,整張圖擠成一片
+看不出誰是誰」這個問題用的:不試圖把全部神經元、全部時間塞進一張圖,而是
+在已經算好的 `(n_neurons, n_frames)` 整段結果上,逐 frame 只切一小塊窗口
+(選定的神經元範圍 x 目前播放時間附近的一小段時間)出來畫,窗口本身夠小,
+每個 pixel 才有意義。
 """
 import numpy as np
 
@@ -73,6 +79,29 @@ def resample_pulse(event_ms: np.ndarray, values: np.ndarray, frame_ms: np.ndarra
         bucket = np.floor((valid_ms - frame_ms[0]) / dt).astype(int)
         in_range = (bucket >= 0) & (bucket < n_frames)
         out[i, bucket[in_range]] = valid_vals[in_range]
+    return out
+
+
+def sliding_windows(array: np.ndarray, center_indices, half_width: int, pad_value) -> np.ndarray:
+    """對 `array`(形狀 `(rows, n_frames)`,任何逐欄資料——不知道欄位代表
+    毫秒還是別的)的欄位軸,對每個 `center_indices` 裡的欄位索引切出
+    `[center-half_width, center+half_width]`(寬 `2*half_width+1`)的窗口。
+    超出 `array` 邊界的部分填 `pad_value`,不夾住、不循環——邊界附近的窗口
+    本來就該比較短,填洞讓呼叫端一眼看出「這裡沒有真實資料」,不是悄悄拿
+    別的欄位頂替。回傳 `(len(center_indices), rows, 2*half_width+1)`。"""
+    array = np.asarray(array)
+    center_indices = np.asarray(center_indices)
+    rows, n_frames = array.shape
+    width = 2 * half_width + 1
+    out = np.full((center_indices.shape[0], rows, width), pad_value,
+                  dtype=np.result_type(array, pad_value))
+    for i, center in enumerate(center_indices):
+        lo, hi = center - half_width, center + half_width + 1
+        src_lo, src_hi = max(lo, 0), min(hi, n_frames)
+        if src_lo >= src_hi:
+            continue
+        dst_lo = src_lo - lo
+        out[i, :, dst_lo:dst_lo + (src_hi - src_lo)] = array[:, src_lo:src_hi]
     return out
 
 
