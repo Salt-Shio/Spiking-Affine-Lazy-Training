@@ -1,7 +1,11 @@
-"""`example/replay_panels.py` 的測試:小規模真實訓練(內嵌 config,開
+"""`viz/replay_panels.py` 的測試:小規模真實訓練(內嵌 config,開
 `weight_snapshot_every`),驗證 `ConvChannelPanel`/`FCWindowPanel` 算出來的
 `frame(t)` 形狀/值跟層的幾何、`AnimatedPanel` 介面(`viz/channel_grid.py`)
 要求的屬性都對得上。整個模組只訓練一次,測試共用同一個 `exp_dir`。
+
+被測的模組本身只依賴 `salt_core`/`viz`,不依賴 `example/`;這裡的測試依賴
+`example/` 只是為了借它的訓練/replay 機制產生真實的層幾何跟 trace 當 fixture
+用,不代表被測模組本身跟 `example/` 有關係。
 """
 import os
 import shutil
@@ -11,10 +15,10 @@ import yaml
 
 from example.paths import EXPERIMENTS_DIR
 from example.replay_epoch import _load_train_sample, load_epoch_weights, replay_sample
-from example.replay_panels import ConvChannelPanel, FCWindowPanel
 from example.train_conv_compressed import train
 from example.utils import load_run_record
 from salt_core.layers import ConvLayer, FCLayer
+from viz.replay_panels import ConvChannelPanel, FCWindowPanel
 from viz.time_resample import build_frame_grid
 
 _TEST_TEMP = os.path.join(EXPERIMENTS_DIR, "TEST_TEMP_replay_panels")

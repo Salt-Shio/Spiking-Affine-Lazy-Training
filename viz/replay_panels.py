@@ -1,8 +1,18 @@
 """conv/FC 層各自「知道怎麼呈現自己」的 panel 物件,給
 `viz.channel_grid.ChannelGridAnimation` 用。這裡才知道 conv/FC/`spike_mask`/
-`v_steps` 這些字眼——`viz/` 完全不知道,只認得 panel 物件的共同介面
-(`viz.channel_grid.AnimatedPanel`:`title`/`discrete`/`extent`/`xlabel`/
-`ylabel`/`value_range`/`n_frames` + `frame(t)`)。
+`v_steps` 這些字眼——`viz.channel_grid` 完全不知道,只認得 panel 物件的共同
+介面(`viz.channel_grid.AnimatedPanel`:`title`/`discrete`/`extent`/
+`xlabel`/`ylabel`/`value_range`/`n_frames` + `frame(t)`)。這個介面不帶任何
+位置資訊,panel 只負責描述「要畫什麼」;要跟誰排在同一排、排在第幾排,是
+呼叫端呼叫 `viz.channel_grid.ChannelGridAnimation.add_row` 時才決定的事,
+不在這裡。
+
+這個檔案依賴 `salt_core`(認識 `ConvLayer`/`FCLayer`/`LayerForwardTrace` 的
+實際欄位),是 `viz` 套件裡專門知道 `salt_core` 這個特定核心的轉接層——
+`viz.channel_grid`/`viz.time_resample` 本身不依賴 `salt_core`,不會因為這個
+檔案存在而被拉進 conv/FC 的語意。放在 `viz/` 而不是 `example/`,是因為
+`ConvChannelPanel`/`FCWindowPanel` 是任何用 `salt_core` 的人都會需要的可重用
+轉接層,不是「怎麼呼叫 salt_core」的一次性範例。
 
 `ConvChannelPanel`/`FCWindowPanel` 建構的時候就把整段 `frame_ms` 的內容算完
 存起來,`frame(t)` 只是單純的 index,不是每次呼叫都重算——跟
@@ -55,11 +65,6 @@ class ConvChannelPanel:
         self.n_frames = self._frames.shape[0]
         self.value_range = None if self.discrete else (
             float(np.nanmin(self._frames)), float(np.nanmax(self._frames)))
-        # 排版是選填的——不設就照 viz/channel_grid.py 的自動規則排;想手動
-        # 蓋掉的話,建構完之後直接設 `panel.position = (row, col)`/
-        # `panel.size_ratio = (寬倍率, 高倍率)` 就好,不用透過建構參數。
-        self.position = None
-        self.size_ratio = None
 
     def frame(self, t: int) -> np.ndarray:
         return self._frames[t]
@@ -93,8 +98,6 @@ class FCWindowPanel:
         self.n_frames = self._frames.shape[0]
         self.value_range = None if self.discrete else (
             float(np.nanmin(self._frames)), float(np.nanmax(self._frames)))
-        self.position = None
-        self.size_ratio = None
 
     def frame(self, t: int) -> np.ndarray:
         return self._frames[t]

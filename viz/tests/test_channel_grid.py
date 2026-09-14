@@ -149,17 +149,6 @@ def test_render_with_extent_keeps_real_axis_coordinates():
     assert im.get_extent() == [-10.0, 10.0, 104.0, 99.0]
 
 
-def test_animation_extent_stays_fixed_across_frame_updates():
-    panels = [_FakePanel(np.zeros((3, 2, 2)), extent=(0.0, 2.0, 1.0, 0.0)),
-              _FakePanel(np.zeros((3, 2, 2)), extent=(0.0, 2.0, 1.0, 0.0))]
-
-    anim = ChannelGridAnimation(ncols=2).build(panels)
-    anim._func(2)
-
-    for ax in _grid_axes(anim._fig):
-        assert ax.images[0].get_extent() == [0.0, 2.0, 1.0, 0.0]
-
-
 def test_render_nan_pixel_uses_pad_color_for_continuous_image():
     img = np.array([[0.1, np.nan], [0.9, 0.5]])
 
@@ -184,16 +173,13 @@ class _FakePanel:
 
     def __init__(self, frames, discrete: bool = False, title: str | None = None,
                  extent: tuple | None = None, xlabel: str | None = None,
-                 ylabel: str | None = None, position: tuple | None = None,
-                 size_ratio: tuple | None = None):
+                 ylabel: str | None = None):
         self._frames = np.asarray(frames)  # (n_frames, H, W)
         self.discrete = discrete
         self.title = title
         self.extent = extent
         self.xlabel = xlabel
         self.ylabel = ylabel
-        self.position = position
-        self.size_ratio = size_ratio
         self.n_frames = self._frames.shape[0]
         self.value_range = None if discrete else (
             float(np.nanmin(self._frames)), float(np.nanmax(self._frames)))
@@ -215,19 +201,36 @@ def _two_fake_panels():
     return [_FakePanel(continuous, discrete=False), _FakePanel(discrete, discrete=True)]
 
 
+def _build_two_panel_row():
+    panels = _two_fake_panels()
+    anim = ChannelGridAnimation().add_row(*panels).build()
+    return anim, panels
+
+
+def test_animation_extent_stays_fixed_across_frame_updates():
+    panels = [_FakePanel(np.zeros((3, 2, 2)), extent=(0.0, 2.0, 1.0, 0.0)),
+              _FakePanel(np.zeros((3, 2, 2)), extent=(0.0, 2.0, 1.0, 0.0))]
+
+    anim = ChannelGridAnimation().add_row(*panels).build()
+    anim._func(2)
+
+    for ax in _grid_axes(anim._fig):
+        assert ax.images[0].get_extent() == [0.0, 2.0, 1.0, 0.0]
+
+
 def test_animation_nan_region_uses_pad_color():
     # 模擬 panel 自己的圖裡有一塊沒有真實資料(例如 FC 窗口邊界):右下角補 NaN。
     panels = _two_fake_panels()
     panels[0]._frames[:, 1, 1] = np.nan
 
-    anim = ChannelGridAnimation(ncols=2).build(panels)
+    anim = ChannelGridAnimation().add_row(*panels).build()
 
     im = [ax.images[0] for ax in _grid_axes(anim._fig)][0]
     assert im.cmap(np.nan) == _PAD_COLOR_RGBA
 
 
 def test_animation_build_returns_func_animation_with_expected_axes():
-    anim = ChannelGridAnimation(ncols=2).build(_two_fake_panels())
+    anim, _ = _build_two_panel_row()
 
     assert isinstance(anim, FuncAnimation)
     grid = _grid_axes(anim._fig)
@@ -235,16 +238,14 @@ def test_animation_build_returns_func_animation_with_expected_axes():
 
 
 def test_animation_continuous_color_scale_fixed_across_all_frames():
-    anim = ChannelGridAnimation(ncols=2).build(_two_fake_panels())
+    anim, _ = _build_two_panel_row()
 
     continuous_im = anim._fig.axes[0].images[0]
     assert continuous_im.get_clim() == (0.0, 2.0)
 
 
 def test_animation_update_sets_image_data_for_requested_frame():
-    panels = _two_fake_panels()
-
-    anim = ChannelGridAnimation(ncols=2).build(panels)
+    anim, panels = _build_two_panel_row()
     anim._func(2)
 
     updated = [ax.images[0].get_array() for ax in _grid_axes(anim._fig)]
@@ -253,7 +254,7 @@ def test_animation_update_sets_image_data_for_requested_frame():
 
 
 def test_animation_discrete_uses_two_value_colorbar():
-    anim = ChannelGridAnimation(ncols=2).build(_two_fake_panels())
+    anim, _ = _build_two_panel_row()
 
     cbar_axes = [ax for ax in anim._fig.axes if ax.get_label() == "<colorbar>"]
     labelled = [[t.get_text() for t in cb.get_yticklabels()] for cb in cbar_axes]
@@ -263,146 +264,129 @@ def test_animation_discrete_uses_two_value_colorbar():
 def test_animation_frame_labels_update_suptitle():
     labels = ["t=0ms", "t=1ms", "t=2ms"]
 
-    anim = ChannelGridAnimation(ncols=2).build(_two_fake_panels(), frame_labels=labels)
+    anim = ChannelGridAnimation().add_row(*_two_fake_panels()).build(frame_labels=labels)
     assert anim._fig._suptitle.get_text() == "t=0ms"
     anim._func(1)
     assert anim._fig._suptitle.get_text() == "t=1ms"
 
 
-def test_animation_different_shaped_panels_keep_own_box_aspect():
-    # conv 接近正方形、FC 窗口又寬又扁——混在同一組動畫時,每個 panel 的
-    # imshow 應該維持自己真正的長寬比例,不是被同一格的框拉伸成一樣的形狀。
+def test_animation_panels_in_same_row_keep_own_box_aspect():
+    # conv 接近正方形、FC 窗口又寬又扁——同一排混在一起時,每個 panel 的
+    # imshow 應該維持自己真正的長寬比例,不是被同一排硬拉伸成一樣的形狀。
     panels = [_FakePanel(np.zeros((3, 10, 10))), _FakePanel(np.zeros((3, 5, 20)))]
 
-    anim = ChannelGridAnimation(ncols=2).build(panels)
+    anim = ChannelGridAnimation().add_row(*panels).build()
 
     aspects = [ax.get_box_aspect() for ax in _grid_axes(anim._fig)]
     assert aspects[0] == 10 / 10
     assert aspects[1] == 5 / 20
 
 
-def test_animation_manual_size_ratio_also_overrides_box_aspect():
-    # 明講 size_ratio 之後,連 imshow 的框形狀都要照 size_ratio 走(拉寬/壓扁
-    # 是呼叫端自己選的),不能被資料的真實長寬比(10/21)卡住。
-    panel = _FakePanel(np.zeros((3, 10, 21)), size_ratio=(3.0, 0.5))
+def test_animation_panel_with_extent_skips_box_aspect_constraint():
+    # 給了 extent 的 panel(座標軸已經決定顯示比例)不套 box_aspect,不會被
+    # 圖片本身的像素形狀(10/21)卡住。
+    panel = _FakePanel(np.zeros((3, 10, 21)), extent=(-10.0, 10.0, 10.0, 0.0))
 
-    anim = ChannelGridAnimation(ncols=1).build([panel])
-
-    ax = _grid_axes(anim._fig)[0]
-    assert ax.get_box_aspect() == 0.5 / 3.0
-
-
-def test_animation_manual_position_overrides_auto_placement():
-    # 3 個 panel、ncols=2:自動排版本來會是 (0,0)(0,1)(1,0)。把最後一個明講
-    # 放到 (0,1),前面自動排的那個(panel 1)應該讓開、被擠到 (1,0)。
-    panels = [_FakePanel(np.zeros((3, 4, 4))),
-              _FakePanel(np.zeros((3, 4, 4))),
-              _FakePanel(np.zeros((3, 4, 4)), position=(0, 1))]
-
-    anim = ChannelGridAnimation(ncols=2).build(panels)
-
-    axes = _grid_axes(anim._fig)
-    cells = [(list(ax.get_subplotspec().rowspan)[0], list(ax.get_subplotspec().colspan)[0])
-             for ax in axes]
-    assert cells[2] == (0, 1)  # 明講的那個真的在 (0,1)
-    assert cells[1] == (1, 0)  # 自動排的第 2 個被擠到剩下的格子,不是原本的 (0,1)
-
-
-def test_animation_manual_size_ratio_overrides_auto_aspect():
-    # 不設 size_ratio 時,方形圖(aspect=1)的比重是 (1,1);明講 size_ratio
-    # 之後,不管圖片形狀是什麼,比重直接照明講的值。
-    panels = [_FakePanel(np.zeros((3, 4, 4)), size_ratio=(2.0, 0.5))]
-
-    anim = ChannelGridAnimation(ncols=1).build(panels)
+    anim = ChannelGridAnimation().add_row(panel).build()
 
     ax = _grid_axes(anim._fig)[0]
-    assert ax.get_gridspec().get_width_ratios() == [2.0]
-    assert ax.get_gridspec().get_height_ratios() == [0.5]
+    assert ax.get_box_aspect() is None
 
 
-def test_animation_stacked_fc_panels_get_position_and_size_override():
-    # 對應真實情境:2 個 conv 面板維持自動排版(row 0),2 個 FC 面板改成
-    # 上下並排(同一欄、兩列)、寬度拉長高度縮小。
-    conv_a = _FakePanel(np.zeros((3, 10, 10)))
-    conv_b = _FakePanel(np.zeros((3, 10, 10)))
-    fc_a = _FakePanel(np.zeros((3, 10, 21)), position=(1, 0), size_ratio=(3.0, 0.6))
-    fc_b = _FakePanel(np.zeros((3, 10, 21)), position=(2, 0), size_ratio=(3.0, 0.6))
+def test_animation_rows_are_independent_of_each_other():
+    # 對應真實情境:第一排放 2 個 conv(自動等寬),第二、三排各自放 1 個 FC
+    # (各自撐滿整排的寬度)。改第二、三排放幾個,不該牽動第一排 conv 的形狀。
+    conv_a = _FakePanel(np.zeros((3, 17, 17)))
+    conv_b = _FakePanel(np.zeros((3, 17, 17)))
+    fc_a = _FakePanel(np.zeros((3, 10, 21)))
+    fc_b = _FakePanel(np.zeros((3, 10, 21)))
 
-    anim = ChannelGridAnimation(ncols=2).build([conv_a, conv_b, fc_a, fc_b])
+    anim = (ChannelGridAnimation()
+            .add_row(conv_a, conv_b)
+            .add_row(fc_a)
+            .add_row(fc_b)
+            .build())
 
     axes = _grid_axes(anim._fig)
-    cells = [(list(ax.get_subplotspec().rowspan)[0], list(ax.get_subplotspec().colspan)[0])
-             for ax in axes]
-    assert cells[0] == (0, 0) and cells[1] == (0, 1)  # conv 兩個維持自動排版
-    assert cells[2] == (1, 0) and cells[3] == (2, 0)  # FC 兩個上下並排在同一欄
-    gs = axes[0].get_gridspec()
-    assert gs.get_width_ratios()[0] == 3.0   # FC 那欄的寬度採用明講的倍率
-    assert gs.get_height_ratios()[1:] == [0.6, 0.6]  # FC 那兩列的高度採用明講的倍率
+    assert len(axes) == 4
+    # conv 兩個維持自己的正方形比例,不受後面兩排的存在影響。
+    assert axes[0].get_box_aspect() == 1.0
+    assert axes[1].get_box_aspect() == 1.0
+    # FC 兩排各自只有一個 panel,寬度撐滿自己那一排(不會被 conv 那排的兩欄
+    # 佔的欄寬套住)。
+    _, _, conv_width, _ = axes[0].get_position().bounds
+    _, _, fc_width, _ = axes[2].get_position().bounds
+    assert fc_width > conv_width
 
 
-def test_animation_duplicate_position_raises():
-    panels = [_FakePanel(np.zeros((3, 4, 4)), position=(0, 0)),
-              _FakePanel(np.zeros((3, 4, 4)), position=(0, 0))]
+def test_animation_row_height_weight_scales_row_relative_to_others():
+    # 兩排各一個 panel,第二排 height=0.5:第二排的實際物理高度應該接近第一
+    # 排的一半。用 window_extent(畫布的絕對像素座標)量,不是用
+    # get_position()——後者對「axes 在 subfigure 裡面」回傳的是相對那個
+    # subfigure 自己的座標,不是相對整張畫布,兩排會量出一樣的比例,測不出
+    # height 這個參數有沒有真的生效。
+    tall = _FakePanel(np.zeros((3, 4, 4)))
+    short = _FakePanel(np.zeros((3, 4, 4)))
+
+    anim = ChannelGridAnimation().add_row(tall).add_row(short, height=0.5).build()
+
+    anim._fig.canvas.draw()
+    renderer = anim._fig.canvas.get_renderer()
+    axes = _grid_axes(anim._fig)
+    tall_height = axes[0].get_window_extent(renderer).height
+    short_height = axes[1].get_window_extent(renderer).height
+    ratio = short_height / tall_height
+    assert 0.4 < ratio < 0.6
+
+
+def test_animation_widths_scale_columns_within_same_row():
+    # 同一排兩個 panel,widths=[2, 1]:第一個的實際物理寬度應該是第二個的
+    # 兩倍。兩個都給 extent(不套 box_aspect),避免長寬比例限制干擾寬度本身
+    # 的比重量測。
+    a = _FakePanel(np.zeros((3, 4, 4)), extent=(0.0, 4.0, 4.0, 0.0))
+    b = _FakePanel(np.zeros((3, 4, 4)), extent=(0.0, 4.0, 4.0, 0.0))
+
+    anim = ChannelGridAnimation().add_row(a, b, widths=[2, 1]).build()
+
+    anim._fig.canvas.draw()
+    renderer = anim._fig.canvas.get_renderer()
+    axes = _grid_axes(anim._fig)
+    width_a = axes[0].get_window_extent(renderer).width
+    width_b = axes[1].get_window_extent(renderer).width
+    assert abs(width_a / width_b - 2.0) < 1e-6
+
+
+def test_add_row_mismatched_widths_length_raises():
     try:
-        ChannelGridAnimation(ncols=2).build(panels)
+        ChannelGridAnimation().add_row(_FakePanel(np.zeros((3, 2, 2))), widths=[1, 2])
     except ValueError:
         pass
     else:
-        raise AssertionError("預期兩個 panel 搶同一個 position 要拋 ValueError")
+        raise AssertionError("預期 widths 長度跟 panel 數量不一致要拋 ValueError")
 
 
-def test_animation_spanning_panel_does_not_inflate_spanned_columns():
-    # 對應「conv 兩個緊靠、FC 橫跨兩欄上下並排」的真實情境:FC 橫跨欄 0~1
-    # 時,不該逼任一欄單獨變寬——欄寬維持 conv 自己算出來的 1.0,不會因為
-    # FC 的 size_ratio 寬倍率(2.0)被拉大。
-    conv_a = _FakePanel(np.zeros((3, 10, 10)))
-    conv_b = _FakePanel(np.zeros((3, 10, 10)))
-    fc = _FakePanel(np.zeros((3, 10, 21)), position=(1, slice(0, 2)), size_ratio=(2.0, 0.5))
-
-    anim = ChannelGridAnimation(ncols=2).build([conv_a, conv_b, fc])
-
-    gs = _grid_axes(anim._fig)[0].get_gridspec()
-    assert gs.get_width_ratios() == [1.0, 1.0]   # 沒有被 FC 的寬倍率拉大
-    assert gs.get_height_ratios() == [1.0, 0.5]  # FC 自己那一列還是採用明講的高倍率
-
-
-def test_animation_spanning_panel_placed_across_requested_columns():
-    conv_a = _FakePanel(np.zeros((3, 10, 10)))
-    conv_b = _FakePanel(np.zeros((3, 10, 10)))
-    fc = _FakePanel(np.zeros((3, 10, 21)), position=(1, slice(0, 2)))
-
-    anim = ChannelGridAnimation(ncols=2).build([conv_a, conv_b, fc])
-
-    fc_ax = _grid_axes(anim._fig)[2]
-    spec = fc_ax.get_subplotspec()
-    assert list(spec.rowspan) == [1]
-    assert list(spec.colspan) == [0, 1]
-
-
-def test_animation_spanning_position_conflict_raises():
-    panels = [_FakePanel(np.zeros((3, 4, 4)), position=(0, 0)),
-              _FakePanel(np.zeros((3, 4, 4)), position=(0, slice(0, 2)))]
+def test_add_row_without_panels_raises():
     try:
-        ChannelGridAnimation(ncols=2).build(panels)
+        ChannelGridAnimation().add_row()
     except ValueError:
         pass
     else:
-        raise AssertionError("預期橫跨範圍跟另一個 panel 的格子重疊要拋 ValueError")
+        raise AssertionError("預期 add_row() 沒給任何 panel 要拋 ValueError")
 
 
-def test_animation_empty_panels_raises():
+def test_animation_no_rows_raises():
     try:
-        ChannelGridAnimation().build([])
+        ChannelGridAnimation().build()
     except ValueError:
         pass
     else:
-        raise AssertionError("預期 panels 是空的要拋 ValueError")
+        raise AssertionError("預期沒有任何一排 panel 就 build() 要拋 ValueError")
 
 
 def test_animation_mismatched_n_frames_raises():
     panels = [_FakePanel(np.zeros((3, 2, 2))), _FakePanel(np.zeros((4, 2, 2)))]
     try:
-        ChannelGridAnimation().build(panels)
+        ChannelGridAnimation().add_row(*panels).build()
     except ValueError:
         pass
     else:
@@ -411,7 +395,7 @@ def test_animation_mismatched_n_frames_raises():
 
 def test_animation_mismatched_frame_labels_length_raises():
     try:
-        ChannelGridAnimation().build(_two_fake_panels(), frame_labels=["only-one"])
+        ChannelGridAnimation().add_row(*_two_fake_panels()).build(frame_labels=["only-one"])
     except ValueError:
         pass
     else:
@@ -440,16 +424,14 @@ TESTS = [
     test_animation_update_sets_image_data_for_requested_frame,
     test_animation_discrete_uses_two_value_colorbar,
     test_animation_frame_labels_update_suptitle,
-    test_animation_different_shaped_panels_keep_own_box_aspect,
-    test_animation_manual_size_ratio_also_overrides_box_aspect,
-    test_animation_manual_position_overrides_auto_placement,
-    test_animation_manual_size_ratio_overrides_auto_aspect,
-    test_animation_stacked_fc_panels_get_position_and_size_override,
-    test_animation_duplicate_position_raises,
-    test_animation_spanning_panel_does_not_inflate_spanned_columns,
-    test_animation_spanning_panel_placed_across_requested_columns,
-    test_animation_spanning_position_conflict_raises,
-    test_animation_empty_panels_raises,
+    test_animation_panels_in_same_row_keep_own_box_aspect,
+    test_animation_panel_with_extent_skips_box_aspect_constraint,
+    test_animation_rows_are_independent_of_each_other,
+    test_animation_row_height_weight_scales_row_relative_to_others,
+    test_animation_widths_scale_columns_within_same_row,
+    test_add_row_mismatched_widths_length_raises,
+    test_add_row_without_panels_raises,
+    test_animation_no_rows_raises,
     test_animation_mismatched_n_frames_raises,
     test_animation_mismatched_frame_labels_length_raises,
 ]
