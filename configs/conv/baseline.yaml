@@ -90,7 +90,7 @@ data:
 
 train:
   lr: 1.0e-2
-  epochs: 40
+  epochs: 100
   batch_size: 4
   seed: 42
-  weight_snapshot_every: 5
+  weight_snapshot_every: 1

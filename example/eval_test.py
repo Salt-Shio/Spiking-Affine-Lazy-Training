@@ -28,6 +28,7 @@ import os
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import numpy as np
+import yaml
 
 from data.src.nmnist import NMNISTDataset
 from example.models.conv_net import N_CLASSES, ConvNetCompressed, build_decoder

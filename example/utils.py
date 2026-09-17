@@ -103,8 +103,10 @@ def load_run_record(exp_dir: str) -> dict:
 
 def rebuild_layers(run_record: dict) -> list:
     """從 `run.yaml` 重建 layer list:形狀吃 config 快照,壓縮容量吃訓練結束的
-    最終值(`final_capacity`)。init_k 不用套——重建出來的 layers 只用來讀取
-    幾何/評估權重,不重新初始化。"""
+    最終值(`final_capacity`:`L`/`max_out_spikes`/`max_steps` 三個旋鈕都要還原,
+    訓練寫出時三個就是一起存的,見 `train_conv_compressed.py` 的
+    `final_capacity`)。init_k 不用套——重建出來的 layers 只用來讀取幾何/
+    評估權重,不重新初始化。"""
     layers = build_network(run_record["config"]["model"])
     final_capacity = run_record.get("final_capacity", {})
     rebuilt = []
@@ -112,7 +114,8 @@ def rebuild_layers(run_record: dict) -> list:
         cap = final_capacity.get(layer.name)
         if cap is not None and isinstance(layer, ConvLayer):
             layer = dataclasses.replace(
-                layer, L=int(cap["L"]), max_out_spikes=int(cap["max_out_spikes"]))
+                layer, L=int(cap["L"]), max_out_spikes=int(cap["max_out_spikes"]),
+                max_steps=int(cap["max_steps"]))
         rebuilt.append(layer)
     return rebuilt
 
