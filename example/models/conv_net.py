@@ -177,5 +177,22 @@ class ConvNetCompressed:
                        batch_n_real_events: jax.Array):
         """對一批樣本 vmap `apply`。回傳 (批次化的 `LayerForwardResult`,
         [批次化的 LayerDiag, ...])。"""
+        # 2026-09-18:曾經因為 determinism flag 開著時「外層 batch vmap」
+        # 讓壓縮版 conv 佇列建構的梯度算錯,暫時改用 lax.map 繞過(見
+        # docs/問題紀錄.md 第八節)——後來定位到真正根因是
+        # `_compress_candidates` 用 `mode='drop'` scatter 處理不合法/溢出
+        # 候選,踩到 XLA 一個 GPU determinism codegen bug,已經在
+        # `salt_core/connectivity/conv.py::_compress_candidates` 改用「垃圾桶」
+        # 寫法修掉(不用 mode='drop',邏輯驗證見 xla_repro/verify_trash_row_equivalence.py),
+        # 換回 vmap(比 lax.map 快,batch=8 時量過差距達 10 倍)。
+        # lax.map 版本(修法生效前的暫時繞法)保留在下面當註解,不要刪除。
         return jax.vmap(self.apply, in_axes=(None, 0, 0, 0, 0, 0))(
             params, batch_event_times, batch_x, batch_y, batch_c, batch_n_real_events)
+        # def _apply_one(args):
+        #     event_times, x, y, c, n_real_events = args
+        #     return self.apply(params, event_times, x, y, c, n_real_events)
+        #
+        # return jax.lax.map(
+        #     _apply_one,
+        #     (batch_event_times, batch_x, batch_y, batch_c, batch_n_real_events),
+        # )

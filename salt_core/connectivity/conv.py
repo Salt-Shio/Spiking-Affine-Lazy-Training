@@ -163,10 +163,24 @@ def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: in
       n_real_per_neuron: shape (n_out_spatial,) int32,神經元真正收到的
         合法 tap 數(不含 catch-up、不含 identity)。
 
-    $L$ 太小、真的放不下全部候選的情況(第 7.2 節「L 出界」問題):這裡用
-    scatter 的 mode='drop' 直接丟掉 local_rank >= max_queue_len 的候選,不會
-    crash,但也不會示警——主動偵測「是不是真的丟過東西」是第 7.2 節動態 L
-    修正機制的責任,不是這個函式(第 1 階段)要做的事。
+    $L$ 太小、真的放不下全部候選的情況(第 7.2 節「L 出界」問題):不合法候選
+    跟溢出候選,都用底下「垃圾桶」機制丟棄,不會 crash;`n_real_per_neuron`
+    如實回報真正的候選數(可能超過 `max_queue_len`),主動偵測「是不是真的
+    丟過東西」是第 7.2 節動態 L 修正機制的責任,不是這個函式(第 1 階段)要
+    做的事。
+
+    **不用 `mode='drop'`,改用「垃圾桶」(2026-09-18,問題紀錄第八節)**:
+    `mode='drop'` 讓 scatter 的 index 陣列真的帶越界值,這個組合(多個邏輯
+    獨立樣本合併進同一次呼叫 + scatter 的 index 真的越界)會踩到 XLA 一個
+    GPU determinism 相關的 codegen bug(`--xla_gpu_deterministic_ops=true`
+    開著、外層 batch `vmap` 時,梯度會算錯——forward 不受影響,純粹是
+    backward 的 scatter-add 出錯,細節見 `docs/問題紀錄.md` 第八節、
+    `xla_repro/`)。改法:scatter 目標陣列的兩個維度都多開一格當「垃圾桶」
+    (`n_out_spatial+1`、`max_queue_len+1`),不合法/溢出的候選全部指去
+    垃圾桶座標——保證是合法範圍內的 index,scatter 從頭到尾不需要真的丟棄
+    任何一次寫入;事後把垃圾桶那一整格切掉,效果跟原本完全一樣。跟
+    `mode='drop'` 版本逐位元等價,已用多組測資(一般情況、全部合法、全部
+    不合法、L 溢出、空清單)驗證過,見 `xla_repro/verify_trash_row_equivalence.py`。
     """
     order = jnp.lexsort((j_flat, n_flat))
     sorted_n = n_flat[order]
@@ -179,16 +193,29 @@ def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: in
     last_start = jax.lax.cummax(start_positions)
     local_rank = idx_range - last_start
 
-    local_to_global_j = jnp.full((n_out_spatial, max_queue_len), n_events, dtype=jnp.int32)
-    local_to_global_j = local_to_global_j.at[sorted_n, local_rank].set(sorted_j, mode='drop')
+    # 垃圾桶座標:n_out_spatial(對應「候選不合法」的既有 sentinel 慣例)、
+    # max_queue_len(候選溢出 L 時的落點)——兩者都保證落在 padded 陣列的
+    # 合法範圍內,scatter 不需要 mode='drop'。
+    is_invalid_n = sorted_n >= n_out_spatial
+    safe_n = jnp.where(is_invalid_n, n_out_spatial, sorted_n)
+    safe_rank = jnp.where((local_rank >= max_queue_len) | is_invalid_n, max_queue_len, local_rank)
+
+    local_to_global_j_padded = jnp.full((n_out_spatial + 1, max_queue_len + 1), n_events, dtype=jnp.int32)
+    local_to_global_j_padded = local_to_global_j_padded.at[safe_n, safe_rank].set(sorted_j)
+    local_to_global_j = local_to_global_j_padded[:n_out_spatial, :max_queue_len]
 
     # 對每個 n scatter-max(local_rank+1):同一段內 local_rank 嚴格遞增
     # 0,1,...,count-1,段內最後一筆的 local_rank+1 剛好等於這段的合法候選數
     # (=這個神經元的 n_real_events),用 max 而不是取最後一筆,是因為 scatter
     # 不保證處理順序,但這裡任一筆的 local_rank+1 都 <= count,取 max 恆等於
-    # count,不用依賴處理順序。
-    n_real_per_neuron = jnp.zeros((n_out_spatial,), dtype=jnp.int32)
-    n_real_per_neuron = n_real_per_neuron.at[sorted_n].max(local_rank + 1, mode='drop')
+    # count,不用依賴處理順序。**這個 scatter 只看 n 合不合法,跟
+    # local_rank 有沒有超過 max_queue_len 完全無關**——local_rank+1 就算
+    # 超過 max_queue_len 也要照樣參與 max,這樣下游才能靠這個數字偵測「真的
+    # 需要比 L 更大的容量」,不能沿用上面 local_to_global_j 那個溢出判斷。
+    n_real_per_neuron_padded = jnp.zeros((n_out_spatial + 1,), dtype=jnp.int32)
+    real_local_rank = jnp.where(is_invalid_n, 0, local_rank + 1)
+    n_real_per_neuron_padded = n_real_per_neuron_padded.at[safe_n].max(real_local_rank)
+    n_real_per_neuron = n_real_per_neuron_padded[:n_out_spatial]
 
     return local_to_global_j, n_real_per_neuron
 

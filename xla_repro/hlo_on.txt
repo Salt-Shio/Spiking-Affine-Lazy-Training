@@ -1,0 +1,896 @@
+HloModule jit_loss_batched, is_scheduled=true, entry_computation_layout={(s32[2,4]{1,0}, s32[2,4]{1,0}, s32[2,4]{1,0})->f32[1,1,3,3]{3,2,1,0}}, allow_spmd_sharding_propagation_to_parameters={true,true,true}, allow_spmd_sharding_propagation_to_output={true}, frontend_attributes={fingerprint_before_lhs="cd0e4c9a5b177965fea81273006bff03"}
+
+FileNames
+1 "/home/salt/Projects/Spiking-Affine-Lazy-Training/xla_repro/dump_hlo.py"
+2 "/home/salt/Projects/Spiking-Affine-Lazy-Training/xla_repro/repro.py"
+
+FunctionNames
+1 "loss_batched"
+2 "loss_single"
+3 "build_conv_queue_compressed"
+4 "_compress_candidates"
+5 "<module>"
+6 "build_conv_queue_compressed.<locals>.<lambda>"
+7 "_axis_candidates"
+8 "_affine_with_catchup"
+
+FileLocations
+1 {file_name_id=1 function_name_id=1 line=31 end_line=31 column=17 end_column=93}
+2 {file_name_id=1 function_name_id=2 line=27 end_line=27 column=21 end_column=125}
+3 {file_name_id=2 function_name_id=3 line=134 end_line=135 column=51 end_column=63}
+4 {file_name_id=2 function_name_id=4 line=74 end_line=74 column=17 end_column=48}
+5 {file_name_id=1 function_name_id=5 line=35 end_line=35 column=11 end_column=52}
+6 {file_name_id=2 function_name_id=3 line=153 end_line=153 column=18 end_column=73}
+7 {file_name_id=2 function_name_id=6 line=153 end_line=153 column=40 end_column=69}
+8 {file_name_id=2 function_name_id=4 line=66 end_line=66 column=12 end_column=41}
+9 {file_name_id=2 function_name_id=4 line=81 end_line=81 column=24 end_column=87}
+10 {file_name_id=2 function_name_id=4 line=81 end_line=81 column=59 end_column=73}
+11 {file_name_id=2 function_name_id=4 line=78 end_line=78 column=24 end_column=93}
+12 {file_name_id=2 function_name_id=4 line=75 end_line=75 column=17 end_column=39}
+13 {file_name_id=2 function_name_id=4 line=67 end_line=67 column=15 end_column=28}
+14 {file_name_id=2 function_name_id=4 line=73 end_line=73 column=22 end_column=56}
+15 {file_name_id=2 function_name_id=4 line=72 end_line=72 column=15 end_column=82}
+16 {file_name_id=2 function_name_id=4 line=72 end_line=72 column=51 end_column=63}
+17 {file_name_id=2 function_name_id=4 line=72 end_line=72 column=67 end_column=80}
+18 {file_name_id=2 function_name_id=3 line=140 end_line=140 column=10 end_column=19}
+19 {file_name_id=2 function_name_id=3 line=148 end_line=148 column=15 end_column=40}
+20 {file_name_id=2 function_name_id=3 line=149 end_line=149 column=15 end_column=40}
+21 {file_name_id=2 function_name_id=3 line=146 end_line=146 column=12 end_column=29}
+22 {file_name_id=2 function_name_id=3 line=138 end_line=138 column=10 end_column=19}
+23 {file_name_id=2 function_name_id=3 line=146 end_line=146 column=18 end_column=29}
+24 {file_name_id=2 function_name_id=3 line=144 end_line=144 column=15 end_column=57}
+25 {file_name_id=2 function_name_id=3 line=145 end_line=145 column=12 end_column=29}
+26 {file_name_id=2 function_name_id=3 line=145 end_line=145 column=18 end_column=29}
+27 {file_name_id=2 function_name_id=3 line=143 end_line=143 column=15 end_column=57}
+28 {file_name_id=2 function_name_id=3 line=139 end_line=139 column=10 end_column=19}
+29 {file_name_id=2 function_name_id=3 line=137 end_line=137 column=13 end_column=67}
+30 {file_name_id=2 function_name_id=4 line=68 end_line=68 column=15 end_column=28}
+31 {file_name_id=2 function_name_id=3 line=128 end_line=129 column=11 end_column=46}
+32 {file_name_id=2 function_name_id=3 line=131 end_line=131 column=13 end_column=53}
+33 {file_name_id=2 function_name_id=3 line=127 end_line=127 column=11 end_column=34}
+34 {file_name_id=2 function_name_id=3 line=125 end_line=125 column=15 end_column=54}
+35 {file_name_id=2 function_name_id=3 line=124 end_line=124 column=20 end_column=61}
+36 {file_name_id=2 function_name_id=3 line=122 end_line=122 column=15 end_column=34}
+37 {file_name_id=2 function_name_id=3 line=121 end_line=121 column=22 end_column=60}
+38 {file_name_id=2 function_name_id=7 line=60 end_line=60 column=12 end_column=44}
+39 {file_name_id=2 function_name_id=7 line=60 end_line=60 column=48 end_column=57}
+40 {file_name_id=2 function_name_id=7 line=60 end_line=60 column=37 end_column=43}
+41 {file_name_id=2 function_name_id=7 line=60 end_line=60 column=13 end_column=32}
+42 {file_name_id=2 function_name_id=7 line=57 end_line=57 column=12 end_column=24}
+43 {file_name_id=2 function_name_id=7 line=56 end_line=56 column=13 end_column=18}
+44 {file_name_id=2 function_name_id=7 line=59 end_line=59 column=8 end_column=22}
+45 {file_name_id=2 function_name_id=3 line=120 end_line=120 column=22 end_column=60}
+46 {file_name_id=2 function_name_id=7 line=56 end_line=56 column=12 end_column=40}
+47 {file_name_id=2 function_name_id=3 line=157 end_line=160 column=21 end_column=18}
+48 {file_name_id=2 function_name_id=6 line=158 end_line=159 column=21 end_column=53}
+49 {file_name_id=2 function_name_id=8 line=103 end_line=103 column=8 end_column=40}
+50 {file_name_id=2 function_name_id=8 line=90 end_line=90 column=14 end_column=30}
+
+StackFrames
+1 {file_location_id=1 parent_frame_id=1}
+2 {file_location_id=2 parent_frame_id=2}
+3 {file_location_id=3 parent_frame_id=3}
+4 {file_location_id=4 parent_frame_id=4}
+5 {file_location_id=5 parent_frame_id=1}
+6 {file_location_id=1 parent_frame_id=6}
+7 {file_location_id=2 parent_frame_id=7}
+8 {file_location_id=6 parent_frame_id=8}
+9 {file_location_id=7 parent_frame_id=9}
+10 {file_location_id=1 parent_frame_id=10}
+11 {file_location_id=2 parent_frame_id=11}
+12 {file_location_id=6 parent_frame_id=12}
+13 {file_location_id=7 parent_frame_id=13}
+14 {file_location_id=3 parent_frame_id=8}
+15 {file_location_id=8 parent_frame_id=15}
+16 {file_location_id=9 parent_frame_id=15}
+17 {file_location_id=10 parent_frame_id=15}
+18 {file_location_id=11 parent_frame_id=15}
+19 {file_location_id=12 parent_frame_id=15}
+20 {file_location_id=4 parent_frame_id=15}
+21 {file_location_id=1 parent_frame_id=21}
+22 {file_location_id=2 parent_frame_id=22}
+23 {file_location_id=3 parent_frame_id=23}
+24 {file_location_id=4 parent_frame_id=24}
+25 {file_location_id=13 parent_frame_id=15}
+26 {file_location_id=14 parent_frame_id=15}
+27 {file_location_id=15 parent_frame_id=15}
+28 {file_location_id=16 parent_frame_id=15}
+29 {file_location_id=17 parent_frame_id=15}
+30 {file_location_id=18 parent_frame_id=8}
+31 {file_location_id=19 parent_frame_id=8}
+32 {file_location_id=20 parent_frame_id=8}
+33 {file_location_id=21 parent_frame_id=8}
+34 {file_location_id=22 parent_frame_id=8}
+35 {file_location_id=23 parent_frame_id=8}
+36 {file_location_id=24 parent_frame_id=8}
+37 {file_location_id=25 parent_frame_id=8}
+38 {file_location_id=26 parent_frame_id=8}
+39 {file_location_id=27 parent_frame_id=8}
+40 {file_location_id=28 parent_frame_id=8}
+41 {file_location_id=29 parent_frame_id=8}
+42 {file_location_id=30 parent_frame_id=15}
+43 {file_location_id=31 parent_frame_id=8}
+44 {file_location_id=32 parent_frame_id=8}
+45 {file_location_id=33 parent_frame_id=8}
+46 {file_location_id=34 parent_frame_id=8}
+47 {file_location_id=35 parent_frame_id=8}
+48 {file_location_id=36 parent_frame_id=8}
+49 {file_location_id=37 parent_frame_id=8}
+50 {file_location_id=38 parent_frame_id=50}
+51 {file_location_id=39 parent_frame_id=50}
+52 {file_location_id=40 parent_frame_id=50}
+53 {file_location_id=41 parent_frame_id=50}
+54 {file_location_id=42 parent_frame_id=50}
+55 {file_location_id=43 parent_frame_id=50}
+56 {file_location_id=44 parent_frame_id=50}
+57 {file_location_id=45 parent_frame_id=8}
+58 {file_location_id=44 parent_frame_id=58}
+59 {file_location_id=46 parent_frame_id=50}
+60 {file_location_id=38 parent_frame_id=58}
+61 {file_location_id=39 parent_frame_id=58}
+62 {file_location_id=40 parent_frame_id=58}
+63 {file_location_id=41 parent_frame_id=58}
+64 {file_location_id=42 parent_frame_id=58}
+65 {file_location_id=43 parent_frame_id=58}
+66 {file_location_id=46 parent_frame_id=58}
+67 {file_location_id=47 parent_frame_id=8}
+68 {file_location_id=48 parent_frame_id=68}
+69 {file_location_id=49 parent_frame_id=69}
+70 {file_location_id=50 parent_frame_id=69}
+
+
+%region_0.4.clone (sort.14: s32[], sort.15: s32[], sort.20: s32[], sort.21: s32[], sort.12: s32[], sort.13: s32[], p.3.lhs.clone: s32[], p.3.rhs.clone: s32[]) -> pred[] {
+  %sort.12 = s32[] parameter(4), metadata={op_name="sort"}
+  %sort.13 = s32[] parameter(5), metadata={op_name="sort"}
+  %sort.14 = s32[] parameter(0), metadata={op_name="sort"}
+  %sort.15 = s32[] parameter(1), metadata={op_name="sort"}
+  %eq_to.0.0 = pred[] compare(%sort.14, %sort.15), direction=EQ, metadata={op_name="eq_to"}
+  %sort.20 = s32[] parameter(2), metadata={op_name="sort"}
+  %sort.21 = s32[] parameter(3), metadata={op_name="sort"}
+  %lt_to.1.0 = pred[] compare(%sort.20, %sort.21), direction=LT, metadata={op_name="lt_to"}
+  %and.12.0 = pred[] and(%eq_to.0.0, %lt_to.1.0), metadata={op_name="and"}
+  %lt_to.0.0 = pred[] compare(%sort.14, %sort.15), direction=LT, metadata={op_name="lt_to"}
+  %or.0.0 = pred[] or(%lt_to.0.0, %and.12.0), metadata={op_name="or"}
+  %eq_to.2.0 = pred[] compare(%sort.15, %sort.14), direction=EQ, metadata={op_name="eq_to"}
+  %lt_to.5.0 = pred[] compare(%sort.21, %sort.20), direction=LT, metadata={op_name="lt_to"}
+  %and.13.0 = pred[] and(%eq_to.2.0, %lt_to.5.0), metadata={op_name="and"}
+  %lt_to.4.0 = pred[] compare(%sort.15, %sort.14), direction=LT, metadata={op_name="lt_to"}
+  %or.2.0 = pred[] or(%lt_to.4.0, %and.13.0), metadata={op_name="or"}
+  %compare.16.0 = pred[] compare(%or.0.0, %or.2.0), direction=EQ
+  %p.3.lhs.clone = s32[] parameter(6)
+  %p.3.rhs.clone = s32[] parameter(7)
+  %compare.17.0 = pred[] compare(%p.3.lhs.clone, %p.3.rhs.clone), direction=LT
+  ROOT %select.13.0 = pred[] select(%compare.16.0, %compare.17.0, %or.0.0)
+}
+
+%fused_computation (param_0: s32[2,16], param_1: s32[2,16]) -> (s32[2,16], s32[2,16], s32[2,16], s32[2,16]) {
+  %param_0 = s32[2,16]{1,0} parameter(0)
+  %param_1 = s32[2,16]{1,0} parameter(1)
+  %iota.22.1 = s32[2,16]{1,0} iota(), iota_dimension=1, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(lexsort)))/broadcast_in_dim" stack_frame_id=15}
+  ROOT %sort.22.1 = (s32[2,16]{1,0}, s32[2,16]{1,0}, s32[2,16]{1,0}, s32[2,16]{1,0}) sort(%param_0, %param_1, %iota.22.1, %iota.22.1), dimensions={1}, to_apply=%region_0.4.clone, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(lexsort)))/sort" stack_frame_id=15}
+}
+
+%sorting_computation (lhs_key: s32[], rhs_key: s32[], lhs_update_0: s32[], rhs_update_0: s32[], lhs_permutation: s32[], rhs_permutation: s32[]) -> pred[] {
+  %lhs_update_0 = s32[] parameter(2)
+  %rhs_update_0 = s32[] parameter(3)
+  %lhs_permutation = s32[] parameter(4)
+  %rhs_permutation = s32[] parameter(5)
+  %lhs_key = s32[] parameter(0)
+  %rhs_key = s32[] parameter(1)
+  ROOT %compare.29 = pred[] compare(%lhs_key, %rhs_key), direction=LT
+}
+
+%fused_computation.1 (param_0.1: s32[32], param_1.1: s32[32]) -> (s32[32], s32[32], s32[32]) {
+  %param_0.1 = s32[32]{0} parameter(0)
+  %param_1.1 = s32[32]{0} parameter(1)
+  %iota.8.1 = s32[32]{0} iota(), iota_dimension=0
+  ROOT %sort.4.1 = (s32[32]{0}, s32[32]{0}, s32[32]{0}) sort(%param_0.1, %param_1.1, %iota.8.1), dimensions={0}, to_apply=%sorting_computation
+}
+
+%sorting_computation.1 (lhs_key.1: s32[], rhs_key.1: s32[], lhs_update_0.1: f32[], rhs_update_0.1: f32[], lhs_permutation.1: s32[], rhs_permutation.1: s32[]) -> pred[] {
+  %lhs_update_0.1 = f32[] parameter(2)
+  %rhs_update_0.1 = f32[] parameter(3)
+  %lhs_permutation.1 = s32[] parameter(4)
+  %rhs_permutation.1 = s32[] parameter(5)
+  %lhs_key.1 = s32[] parameter(0)
+  %rhs_key.1 = s32[] parameter(1)
+  ROOT %compare.9.0 = pred[] compare(%lhs_key.1, %rhs_key.1), direction=LT
+}
+
+%fused_computation.2 (param_0.2: s32[32], param_1.2: f32[32]) -> (s32[32], f32[32], s32[32]) {
+  %param_0.2 = s32[32]{0} parameter(0)
+  %param_1.2 = f32[32]{0} parameter(1)
+  %iota.9.1 = s32[32]{0} iota(), iota_dimension=0
+  ROOT %sort.5.1 = (s32[32]{0}, f32[32]{0}, s32[32]{0}) sort(%param_0.2, %param_1.2, %iota.9.1), dimensions={0}, to_apply=%sorting_computation.1
+}
+
+%region_4.18 (scatter-add.2: f32[], scatter-add.3: f32[]) -> f32[] {
+  %scatter-add.2 = f32[] parameter(0), metadata={op_name="scatter-add"}
+  %scatter-add.3 = f32[] parameter(1), metadata={op_name="scatter-add"}
+  ROOT %add.49.0 = f32[] add(%scatter-add.2, %scatter-add.3), metadata={op_name="jit(loss_batched)/transpose(jvp(vmap(vmap())))/add" stack_frame_id=13}
+}
+
+%reduce_logical_and.clone (lhs.1: pred[], rhs.1: pred[]) -> pred[] {
+  %lhs.1 = pred[] parameter(0)
+  %rhs.1 = pred[] parameter(1)
+  ROOT %and.38.0 = pred[] and(%lhs.1, %rhs.1)
+}
+
+%reduce_logical_and (lhs: pred[], rhs: pred[]) -> pred[] {
+  %lhs = pred[] parameter(0)
+  %rhs = pred[] parameter(1)
+  ROOT %and.10.0 = pred[] and(%lhs, %rhs)
+}
+
+%fused_scatter (param_0.3: f32[1,1,3,3], param_1.183: s32[4], param_2.340: s32[32], param_3.245: s32[32], param_4.214: s32[32,4], param_5.188: s32[4], param_6.175: f32[32], param_7.139: s32[4]) -> f32[1,1,3,3] {
+  %param_0.3 = f32[1,1,3,3]{3,2,1,0} parameter(0)
+  %param_3.245 = s32[32]{0} parameter(3)
+  %slice.24.10 = s32[31]{0} slice(%param_3.245), slice={[0:31]}
+  %slice.25.5 = s32[31]{0} slice(%param_3.245), slice={[1:32]}
+  %compare.15.5 = pred[31]{0} compare(%slice.24.10, %slice.25.5), direction=NE
+  %constant_126_2 = pred[1]{0} constant({1})
+  %concatenate.32.3 = pred[32]{0} concatenate(%compare.15.5, %constant_126_2), dimensions={0}
+  %broadcast.140.1 = pred[32,1,4]{2,1,0} broadcast(%concatenate.32.3), dimensions={0}
+  %param_4.214 = s32[32,4]{1,0} parameter(4)
+  %constant_58_2 = s32[] constant(0)
+  %broadcast.54.7 = s32[32,4]{1,0} broadcast(%constant_58_2), dimensions={}
+  %compare.7.7 = pred[32,4]{1,0} compare(%param_4.214, %broadcast.54.7), direction=GE
+  %constant_52_3 = pred[] constant(true)
+  %reduce.9 = pred[32]{0} reduce(%compare.7.7, %constant_52_3), dimensions={1}, to_apply=%reduce_logical_and
+  %param_7.139 = s32[4]{0} parameter(7)
+  %broadcast.55.7 = s32[32,4]{1,0} broadcast(%param_7.139), dimensions={1}
+  %compare.8.7 = pred[32,4]{1,0} compare(%broadcast.55.7, %param_4.214), direction=GE
+  %reduce.1.5 = pred[32]{0} reduce(%compare.8.7, %constant_52_3), dimensions={1}, to_apply=%reduce_logical_and.clone
+  %and.11.3 = pred[32]{0} and(%reduce.9, %reduce.1.5)
+  %broadcast.56.3 = pred[32,4]{1,0} broadcast(%and.11.3), dimensions={0}
+  %param_5.188 = s32[4]{0} parameter(5)
+  %broadcast.134.3 = s32[32,4]{1,0} broadcast(%param_5.188), dimensions={1}
+  %select.6.3 = s32[32,4]{1,0} select(%broadcast.56.3, %param_4.214, %broadcast.134.3)
+  %param_2.340 = s32[32]{0} parameter(2)
+  %bitcast.27.5 = s32[32,1]{1,0} bitcast(%param_2.340)
+  %gather.17.5 = s32[32,1,4]{2,1,0} gather(%select.6.3, %bitcast.27.5), offset_dims={1,2}, collapsed_slice_dims={}, start_index_map={0}, index_vector_dim=1, slice_sizes={1,4}, indices_are_sorted=true
+  %param_1.183 = s32[4]{0} parameter(1)
+  %broadcast.141.3 = s32[32,1,4]{2,1,0} broadcast(%param_1.183), dimensions={2}
+  %select.35.3 = s32[32,1,4]{2,1,0} select(%broadcast.140.1, %gather.17.5, %broadcast.141.3)
+  %bitcast.28.1 = s32[32,4]{1,0} bitcast(%select.35.3)
+  %slice.23.3 = s32[16]{0} slice(%param_3.245), slice={[0:16]}
+  %constant_78_1 = s32[] constant(9)
+  %pad.11.3 = s32[32]{0} pad(%slice.23.3, %constant_78_1), padding=16_0
+  %compare.14.3 = pred[32]{0} compare(%param_3.245, %pad.11.3), direction=EQ
+  %slice.21.3 = s32[24]{0} slice(%param_3.245), slice={[0:24]}
+  %pad.12.3 = s32[32]{0} pad(%slice.21.3, %constant_78_1), padding=8_0
+  %compare.13.3 = pred[32]{0} compare(%param_3.245, %pad.12.3), direction=EQ
+  %slice.19.5 = s32[28]{0} slice(%param_3.245), slice={[0:28]}
+  %pad.13.5 = s32[32]{0} pad(%slice.19.5, %constant_78_1), padding=4_0
+  %compare.12.5 = pred[32]{0} compare(%param_3.245, %pad.13.5), direction=EQ
+  %slice.17.7 = s32[30]{0} slice(%param_3.245), slice={[0:30]}
+  %pad.14.7 = s32[32]{0} pad(%slice.17.7, %constant_78_1), padding=2_0
+  %compare.11.7 = pred[32]{0} compare(%param_3.245, %pad.14.7), direction=EQ
+  %constant_135_1 = s32[1]{0} constant({9})
+  %concatenate.23.9 = s32[32]{0} concatenate(%constant_135_1, %slice.24.10), dimensions={0}
+  %compare.10.7 = pred[32]{0} compare(%param_3.245, %concatenate.23.9), direction=EQ
+  %param_6.175 = f32[32]{0} parameter(6)
+  %constant_136_1 = f32[1]{0} constant({0})
+  %slice.14.5 = f32[31]{0} slice(%param_6.175), slice={[0:31]}
+  %concatenate.22.5 = f32[32]{0} concatenate(%constant_136_1, %slice.14.5), dimensions={0}
+  %add.16.5 = f32[32]{0} add(%param_6.175, %concatenate.22.5), metadata={op_name="jit(loss_batched)/transpose(jvp(vmap(vmap())))/add" stack_frame_id=13}
+  %select.7.5 = f32[32]{0} select(%compare.10.7, %add.16.5, %param_6.175)
+  %slice.16.5 = f32[30]{0} slice(%select.7.5), slice={[0:30]}
+  %constant_42_3 = f32[] constant(0)
+  %pad.15.5 = f32[32]{0} pad(%slice.16.5, %constant_42_3), padding=2_0
+  %add.17.5 = f32[32]{0} add(%select.7.5, %pad.15.5), metadata={op_name="jit(loss_batched)/transpose(jvp(vmap(vmap())))/add" stack_frame_id=13}
+  %select.8.5 = f32[32]{0} select(%compare.11.7, %add.17.5, %select.7.5)
+  %slice.18.3 = f32[28]{0} slice(%select.8.5), slice={[0:28]}
+  %pad.16.3 = f32[32]{0} pad(%slice.18.3, %constant_42_3), padding=4_0
+  %add.18.3 = f32[32]{0} add(%select.8.5, %pad.16.3), metadata={op_name="jit(loss_batched)/transpose(jvp(vmap(vmap())))/add" stack_frame_id=13}
+  %select.9.3 = f32[32]{0} select(%compare.12.5, %add.18.3, %select.8.5)
+  %slice.20.5 = f32[24]{0} slice(%select.9.3), slice={[0:24]}
+  %pad.17.5 = f32[32]{0} pad(%slice.20.5, %constant_42_3), padding=8_0
+  %add.19.5 = f32[32]{0} add(%select.9.3, %pad.17.5), metadata={op_name="jit(loss_batched)/transpose(jvp(vmap(vmap())))/add" stack_frame_id=13}
+  %select.10.5 = f32[32]{0} select(%compare.13.3, %add.19.5, %select.9.3)
+  %slice.22.3 = f32[16]{0} slice(%select.10.5), slice={[0:16]}
+  %pad.18.1 = f32[32]{0} pad(%slice.22.3, %constant_42_3), padding=16_0
+  %add.20.3 = f32[32]{0} add(%select.10.5, %pad.18.1), metadata={op_name="jit(loss_batched)/transpose(jvp(vmap(vmap())))/add" stack_frame_id=13}
+  %select.11.3 = f32[32]{0} select(%compare.14.3, %add.20.3, %select.10.5)
+  %bitcast.29.1 = f32[32,1,1,1,1]{4,3,2,1,0} bitcast(%select.11.3)
+  ROOT %scatter-add.5.1 = f32[1,1,3,3]{3,2,1,0} scatter(%param_0.3, %bitcast.28.1, %bitcast.29.1), update_window_dims={1,2,3,4}, inserted_window_dims={}, scatter_dims_to_operand_dims={1,2,3,0}, index_vector_dim=1, indices_are_sorted=true, unique_indices=true, to_apply=%region_4.18, metadata={op_name="jit(loss_batched)/transpose(jvp(vmap(vmap())))/scatter-add" stack_frame_id=9}
+}
+
+%region_1.7.clone (reduce_window_max.1: s32[], reduce_window_max.2: s32[]) -> s32[] {
+  %reduce_window_max.1 = s32[] parameter(0), metadata={op_name="reduce_window_max"}
+  %reduce_window_max.2 = s32[] parameter(1), metadata={op_name="reduce_window_max"}
+  ROOT %reduce_window_max.6.0 = s32[] maximum(%reduce_window_max.1, %reduce_window_max.2), metadata={op_name="reduce_window_max" stack_frame_id=4}
+}
+
+%region_1.7 (reduce_window_max.3: s32[], reduce_window_max.4: s32[]) -> s32[] {
+  %reduce_window_max.3 = s32[] parameter(0), metadata={op_name="reduce_window_max"}
+  %reduce_window_max.4 = s32[] parameter(1), metadata={op_name="reduce_window_max"}
+  ROOT %reduce_window_max.5.0 = s32[] maximum(%reduce_window_max.3, %reduce_window_max.4), metadata={op_name="reduce_window_max" stack_frame_id=4}
+}
+
+%fused_scatter.1 (param_0.5: s32[2,4], param_1.422: s32[32,1,1]) -> s32[2,4] {
+  %param_0.5 = s32[2,4]{1,0} parameter(0)
+  %iota.7.1 = s32[2,16,1]{2,1,0} iota(), iota_dimension=0
+  %param_1.422 = s32[32,1,1]{2,1,0} parameter(1)
+  %bitcast.4.21 = s32[2,16]{1,0} bitcast(%param_1.422), metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=25}
+  %constant_58_5 = s32[] constant(0)
+  %broadcast.38.7 = s32[2,16]{1,0} broadcast(%constant_58_5), dimensions={}
+  %lt.30.5 = pred[2,16]{1,0} compare(%bitcast.4.21, %broadcast.38.7), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=18}
+  %constant_50_2 = s32[] constant(4)
+  %broadcast.35.1 = s32[2,16]{1,0} broadcast(%constant_50_2), dimensions={}
+  %add.82.5 = s32[2,16]{1,0} add(%bitcast.4.21, %broadcast.35.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=18}
+  %select_n.27.3 = s32[2,16]{1,0} select(%lt.30.5, %add.82.5, %bitcast.4.21), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=18}
+  %bitcast.5.4 = s32[2,16,1]{2,1,0} bitcast(%select_n.27.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=18}
+  %concatenate.8.3 = s32[2,16,2]{2,1,0} concatenate(%iota.7.1, %bitcast.5.4), dimensions={2}, metadata={op_name="jit(loss_batched)/jvp(vmap())/scatter-max" stack_frame_id=16}
+  %bitcast.24.1 = s32[32,2]{1,0} bitcast(%concatenate.8.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/scatter-max" stack_frame_id=16}
+  %iota.31.1 = s32[2,16]{1,0} iota(), iota_dimension=1, metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=19}
+  %slice.2.9 = s32[2,15]{1,0} slice(%bitcast.4.21), slice={[0:2], [1:16]}, metadata={op_name="jit(loss_batched)/jvp(vmap())/slice" stack_frame_id=28}
+  %slice.3.9 = s32[2,15]{1,0} slice(%bitcast.4.21), slice={[0:2], [0:15]}, metadata={op_name="jit(loss_batched)/jvp(vmap())/slice" stack_frame_id=29}
+  %ne.19.7 = pred[2,15]{1,0} compare(%slice.2.9, %slice.3.9), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap())/ne" stack_frame_id=28}
+  %constant_52_1 = pred[] constant(true)
+  %pad.24 = pred[2,16]{1,0} pad(%ne.19.7, %constant_52_1), padding=0_0x1_0, metadata={op_name="jit(loss_batched)/jvp(vmap())/concatenate" stack_frame_id=27}
+  %iota.24.5 = s32[2,16]{1,0} iota(), iota_dimension=1, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/broadcast_in_dim" stack_frame_id=26}
+  %constant_61_1 = s32[] constant(-1)
+  %broadcast_in_dim.4.5 = s32[2,16]{1,0} broadcast(%constant_61_1), dimensions={}, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/broadcast_in_dim" stack_frame_id=26}
+  %select_n.20.5 = s32[2,16]{1,0} select(%pad.24, %iota.24.5, %broadcast_in_dim.4.5), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/select_n" stack_frame_id=26}
+  %constant_14_2 = s32[] constant(-2147483648), metadata={op_name="jit(loss_batched)/jvp(vmap())" stack_frame_id=20}
+  %reduce_window_max.0.1 = s32[2,16]{1,0} reduce-window(%select_n.20.5, %constant_14_2), window={size=1x16 pad=0_0x15_0}, to_apply=%region_1.7, metadata={op_name="jit(loss_batched)/jvp(vmap())/reduce_window_max" stack_frame_id=24}
+  %sub.27.2 = s32[2,16]{1,0} subtract(%iota.31.1, %reduce_window_max.0.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=19}
+  %constant_65_3 = s32[] constant(1)
+  %add.50.1 = s32[2,16]{1,0} broadcast(%constant_65_3), dimensions={}, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=17}
+  %add.84.1 = s32[2,16]{1,0} add(%sub.27.2, %add.50.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=17}
+  %bitcast.25.1 = s32[32,1,1]{2,1,0} bitcast(%add.84.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=17}
+  ROOT %scatter-max.5.1 = s32[2,4]{1,0} scatter(%param_0.5, %bitcast.24.1, %bitcast.25.1), update_window_dims={1,2}, inserted_window_dims={}, scatter_dims_to_operand_dims={0,1}, index_vector_dim=1, to_apply=%region_1.7.clone, metadata={op_name="jit(loss_batched)/jvp(vmap())/scatter-max" stack_frame_id=16}
+}
+
+%fused_pad (param_0.407: s32[2,4], param_1.551: s32[2,4], param_2.382: s32[2,4], param_3.266: s32[2,4,4], param_4.212: s32[2,4,4]) -> s32[32,4] {
+  %param_0.407 = s32[2,4]{1,0} parameter(0)
+  %iota.3.3 = s32[2,4,4,1]{3,2,1,0} iota(), iota_dimension=0
+  %param_4.212 = s32[2,4,4]{2,1,0} parameter(4)
+  %constant_47_1 = s32[] constant(3)
+  %broadcast.32.4 = s32[2,4,4]{2,1,0} broadcast(%constant_47_1), dimensions={}
+  %min.5.3 = s32[2,4,4]{2,1,0} minimum(%param_4.212, %broadcast.32.4), metadata={op_name="jit(loss_batched)/jvp(vmap())/min" stack_frame_id=41}
+  %constant_58_9 = s32[] constant(0)
+  %broadcast.31.4 = s32[2,4,4]{2,1,0} broadcast(%constant_58_9), dimensions={}
+  %lt.35.3 = pred[2,4,4]{2,1,0} compare(%min.5.3, %broadcast.31.4), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=30}
+  %param_3.266 = s32[2,4,4]{2,1,0} parameter(3)
+  %add.88.3 = s32[2,4,4]{2,1,0} add(%min.5.3, %param_3.266), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=30}
+  %select_n.32.3 = s32[2,4,4]{2,1,0} select(%lt.35.3, %add.88.3, %min.5.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=30}
+  %bitcast.13.3 = s32[2,4,4,1]{3,2,1,0} bitcast(%select_n.32.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=30}
+  %concatenate.2.3 = s32[2,4,4,2]{3,2,1,0} concatenate(%iota.3.3, %bitcast.13.3), dimensions={3}, metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=30}
+  %bitcast.14.5 = s32[32,2]{1,0} bitcast(%concatenate.2.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=30}
+  %gather.14.3 = s32[32,1,1]{2,1,0} gather(%param_0.407, %bitcast.14.5), offset_dims={1,2}, collapsed_slice_dims={}, start_index_map={0,1}, index_vector_dim=1, slice_sizes={1,1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=30}
+  %bitcast.15.9 = s32[2,4,4]{2,1,0} bitcast(%gather.14.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=30}
+  %lt.36.3 = pred[2,4,4]{2,1,0} compare(%bitcast.15.9, %broadcast.31.4), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/lt" stack_frame_id=9}
+  %constant_65_2 = s32[] constant(1)
+  %broadcast.29.1 = s32[2,4,4]{2,1,0} broadcast(%constant_65_2), dimensions={}
+  %add.91.3 = s32[2,4,4]{2,1,0} add(%bitcast.15.9, %broadcast.29.1), metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/add" stack_frame_id=9}
+  %select_n.33.3 = s32[2,4,4]{2,1,0} select(%lt.36.3, %add.91.3, %bitcast.15.9), metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/select_n" stack_frame_id=9}
+  %bitcast.16.3 = s32[2,4,4,1]{3,2,1,0} bitcast(%select_n.33.3), metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/select_n" stack_frame_id=9}
+  %broadcast.145.1 = s32[32,1,1]{2,1,0} broadcast(%constant_58_9), dimensions={}
+  %param_2.382 = s32[2,4]{1,0} parameter(2)
+  %gather.15.7 = s32[32,1,1]{2,1,0} gather(%param_2.382, %bitcast.14.5), offset_dims={1,2}, collapsed_slice_dims={}, start_index_map={0,1}, index_vector_dim=1, slice_sizes={1,1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=40}
+  %iota.15.31 = s32[4]{0} iota(), iota_dimension=0, metadata={op_name="jit(loss_batched)/jvp(vmap())/iota" stack_frame_id=39}
+  %sign.18.13 = s32[4]{0} sign(%iota.15.31), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sign" stack_frame_id=39}
+  %ne.31.29 = s32[4]{0} broadcast(%constant_65_2), dimensions={}, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=39}
+  %ne.32.11 = pred[4]{0} compare(%sign.18.13, %ne.31.29), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=39}
+  %iota.15.30 = s32[4]{0} iota(), iota_dimension=0, metadata={op_name="jit(loss_batched)/jvp(vmap())/iota" stack_frame_id=39}
+  %and.19.11 = s32[4]{0} and(%iota.15.30, %ne.31.29), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=39}
+  %broadcast.98.20 = s32[4]{0} broadcast(%constant_58_9), dimensions={}
+  %ne.33.11 = pred[4]{0} compare(%and.19.11, %broadcast.98.20), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=39}
+  %and.8.9 = pred[4]{0} and(%ne.32.11, %ne.33.11), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/and" stack_frame_id=39}
+  %iota.15.29 = s32[4]{0} iota(), iota_dimension=0, metadata={op_name="jit(loss_batched)/jvp(vmap())/iota" stack_frame_id=39}
+  %shift-right-logical.4.7 = s32[4]{0} shift-right-logical(%iota.15.29, %ne.31.29), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=39}
+  %constant_61_3 = s32[] constant(-1)
+  %broadcast.102.7 = s32[4]{0} broadcast(%constant_61_3), dimensions={}, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))" stack_frame_id=39}
+  %add.15.7 = s32[4]{0} add(%shift-right-logical.4.7, %broadcast.102.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sub" stack_frame_id=39}
+  %select_n.21.7 = s32[4]{0} select(%and.8.9, %add.15.7, %shift-right-logical.4.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/jit(_where)/select_n" stack_frame_id=39}
+  %constant_64_2 = s32[] constant(2)
+  %broadcast.127.13 = s32[4]{0} broadcast(%constant_64_2), dimensions={}
+  %mul.1.5 = s32[4]{0} multiply(%select_n.21.7, %broadcast.127.13), metadata={op_name="jit(loss_batched)/jvp(vmap())/mul" stack_frame_id=38}
+  %sub.30.3 = s32[2,4,4]{2,1,0} broadcast(%mul.1.5), dimensions={1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=37}
+  %bitcast.17.5 = s32[32,1,1]{2,1,0} bitcast(%sub.30.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=37}
+  %sub.9.5 = s32[32,1,1]{2,1,0} subtract(%gather.15.7, %bitcast.17.5), metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=37}
+  %broadcast.144.4 = s32[32,1,1]{2,1,0} broadcast(%constant_65_2), dimensions={}
+  %add.31.3 = s32[32,1,1]{2,1,0} add(%sub.9.5, %broadcast.144.4), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=37}
+  %broadcast.146.1 = s32[32,1,1]{2,1,0} broadcast(%constant_64_2), dimensions={}, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(clip)))/min" stack_frame_id=31}
+  %clamp.2.1 = s32[32,1,1]{2,1,0} clamp(%broadcast.145.1, %add.31.3, %broadcast.146.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(clip)))/min" stack_frame_id=31}
+  %bitcast.18.9 = s32[2,4,4]{2,1,0} bitcast(%clamp.2.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(clip)))/min" stack_frame_id=31}
+  %lt.37.3 = pred[2,4,4]{2,1,0} compare(%bitcast.18.9, %broadcast.31.4), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/lt" stack_frame_id=9}
+  %add.92.3 = s32[2,4,4]{2,1,0} add(%bitcast.18.9, %broadcast.32.4), metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/add" stack_frame_id=9}
+  %select_n.34.3 = s32[2,4,4]{2,1,0} select(%lt.37.3, %add.92.3, %bitcast.18.9), metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/select_n" stack_frame_id=9}
+  %bitcast.19.3 = s32[2,4,4,1]{3,2,1,0} bitcast(%select_n.34.3), metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/select_n" stack_frame_id=9}
+  %param_1.551 = s32[2,4]{1,0} parameter(1)
+  %gather.16.3 = s32[32,1,1]{2,1,0} gather(%param_1.551, %bitcast.14.5), offset_dims={1,2}, collapsed_slice_dims={}, start_index_map={0,1}, index_vector_dim=1, slice_sizes={1,1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=34}
+  %ne.35.9 = pred[4]{0} compare(%and.19.11, %broadcast.98.20), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(remainder)))/lt" stack_frame_id=36}
+  %and.9.7 = pred[4]{0} and(%ne.35.9, %ne.33.11), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(remainder)))/and" stack_frame_id=36}
+  %add.1.5 = s32[4]{0} add(%and.19.11, %broadcast.127.13), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(remainder)))/add" stack_frame_id=36}
+  %select_n.23.5 = s32[4]{0} select(%and.9.7, %add.1.5, %and.19.11), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(remainder)))/select_n" stack_frame_id=36}
+  %mul.2.3 = s32[4]{0} multiply(%select_n.23.5, %broadcast.127.13), metadata={op_name="jit(loss_batched)/jvp(vmap())/mul" stack_frame_id=35}
+  %sub.34.1 = s32[2,4,4]{2,1,0} broadcast(%mul.2.3), dimensions={1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=33}
+  %bitcast.20.3 = s32[32,1,1]{2,1,0} bitcast(%sub.34.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=33}
+  %sub.10.3 = s32[32,1,1]{2,1,0} subtract(%gather.16.3, %bitcast.20.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=33}
+  %add.32.1 = s32[32,1,1]{2,1,0} add(%sub.10.3, %broadcast.144.4), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=33}
+  %clamp.3.1 = s32[32,1,1]{2,1,0} clamp(%broadcast.145.1, %add.32.1, %broadcast.146.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(clip)))/min" stack_frame_id=32}
+  %bitcast.21.9 = s32[2,4,4]{2,1,0} bitcast(%clamp.3.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(clip)))/min" stack_frame_id=32}
+  %lt.38.3 = pred[2,4,4]{2,1,0} compare(%bitcast.21.9, %broadcast.31.4), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/lt" stack_frame_id=9}
+  %add.93.3 = s32[2,4,4]{2,1,0} add(%bitcast.21.9, %broadcast.32.4), metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/add" stack_frame_id=9}
+  %select_n.35.3 = s32[2,4,4]{2,1,0} select(%lt.38.3, %add.93.3, %bitcast.21.9), metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/select_n" stack_frame_id=9}
+  %bitcast.22.3 = s32[2,4,4,1]{3,2,1,0} bitcast(%select_n.35.3), metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/select_n" stack_frame_id=9}
+  %concatenate.5.3 = s32[2,4,4,3]{3,2,1,0} concatenate(%bitcast.16.3, %bitcast.19.3, %bitcast.22.3), dimensions={3}, metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/concatenate" stack_frame_id=9}
+  %bitcast.23.1 = s32[32,3]{1,0} bitcast(%concatenate.5.3), metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/concatenate" stack_frame_id=9}
+  ROOT %pad.9.1 = s32[32,4]{1,0} pad(%bitcast.23.1, %constant_58_9), padding=0_0x0_1
+}
+
+%region_2.9 (scatter.2: s32[], scatter.3: s32[]) -> s32[] {
+  %scatter.2 = s32[] parameter(0), metadata={op_name="scatter"}
+  ROOT %scatter.3 = s32[] parameter(1), metadata={op_name="scatter"}
+}
+
+%fused_scatter.2 (param_0.31: s32[2,4,4], param_1.250: s32[32], param_2.366: s32[3], param_3.260: s32[32], param_4.215: s32[32], param_5.190: s32[32,1,1]) -> s32[2,4,4] {
+  %param_0.31 = s32[2,4,4]{2,1,0} parameter(0)
+  %param_3.260 = s32[32]{0} parameter(3)
+  %slice.12.10 = s32[31]{0} slice(%param_3.260), slice={[0:31]}
+  %slice.13.5 = s32[31]{0} slice(%param_3.260), slice={[1:32]}
+  %compare.6.5 = pred[31]{0} compare(%slice.12.10, %slice.13.5), direction=NE
+  %constant_126_1 = pred[1]{0} constant({1})
+  %concatenate.19.3 = pred[32]{0} concatenate(%compare.6.5, %constant_126_1), dimensions={0}
+  %broadcast.124.1 = pred[32,1,3]{2,1,0} broadcast(%concatenate.19.3), dimensions={0}
+  %iota.2.3 = s32[2,16,1]{2,1,0} iota(), iota_dimension=0
+  %param_5.190 = s32[32,1,1]{2,1,0} parameter(5)
+  %bitcast.4.43 = s32[2,16]{1,0} bitcast(%param_5.190), metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=25}
+  %constant_58_10 = s32[] constant(0)
+  %broadcast.38.15 = s32[2,16]{1,0} broadcast(%constant_58_10), dimensions={}
+  %lt.30.7 = pred[2,16]{1,0} compare(%bitcast.4.43, %broadcast.38.15), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=18}
+  %constant_50_6 = s32[] constant(4)
+  %broadcast.35.4 = s32[2,16]{1,0} broadcast(%constant_50_6), dimensions={}
+  %add.82.7 = s32[2,16]{1,0} add(%bitcast.4.43, %broadcast.35.4), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=18}
+  %select_n.27.7 = s32[2,16]{1,0} select(%lt.30.7, %add.82.7, %bitcast.4.43), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=18}
+  %bitcast.5.6 = s32[2,16,1]{2,1,0} bitcast(%select_n.27.7), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=18}
+  %iota.31.4 = s32[2,16]{1,0} iota(), iota_dimension=1, metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=19}
+  %slice.2.11 = s32[2,15]{1,0} slice(%bitcast.4.43), slice={[0:2], [1:16]}, metadata={op_name="jit(loss_batched)/jvp(vmap())/slice" stack_frame_id=28}
+  %slice.3.11 = s32[2,15]{1,0} slice(%bitcast.4.43), slice={[0:2], [0:15]}, metadata={op_name="jit(loss_batched)/jvp(vmap())/slice" stack_frame_id=29}
+  %ne.19.9 = pred[2,15]{1,0} compare(%slice.2.11, %slice.3.11), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap())/ne" stack_frame_id=28}
+  %constant_52_5 = pred[] constant(true)
+  %pad.26 = pred[2,16]{1,0} pad(%ne.19.9, %constant_52_5), padding=0_0x1_0, metadata={op_name="jit(loss_batched)/jvp(vmap())/concatenate" stack_frame_id=27}
+  %iota.24.7 = s32[2,16]{1,0} iota(), iota_dimension=1, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/broadcast_in_dim" stack_frame_id=26}
+  %constant_61_6 = s32[] constant(-1)
+  %broadcast_in_dim.4.7 = s32[2,16]{1,0} broadcast(%constant_61_6), dimensions={}, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/broadcast_in_dim" stack_frame_id=26}
+  %select_n.20.7 = s32[2,16]{1,0} select(%pad.26, %iota.24.7, %broadcast_in_dim.4.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/select_n" stack_frame_id=26}
+  %constant_14_3 = s32[] constant(-2147483648), metadata={op_name="jit(loss_batched)/jvp(vmap())" stack_frame_id=20}
+  %reduce_window_max.0.4 = s32[2,16]{1,0} reduce-window(%select_n.20.7, %constant_14_3), window={size=1x16 pad=0_0x15_0}, to_apply=%region_1.7, metadata={op_name="jit(loss_batched)/jvp(vmap())/reduce_window_max" stack_frame_id=24}
+  %sub.27.4 = s32[2,16]{1,0} subtract(%iota.31.4, %reduce_window_max.0.4), metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=19}
+  %lt.31.3 = pred[2,16]{1,0} compare(%sub.27.4, %broadcast.38.15), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=18}
+  %add.83.3 = s32[2,16]{1,0} add(%sub.27.4, %broadcast.35.4), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=18}
+  %select_n.28.3 = s32[2,16]{1,0} select(%lt.31.3, %add.83.3, %sub.27.4), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=18}
+  %bitcast.6.3 = s32[2,16,1]{2,1,0} bitcast(%select_n.28.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=18}
+  %concatenate.1.3 = s32[2,16,3]{2,1,0} concatenate(%iota.2.3, %bitcast.5.6, %bitcast.6.3), dimensions={2}, metadata={op_name="jit(loss_batched)/jvp(vmap())/scatter" stack_frame_id=18}
+  %bitcast.7.6 = s32[32,3]{1,0} bitcast(%concatenate.1.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/scatter" stack_frame_id=18}
+  %param_1.250 = s32[32]{0} parameter(1)
+  %bitcast.10.5 = s32[32,1]{1,0} bitcast(%param_1.250)
+  %gather.13.5 = s32[32,1,3]{2,1,0} gather(%bitcast.7.6, %bitcast.10.5), offset_dims={1,2}, collapsed_slice_dims={}, start_index_map={0}, index_vector_dim=1, slice_sizes={1,3}, indices_are_sorted=true
+  %param_2.366 = s32[3]{0} parameter(2)
+  %broadcast.125.1 = s32[32,1,3]{2,1,0} broadcast(%param_2.366), dimensions={2}
+  %select.34.3 = s32[32,1,3]{2,1,0} select(%broadcast.124.1, %gather.13.5, %broadcast.125.1)
+  %bitcast.11.1 = s32[32,3]{1,0} bitcast(%select.34.3)
+  %slice.11.3 = s32[16]{0} slice(%param_3.260), slice={[0:16]}
+  %constant_28_1 = s32[] constant(32)
+  %pad.1.3 = s32[32]{0} pad(%slice.11.3, %constant_28_1), padding=16_0
+  %compare.5.3 = pred[32]{0} compare(%param_3.260, %pad.1.3), direction=EQ
+  %slice.9.3 = s32[24]{0} slice(%param_3.260), slice={[0:24]}
+  %pad.2.3 = s32[32]{0} pad(%slice.9.3, %constant_28_1), padding=8_0
+  %compare.4.3 = pred[32]{0} compare(%param_3.260, %pad.2.3), direction=EQ
+  %slice.7.5 = s32[28]{0} slice(%param_3.260), slice={[0:28]}
+  %pad.3.5 = s32[32]{0} pad(%slice.7.5, %constant_28_1), padding=4_0
+  %compare.3.5 = pred[32]{0} compare(%param_3.260, %pad.3.5), direction=EQ
+  %slice.5.7 = s32[30]{0} slice(%param_3.260), slice={[0:30]}
+  %pad.4.7 = s32[32]{0} pad(%slice.5.7, %constant_28_1), padding=2_0
+  %compare.2.7 = pred[32]{0} compare(%param_3.260, %pad.4.7), direction=EQ
+  %constant_127_1 = s32[1]{0} constant({32})
+  %concatenate.10.9 = s32[32]{0} concatenate(%constant_127_1, %slice.12.10), dimensions={0}
+  %compare.1.7 = pred[32]{0} compare(%param_3.260, %concatenate.10.9), direction=EQ
+  %constant_128_1 = s32[1]{0} constant({0})
+  %param_4.215 = s32[32]{0} parameter(4)
+  %slice.31 = s32[31]{0} slice(%param_4.215), slice={[0:31]}
+  %concatenate.9.5 = s32[32]{0} concatenate(%constant_128_1, %slice.31), dimensions={0}
+  %select.43 = s32[32]{0} select(%compare.1.7, %concatenate.9.5, %param_4.215)
+  %slice.4.5 = s32[30]{0} slice(%select.43), slice={[0:30]}
+  %pad.5.5 = s32[32]{0} pad(%slice.4.5, %constant_58_10), padding=2_0
+  %select.1.5 = s32[32]{0} select(%compare.2.7, %pad.5.5, %select.43)
+  %slice.6.3 = s32[28]{0} slice(%select.1.5), slice={[0:28]}
+  %pad.6.3 = s32[32]{0} pad(%slice.6.3, %constant_58_10), padding=4_0
+  %select.2.3 = s32[32]{0} select(%compare.3.5, %pad.6.3, %select.1.5)
+  %slice.8.3 = s32[24]{0} slice(%select.2.3), slice={[0:24]}
+  %pad.7.3 = s32[32]{0} pad(%slice.8.3, %constant_58_10), padding=8_0
+  %select.3.3 = s32[32]{0} select(%compare.4.3, %pad.7.3, %select.2.3)
+  %slice.10.1 = s32[16]{0} slice(%select.3.3), slice={[0:16]}
+  %pad.8.3 = s32[32]{0} pad(%slice.10.1, %constant_58_10), padding=16_0
+  %select.4.3 = s32[32]{0} select(%compare.5.3, %pad.8.3, %select.3.3)
+  %bitcast.12.1 = s32[32,1,1,1]{3,2,1,0} bitcast(%select.4.3)
+  ROOT %scatter.5.1 = s32[2,4,4]{2,1,0} scatter(%param_0.31, %bitcast.11.1, %bitcast.12.1), update_window_dims={1,2,3}, inserted_window_dims={}, scatter_dims_to_operand_dims={0,1,2}, index_vector_dim=1, indices_are_sorted=true, unique_indices=true, to_apply=%region_2.9, metadata={op_name="jit(loss_batched)/jvp(vmap())/scatter" stack_frame_id=18}
+}
+
+%fused_gather (param_0.311: s32[2,16], param_1.558: s32[2,4], param_2.395: s32[2,4], param_3.282: s32[2,4]) -> (s32[32,1], s32[32,1,1]) {
+  %iota.29.1 = s32[4,2,2]{2,1,0} iota(), iota_dimension=0, metadata={op_name="jit(loss_batched)/jvp(vmap())/broadcast_in_dim" stack_frame_id=43}
+  %bitcast.1.2 = s32[16]{0} bitcast(%iota.29.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/broadcast_in_dim" stack_frame_id=43}
+  %param_0.311 = s32[2,16]{1,0} parameter(0)
+  %constant_58_8 = s32[] constant(0)
+  %broadcast.38.11 = s32[2,16]{1,0} broadcast(%constant_58_8), dimensions={}
+  %lt.28.5 = pred[2,16]{1,0} compare(%param_0.311, %broadcast.38.11), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=25}
+  %constant_53_1 = s32[] constant(16)
+  %broadcast.37.5 = s32[2,16]{1,0} broadcast(%constant_53_1), dimensions={}
+  %add.80.5 = s32[2,16]{1,0} add(%param_0.311, %broadcast.37.5), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=25}
+  %select_n.25.5 = s32[2,16]{1,0} select(%lt.28.5, %add.80.5, %param_0.311), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=25}
+  %bitcast.8.1 = s32[32,1]{1,0} bitcast(%select_n.25.5), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=25}
+  %gather.12.1 = s32[32,1]{1,0} gather(%bitcast.1.2, %bitcast.8.1), offset_dims={1}, collapsed_slice_dims={}, start_index_map={0}, index_vector_dim=1, slice_sizes={1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=42}
+  %param_3.282 = s32[2,4]{1,0} parameter(3)
+  %sign.10.7.clone.1 = s32[2,4]{1,0} sign(%param_3.282), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sign" stack_frame_id=66}
+  %constant_65_4_clone_1 = s32[] constant(1)
+  %broadcast.45.130.clone.1 = s32[2,4]{1,0} broadcast(%constant_65_4_clone_1), dimensions={}
+  %ne.20.7.clone.1 = pred[2,4]{1,0} compare(%sign.10.7.clone.1, %broadcast.45.130.clone.1), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=66}
+  %param_1.558 = s32[2,4]{1,0} parameter(1)
+  %compare.18.5.clone.1 = pred[2,4]{1,0} compare(%param_3.282, %param_1.558), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=66}
+  %negate.2.7.clone.1 = s32[2,4]{1,0} negate(%param_3.282), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=66}
+  %select.14.7.clone.1 = s32[2,4]{1,0} select(%compare.18.5.clone.1, %negate.2.7.clone.1, %param_3.282), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=66}
+  %and.14.9.clone.1 = s32[2,4]{1,0} and(%select.14.7.clone.1, %broadcast.45.130.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=66}
+  %negate.3.7.clone.1 = s32[2,4]{1,0} negate(%and.14.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=66}
+  %select.15.7.clone.1 = s32[2,4]{1,0} select(%compare.18.5.clone.1, %negate.3.7.clone.1, %and.14.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=66}
+  %ne.21.7.clone.1 = pred[2,4]{1,0} compare(%select.15.7.clone.1, %param_1.558), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=66}
+  %and.4.5.clone.1 = pred[2,4]{1,0} and(%ne.20.7.clone.1, %ne.21.7.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/and" stack_frame_id=66}
+  %shift-right-logical.14.clone.1 = s32[2,4]{1,0} shift-right-logical(%select.14.7.clone.1, %broadcast.45.130.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=66}
+  %negate.5.7.clone.1 = s32[2,4]{1,0} negate(%shift-right-logical.14.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=66}
+  %select.17.7.clone.1 = s32[2,4]{1,0} select(%compare.18.5.clone.1, %negate.5.7.clone.1, %shift-right-logical.14.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=66}
+  %constant_61_5_clone_1 = s32[] constant(-1)
+  %broadcast.74.40.clone.1 = s32[2,4]{1,0} broadcast(%constant_61_5_clone_1), dimensions={}
+  %add.7.9.clone.1 = s32[2,4]{1,0} add(%select.17.7.clone.1, %broadcast.74.40.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sub" stack_frame_id=66}
+  %select_n.12.7.clone.1 = s32[2,4]{1,0} select(%and.4.5.clone.1, %add.7.9.clone.1, %select.17.7.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/jit(_where)/select_n" stack_frame_id=66}
+  %add.57.5.clone.1 = s32[2,4,2]{2,1,0} broadcast(%select_n.12.7.clone.1), dimensions={0,1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=58}
+  %iota.27.64.clone.1 = s32[2,4,2]{2,1,0} iota(), iota_dimension=2, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=58}
+  %add.61.33.clone.1 = s32[2,4,2]{2,1,0} add(%add.57.5.clone.1, %iota.27.64.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=58}
+  %add.51.9.clone.1 = s32[2,4]{1,0} add(%param_3.282, %broadcast.45.130.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=65}
+  %sign.12.7.clone.1 = s32[2,4]{1,0} sign(%add.51.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sign" stack_frame_id=64}
+  %ne.23.11.clone.1 = pred[2,4]{1,0} compare(%sign.12.7.clone.1, %broadcast.45.130.clone.1), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=64}
+  %compare.20.7.clone.1 = pred[2,4]{1,0} compare(%add.51.9.clone.1, %param_1.558), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=64}
+  %negate.7.9.clone.1 = s32[2,4]{1,0} negate(%add.51.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=64}
+  %select.18.9.clone.1 = s32[2,4]{1,0} select(%compare.20.7.clone.1, %negate.7.9.clone.1, %add.51.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=64}
+  %and.15.11.clone.1 = s32[2,4]{1,0} and(%select.18.9.clone.1, %broadcast.45.130.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=64}
+  %negate.8.9.clone.1 = s32[2,4]{1,0} negate(%and.15.11.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=64}
+  %select.19.11.clone.1 = s32[2,4]{1,0} select(%compare.20.7.clone.1, %negate.8.9.clone.1, %and.15.11.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=64}
+  %ne.24.11.clone.1 = pred[2,4]{1,0} compare(%select.19.11.clone.1, %param_1.558), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=64}
+  %and.5.9.clone.1 = pred[2,4]{1,0} and(%ne.23.11.clone.1, %ne.24.11.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/and" stack_frame_id=64}
+  %shift-right-logical.1.9.clone.1 = s32[2,4]{1,0} shift-right-logical(%select.18.9.clone.1, %broadcast.45.130.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=64}
+  %negate.10.9.clone.1 = s32[2,4]{1,0} negate(%shift-right-logical.1.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=64}
+  %select.21.9.clone.1 = s32[2,4]{1,0} select(%compare.20.7.clone.1, %negate.10.9.clone.1, %shift-right-logical.1.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=64}
+  %add.8.11.clone.1 = s32[2,4]{1,0} add(%select.21.9.clone.1, %broadcast.74.40.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sub" stack_frame_id=64}
+  %select_n.13.9.clone.1 = s32[2,4]{1,0} select(%and.5.9.clone.1, %add.8.11.clone.1, %select.21.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/jit(_where)/select_n" stack_frame_id=64}
+  %le.10.7.clone.1 = s32[2,4,2]{2,1,0} broadcast(%select_n.13.9.clone.1), dimensions={0,1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/le" stack_frame_id=63}
+  %le.11.7.clone.1 = pred[2,4,2]{2,1,0} compare(%add.61.33.clone.1, %le.10.7.clone.1), direction=LE, metadata={op_name="jit(loss_batched)/jvp(vmap())/le" stack_frame_id=63}
+  %broadcast.42.18.clone.1 = s32[2,4,2]{2,1,0} broadcast(%constant_58_8), dimensions={}
+  %ge.2.9.clone.1 = pred[2,4,2]{2,1,0} compare(%add.61.33.clone.1, %broadcast.42.18.clone.1), direction=GE, metadata={op_name="jit(loss_batched)/jvp(vmap())/ge" stack_frame_id=62}
+  %and.23.7.clone.1 = pred[2,4,2]{2,1,0} and(%le.11.7.clone.1, %ge.2.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=60}
+  %constant_64_3_clone_1 = s32[] constant(2)
+  %broadcast.41.19.clone.1 = s32[2,4,2]{2,1,0} broadcast(%constant_64_3_clone_1), dimensions={}
+  %lt.25.7.clone.1 = pred[2,4,2]{2,1,0} compare(%add.61.33.clone.1, %broadcast.41.19.clone.1), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=61}
+  %and.24.5.clone.1 = pred[2,4,2]{2,1,0} and(%and.23.7.clone.1, %lt.25.7.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=60}
+  %and.29.5.clone.1 = pred[2,4,2,2]{3,2,1,0} broadcast(%and.24.5.clone.1), dimensions={0,1,2}, metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=48}
+  %param_2.395 = s32[2,4]{1,0} parameter(2)
+  %sign.14.7.clone.1 = s32[2,4]{1,0} sign(%param_2.395), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sign" stack_frame_id=59}
+  %ne.26.7.clone.1 = pred[2,4]{1,0} compare(%sign.14.7.clone.1, %broadcast.45.130.clone.1), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=59}
+  %compare.22.5.clone.1 = pred[2,4]{1,0} compare(%param_2.395, %param_1.558), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=59}
+  %negate.14.7.clone.1 = s32[2,4]{1,0} negate(%param_2.395), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=59}
+  %select.22.7.clone.1 = s32[2,4]{1,0} select(%compare.22.5.clone.1, %negate.14.7.clone.1, %param_2.395), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=59}
+  %and.16.9.clone.1 = s32[2,4]{1,0} and(%select.22.7.clone.1, %broadcast.45.130.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=59}
+  %negate.15.7.clone.1 = s32[2,4]{1,0} negate(%and.16.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=59}
+  %select.23.7.clone.1 = s32[2,4]{1,0} select(%compare.22.5.clone.1, %negate.15.7.clone.1, %and.16.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=59}
+  %ne.27.7.clone.1 = pred[2,4]{1,0} compare(%select.23.7.clone.1, %param_1.558), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=59}
+  %and.6.5.clone.1 = pred[2,4]{1,0} and(%ne.26.7.clone.1, %ne.27.7.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/and" stack_frame_id=59}
+  %shift-right-logical.2.9.clone.1 = s32[2,4]{1,0} shift-right-logical(%select.22.7.clone.1, %broadcast.45.130.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=59}
+  %negate.17.7.clone.1 = s32[2,4]{1,0} negate(%shift-right-logical.2.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=59}
+  %select.25.7.clone.1 = s32[2,4]{1,0} select(%compare.22.5.clone.1, %negate.17.7.clone.1, %shift-right-logical.2.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=59}
+  %add.13.9.clone.1 = s32[2,4]{1,0} add(%select.25.7.clone.1, %broadcast.74.40.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sub" stack_frame_id=59}
+  %select_n.14.7.clone.1 = s32[2,4]{1,0} select(%and.6.5.clone.1, %add.13.9.clone.1, %select.25.7.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/jit(_where)/select_n" stack_frame_id=59}
+  %add.68.5.clone.1 = s32[2,4,2]{2,1,0} broadcast(%select_n.14.7.clone.1), dimensions={0,1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=56}
+  %iota.27.61.clone.1 = s32[2,4,2]{2,1,0} iota(), iota_dimension=2, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=58}
+  %add.72.31.clone.1 = s32[2,4,2]{2,1,0} add(%add.68.5.clone.1, %iota.27.61.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=56}
+  %add.62.9.clone.1 = s32[2,4]{1,0} add(%param_2.395, %broadcast.45.130.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=55}
+  %sign.16.7.clone.1 = s32[2,4]{1,0} sign(%add.62.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sign" stack_frame_id=54}
+  %ne.29.11.clone.1 = pred[2,4]{1,0} compare(%sign.16.7.clone.1, %broadcast.45.130.clone.1), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=54}
+  %compare.24.7.clone.1 = pred[2,4]{1,0} compare(%add.62.9.clone.1, %param_1.558), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=54}
+  %negate.19.9.clone.1 = s32[2,4]{1,0} negate(%add.62.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=54}
+  %select.26.9.clone.1 = s32[2,4]{1,0} select(%compare.24.7.clone.1, %negate.19.9.clone.1, %add.62.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=54}
+  %and.17.11.clone.1 = s32[2,4]{1,0} and(%select.26.9.clone.1, %broadcast.45.130.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=54}
+  %negate.20.9.clone.1 = s32[2,4]{1,0} negate(%and.17.11.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=54}
+  %select.27.11.clone.1 = s32[2,4]{1,0} select(%compare.24.7.clone.1, %negate.20.9.clone.1, %and.17.11.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=54}
+  %ne.30.11.clone.1 = pred[2,4]{1,0} compare(%select.27.11.clone.1, %param_1.558), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=54}
+  %and.7.9.clone.1 = pred[2,4]{1,0} and(%ne.29.11.clone.1, %ne.30.11.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/and" stack_frame_id=54}
+  %shift-right-logical.3.9.clone.1 = s32[2,4]{1,0} shift-right-logical(%select.26.9.clone.1, %broadcast.45.130.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=54}
+  %negate.22.9.clone.1 = s32[2,4]{1,0} negate(%shift-right-logical.3.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=54}
+  %select.29.9.clone.1 = s32[2,4]{1,0} select(%compare.24.7.clone.1, %negate.22.9.clone.1, %shift-right-logical.3.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=54}
+  %add.14.11.clone.1 = s32[2,4]{1,0} add(%select.29.9.clone.1, %broadcast.74.40.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sub" stack_frame_id=54}
+  %select_n.16.9.clone.1 = s32[2,4]{1,0} select(%and.7.9.clone.1, %add.14.11.clone.1, %select.29.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/jit(_where)/select_n" stack_frame_id=54}
+  %le.14.7.clone.1 = s32[2,4,2]{2,1,0} broadcast(%select_n.16.9.clone.1), dimensions={0,1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/le" stack_frame_id=53}
+  %le.15.7.clone.1 = pred[2,4,2]{2,1,0} compare(%add.72.31.clone.1, %le.14.7.clone.1), direction=LE, metadata={op_name="jit(loss_batched)/jvp(vmap())/le" stack_frame_id=53}
+  %ge.3.9.clone.1 = pred[2,4,2]{2,1,0} compare(%add.72.31.clone.1, %broadcast.42.18.clone.1), direction=GE, metadata={op_name="jit(loss_batched)/jvp(vmap())/ge" stack_frame_id=52}
+  %and.25.7.clone.1 = pred[2,4,2]{2,1,0} and(%le.15.7.clone.1, %ge.3.9.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=50}
+  %lt.26.7.clone.1 = pred[2,4,2]{2,1,0} compare(%add.72.31.clone.1, %broadcast.41.19.clone.1), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=51}
+  %and.26.5.clone.1 = pred[2,4,2]{2,1,0} and(%and.25.7.clone.1, %lt.26.7.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=50}
+  %and.32.5.clone.1 = pred[2,4,2,2]{3,2,1,0} broadcast(%and.26.5.clone.1), dimensions={0,1,3}, metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=48}
+  %and.33.5.clone.1 = pred[2,4,2,2]{3,2,1,0} and(%and.29.5.clone.1, %and.32.5.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=48}
+  %iota.12.5.clone.1 = s32[4]{0} iota(), iota_dimension=0, metadata={op_name="jit(loss_batched)/jvp(vmap())/iota" stack_frame_id=47}
+  %constant_50_5_clone_1 = s32[] constant(4)
+  %broadcast.40.5.clone.1 = s32[4]{0} broadcast(%constant_50_5_clone_1), dimensions={}
+  %lt.27.5.clone.1 = pred[4]{0} compare(%iota.12.5.clone.1, %broadcast.40.5.clone.1), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=47}
+  %and.36.5.clone.1 = pred[2,4,2,2]{3,2,1,0} broadcast(%lt.27.5.clone.1), dimensions={1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=46}
+  %and.37.5.clone.1 = pred[2,4,2,2]{3,2,1,0} and(%and.33.5.clone.1, %and.36.5.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=46}
+  %mul.0.5.clone.1 = s32[2,4,2]{2,1,0} multiply(%add.61.33.clone.1, %broadcast.41.19.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/mul" stack_frame_id=45}
+  %add.75.3.clone.1 = s32[2,4,2,2]{3,2,1,0} broadcast(%mul.0.5.clone.1), dimensions={0,1,2}, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=45}
+  %add.78.5.clone.1 = s32[2,4,2,2]{3,2,1,0} broadcast(%add.72.31.clone.1), dimensions={0,1,3}, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=45}
+  %add.79.5.clone.1 = s32[2,4,2,2]{3,2,1,0} add(%add.75.3.clone.1, %add.78.5.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=45}
+  %broadcast_in_dim.0.3.clone.1 = s32[2,4,2,2]{3,2,1,0} broadcast(%constant_50_5_clone_1), dimensions={}, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/broadcast_in_dim" stack_frame_id=44}
+  %select_n.18.3.clone.1 = s32[2,4,2,2]{3,2,1,0} select(%and.37.5.clone.1, %add.79.5.clone.1, %broadcast_in_dim.0.3.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/select_n" stack_frame_id=44}
+  %bitcast.31.clone.1 = s32[2,16]{1,0} bitcast(%select_n.18.3.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/select_n" stack_frame_id=44}
+  %iota.1.1.clone.1 = s32[2,16,1]{2,1,0} iota(), iota_dimension=0
+  %bitcast.2.3.clone.1 = s32[2,16,1]{2,1,0} bitcast(%select_n.25.5), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=25}
+  %concatenate.37.clone.1 = s32[2,16,2]{2,1,0} concatenate(%iota.1.1.clone.1, %bitcast.2.3.clone.1), dimensions={2}, metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=25}
+  %bitcast.3.1.clone.1 = s32[32,2]{1,0} bitcast(%concatenate.37.clone.1), metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=25}
+  %gather.11.1.clone.1 = s32[32,1,1]{2,1,0} gather(%bitcast.31.clone.1, %bitcast.3.1.clone.1), offset_dims={1,2}, collapsed_slice_dims={}, start_index_map={0,1}, index_vector_dim=1, slice_sizes={1,1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=25}
+  ROOT %tuple.1 = (s32[32,1]{1,0}, s32[32,1,1]{2,1,0}) tuple(%gather.12.1, %gather.11.1.clone.1)
+}
+
+%fused_broadcast () -> s32[2,16] {
+  %iota.29.2 = s32[4,2,2]{2,1,0} iota(), iota_dimension=0, metadata={op_name="jit(loss_batched)/jvp(vmap())/broadcast_in_dim" stack_frame_id=43}
+  %bitcast.1.1 = s32[16]{0} bitcast(%iota.29.2), metadata={op_name="jit(loss_batched)/jvp(vmap())/broadcast_in_dim" stack_frame_id=43}
+  ROOT %broadcast_in_dim.1.1 = s32[2,16]{1,0} broadcast(%bitcast.1.1), dimensions={1}, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(lexsort)))/broadcast_in_dim" stack_frame_id=15}
+}
+
+%scalar_add_computation.clone (scalar_lhs.2: s32[], scalar_rhs.2: s32[]) -> s32[] {
+  %scalar_lhs.2 = s32[] parameter(0)
+  %scalar_rhs.2 = s32[] parameter(1)
+  ROOT %add.37.0 = s32[] add(%scalar_lhs.2, %scalar_rhs.2)
+}
+
+%fused_reduce (param_0.406: s32[4], param_1.546: s32[32,4], param_2.376: s32[4], param_3.262: s32[4]) -> s32[32] {
+  %param_1.546 = s32[32,4]{1,0} parameter(1)
+  %constant_58_7 = s32[] constant(0)
+  %broadcast.54.5 = s32[32,4]{1,0} broadcast(%constant_58_7), dimensions={}
+  %compare.7.5 = pred[32,4]{1,0} compare(%param_1.546, %broadcast.54.5), direction=GE
+  %constant_52_2 = pred[] constant(true)
+  %reduce.7 = pred[32]{0} reduce(%compare.7.5, %constant_52_2), dimensions={1}, to_apply=%reduce_logical_and
+  %param_3.262 = s32[4]{0} parameter(3)
+  %broadcast.55.5 = s32[32,4]{1,0} broadcast(%param_3.262), dimensions={1}
+  %compare.8.5 = pred[32,4]{1,0} compare(%broadcast.55.5, %param_1.546), direction=GE
+  %reduce.1.3 = pred[32]{0} reduce(%compare.8.5, %constant_52_2), dimensions={1}, to_apply=%reduce_logical_and.clone
+  %and.11.5 = pred[32]{0} and(%reduce.7, %reduce.1.3)
+  %broadcast.56.5 = pred[32,4]{1,0} broadcast(%and.11.5), dimensions={0}
+  %param_2.376 = s32[4]{0} parameter(2)
+  %broadcast.134.5 = s32[32,4]{1,0} broadcast(%param_2.376), dimensions={1}
+  %select.6.5 = s32[32,4]{1,0} select(%broadcast.56.5, %param_1.546, %broadcast.134.5)
+  %param_0.406 = s32[4]{0} parameter(0)
+  %broadcast.108.1 = s32[32,4]{1,0} broadcast(%param_0.406), dimensions={1}
+  %multiply.1.1 = s32[32,4]{1,0} multiply(%select.6.5, %broadcast.108.1)
+  ROOT %reduce.3.1 = s32[32]{0} reduce(%multiply.1.1, %constant_58_7), dimensions={1}, to_apply=%scalar_add_computation.clone
+}
+
+%scalar_add_computation (scalar_lhs: s32[], scalar_rhs: s32[]) -> s32[] {
+  %scalar_lhs = s32[] parameter(0)
+  %scalar_rhs = s32[] parameter(1)
+  ROOT %add.21.0 = s32[] add(%scalar_lhs, %scalar_rhs)
+}
+
+%fused_reduce.1 (param_0.404: s32[3], param_1.552: s32[32,1,1]) -> s32[32] {
+  %iota.2.5 = s32[2,16,1]{2,1,0} iota(), iota_dimension=0
+  %param_1.552 = s32[32,1,1]{2,1,0} parameter(1)
+  %bitcast.4.53 = s32[2,16]{1,0} bitcast(%param_1.552), metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=25}
+  %constant_58_3 = s32[] constant(0)
+  %broadcast.38.19 = s32[2,16]{1,0} broadcast(%constant_58_3), dimensions={}
+  %lt.30.9 = pred[2,16]{1,0} compare(%bitcast.4.53, %broadcast.38.19), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=18}
+  %constant_50_4 = s32[] constant(4)
+  %broadcast.35.6 = s32[2,16]{1,0} broadcast(%constant_50_4), dimensions={}
+  %add.82.9 = s32[2,16]{1,0} add(%bitcast.4.53, %broadcast.35.6), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=18}
+  %select_n.27.9 = s32[2,16]{1,0} select(%lt.30.9, %add.82.9, %bitcast.4.53), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=18}
+  %bitcast.5.8 = s32[2,16,1]{2,1,0} bitcast(%select_n.27.9), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=18}
+  %iota.31.6 = s32[2,16]{1,0} iota(), iota_dimension=1, metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=19}
+  %slice.2.13 = s32[2,15]{1,0} slice(%bitcast.4.53), slice={[0:2], [1:16]}, metadata={op_name="jit(loss_batched)/jvp(vmap())/slice" stack_frame_id=28}
+  %slice.3.13 = s32[2,15]{1,0} slice(%bitcast.4.53), slice={[0:2], [0:15]}, metadata={op_name="jit(loss_batched)/jvp(vmap())/slice" stack_frame_id=29}
+  %ne.19.11 = pred[2,15]{1,0} compare(%slice.2.13, %slice.3.13), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap())/ne" stack_frame_id=28}
+  %constant_52_4 = pred[] constant(true)
+  %pad.28 = pred[2,16]{1,0} pad(%ne.19.11, %constant_52_4), padding=0_0x1_0, metadata={op_name="jit(loss_batched)/jvp(vmap())/concatenate" stack_frame_id=27}
+  %iota.24.9 = s32[2,16]{1,0} iota(), iota_dimension=1, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/broadcast_in_dim" stack_frame_id=26}
+  %constant_61_4 = s32[] constant(-1)
+  %broadcast_in_dim.4.9 = s32[2,16]{1,0} broadcast(%constant_61_4), dimensions={}, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/broadcast_in_dim" stack_frame_id=26}
+  %select_n.20.9 = s32[2,16]{1,0} select(%pad.28, %iota.24.9, %broadcast_in_dim.4.9), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/select_n" stack_frame_id=26}
+  %constant_14_1 = s32[] constant(-2147483648), metadata={op_name="jit(loss_batched)/jvp(vmap())" stack_frame_id=20}
+  %reduce_window_max.0.6 = s32[2,16]{1,0} reduce-window(%select_n.20.9, %constant_14_1), window={size=1x16 pad=0_0x15_0}, to_apply=%region_1.7, metadata={op_name="jit(loss_batched)/jvp(vmap())/reduce_window_max" stack_frame_id=24}
+  %sub.27.6 = s32[2,16]{1,0} subtract(%iota.31.6, %reduce_window_max.0.6), metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=19}
+  %lt.31.5 = pred[2,16]{1,0} compare(%sub.27.6, %broadcast.38.19), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=18}
+  %add.83.5 = s32[2,16]{1,0} add(%sub.27.6, %broadcast.35.6), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=18}
+  %select_n.28.5 = s32[2,16]{1,0} select(%lt.31.5, %add.83.5, %sub.27.6), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=18}
+  %bitcast.6.5 = s32[2,16,1]{2,1,0} bitcast(%select_n.28.5), metadata={op_name="jit(loss_batched)/jvp(vmap())/select_n" stack_frame_id=18}
+  %concatenate.1.5 = s32[2,16,3]{2,1,0} concatenate(%iota.2.5, %bitcast.5.8, %bitcast.6.5), dimensions={2}, metadata={op_name="jit(loss_batched)/jvp(vmap())/scatter" stack_frame_id=18}
+  %bitcast.7.8 = s32[32,3]{1,0} bitcast(%concatenate.1.5), metadata={op_name="jit(loss_batched)/jvp(vmap())/scatter" stack_frame_id=18}
+  %param_0.404 = s32[3]{0} parameter(0)
+  %broadcast.107.3 = s32[32,3]{1,0} broadcast(%param_0.404), dimensions={1}
+  %multiply.5 = s32[32,3]{1,0} multiply(%bitcast.7.8, %broadcast.107.3)
+  ROOT %reduce.2.1 = s32[32]{0} reduce(%multiply.5, %constant_58_3), dimensions={1}, to_apply=%scalar_add_computation
+}
+
+%fused_select (param_0.409: s32[2,4]) -> f32[2,4,4] {
+  %iota.33.3 = s32[2,4,4]{2,1,0} iota(), iota_dimension=2, metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/lt" stack_frame_id=70}
+  %param_0.409 = s32[2,4]{1,0} parameter(0)
+  %lt.44.3 = s32[2,4,4]{2,1,0} broadcast(%param_0.409), dimensions={0,1}, metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/lt" stack_frame_id=70}
+  %lt.45.3 = pred[2,4,4]{2,1,0} compare(%iota.33.3, %lt.44.3), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(vmap()))/lt" stack_frame_id=70}
+  %constant_43_1 = f32[] constant(1)
+  %broadcast.136.1 = f32[2,4,4]{2,1,0} broadcast(%constant_43_1), dimensions={}, metadata={op_name="jit(loss_batched)/transpose(jvp(vmap()))/broadcast_in_dim;jit(loss_batched)/transpose(jvp())/broadcast_in_dim"}
+  %constant_42_2 = f32[] constant(0)
+  %broadcast.138.1 = f32[2,4,4]{2,1,0} broadcast(%constant_42_2), dimensions={}, metadata={op_name="jit(loss_batched)/transpose(jvp(vmap(vmap(jit(_where)))))/broadcast_in_dim" stack_frame_id=69}
+  ROOT %select_n.37.1 = f32[2,4,4]{2,1,0} select(%lt.45.3, %broadcast.136.1, %broadcast.138.1), metadata={op_name="jit(loss_batched)/transpose(jvp(vmap(vmap(jit(_where)))))/select_n" stack_frame_id=69}
+}
+
+%fused_select.1 (param_0.408: s32[2,4], param_1.549: s32[2,4], param_2.379: s32[2,4]) -> s32[2,4,2,2] {
+  %param_2.379 = s32[2,4]{1,0} parameter(2)
+  %sign.10.5 = s32[2,4]{1,0} sign(%param_2.379), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sign" stack_frame_id=66}
+  %constant_65_1 = s32[] constant(1)
+  %broadcast.45.96 = s32[2,4]{1,0} broadcast(%constant_65_1), dimensions={}
+  %ne.20.5 = pred[2,4]{1,0} compare(%sign.10.5, %broadcast.45.96), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=66}
+  %param_0.408 = s32[2,4]{1,0} parameter(0)
+  %compare.18.3 = pred[2,4]{1,0} compare(%param_2.379, %param_0.408), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=66}
+  %negate.2.5 = s32[2,4]{1,0} negate(%param_2.379), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=66}
+  %select.14.5 = s32[2,4]{1,0} select(%compare.18.3, %negate.2.5, %param_2.379), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=66}
+  %and.14.7 = s32[2,4]{1,0} and(%select.14.5, %broadcast.45.96), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=66}
+  %negate.3.5 = s32[2,4]{1,0} negate(%and.14.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=66}
+  %select.15.5 = s32[2,4]{1,0} select(%compare.18.3, %negate.3.5, %and.14.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=66}
+  %ne.21.5 = pred[2,4]{1,0} compare(%select.15.5, %param_0.408), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=66}
+  %and.4.3 = pred[2,4]{1,0} and(%ne.20.5, %ne.21.5), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/and" stack_frame_id=66}
+  %shift-right-logical.12 = s32[2,4]{1,0} shift-right-logical(%select.14.5, %broadcast.45.96), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=66}
+  %negate.5.5 = s32[2,4]{1,0} negate(%shift-right-logical.12), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=66}
+  %select.17.5 = s32[2,4]{1,0} select(%compare.18.3, %negate.5.5, %shift-right-logical.12), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=66}
+  %constant_61_2 = s32[] constant(-1)
+  %broadcast.74.30 = s32[2,4]{1,0} broadcast(%constant_61_2), dimensions={}
+  %add.7.7 = s32[2,4]{1,0} add(%select.17.5, %broadcast.74.30), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sub" stack_frame_id=66}
+  %select_n.12.5 = s32[2,4]{1,0} select(%and.4.3, %add.7.7, %select.17.5), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/jit(_where)/select_n" stack_frame_id=66}
+  %add.57.3 = s32[2,4,2]{2,1,0} broadcast(%select_n.12.5), dimensions={0,1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=58}
+  %iota.27.48 = s32[2,4,2]{2,1,0} iota(), iota_dimension=2, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=58}
+  %add.61.25 = s32[2,4,2]{2,1,0} add(%add.57.3, %iota.27.48), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=58}
+  %add.51.7 = s32[2,4]{1,0} add(%param_2.379, %broadcast.45.96), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=65}
+  %sign.12.5 = s32[2,4]{1,0} sign(%add.51.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sign" stack_frame_id=64}
+  %ne.23.9 = pred[2,4]{1,0} compare(%sign.12.5, %broadcast.45.96), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=64}
+  %compare.20.5 = pred[2,4]{1,0} compare(%add.51.7, %param_0.408), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=64}
+  %negate.7.7 = s32[2,4]{1,0} negate(%add.51.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=64}
+  %select.18.7 = s32[2,4]{1,0} select(%compare.20.5, %negate.7.7, %add.51.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=64}
+  %and.15.9 = s32[2,4]{1,0} and(%select.18.7, %broadcast.45.96), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=64}
+  %negate.8.7 = s32[2,4]{1,0} negate(%and.15.9), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=64}
+  %select.19.9 = s32[2,4]{1,0} select(%compare.20.5, %negate.8.7, %and.15.9), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=64}
+  %ne.24.9 = pred[2,4]{1,0} compare(%select.19.9, %param_0.408), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=64}
+  %and.5.7 = pred[2,4]{1,0} and(%ne.23.9, %ne.24.9), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/and" stack_frame_id=64}
+  %shift-right-logical.1.7 = s32[2,4]{1,0} shift-right-logical(%select.18.7, %broadcast.45.96), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=64}
+  %negate.10.7 = s32[2,4]{1,0} negate(%shift-right-logical.1.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=64}
+  %select.21.7 = s32[2,4]{1,0} select(%compare.20.5, %negate.10.7, %shift-right-logical.1.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=64}
+  %add.8.9 = s32[2,4]{1,0} add(%select.21.7, %broadcast.74.30), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sub" stack_frame_id=64}
+  %select_n.13.7 = s32[2,4]{1,0} select(%and.5.7, %add.8.9, %select.21.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/jit(_where)/select_n" stack_frame_id=64}
+  %le.10.5 = s32[2,4,2]{2,1,0} broadcast(%select_n.13.7), dimensions={0,1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/le" stack_frame_id=63}
+  %le.11.5 = pred[2,4,2]{2,1,0} compare(%add.61.25, %le.10.5), direction=LE, metadata={op_name="jit(loss_batched)/jvp(vmap())/le" stack_frame_id=63}
+  %constant_58_1 = s32[] constant(0)
+  %broadcast.42.14 = s32[2,4,2]{2,1,0} broadcast(%constant_58_1), dimensions={}
+  %ge.2.7 = pred[2,4,2]{2,1,0} compare(%add.61.25, %broadcast.42.14), direction=GE, metadata={op_name="jit(loss_batched)/jvp(vmap())/ge" stack_frame_id=62}
+  %and.23.5 = pred[2,4,2]{2,1,0} and(%le.11.5, %ge.2.7), metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=60}
+  %constant_64_1 = s32[] constant(2)
+  %broadcast.41.13 = s32[2,4,2]{2,1,0} broadcast(%constant_64_1), dimensions={}
+  %lt.25.5 = pred[2,4,2]{2,1,0} compare(%add.61.25, %broadcast.41.13), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=61}
+  %and.24.3 = pred[2,4,2]{2,1,0} and(%and.23.5, %lt.25.5), metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=60}
+  %and.29.3 = pred[2,4,2,2]{3,2,1,0} broadcast(%and.24.3), dimensions={0,1,2}, metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=48}
+  %param_1.549 = s32[2,4]{1,0} parameter(1)
+  %sign.14.5 = s32[2,4]{1,0} sign(%param_1.549), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sign" stack_frame_id=59}
+  %ne.26.5 = pred[2,4]{1,0} compare(%sign.14.5, %broadcast.45.96), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=59}
+  %compare.22.3 = pred[2,4]{1,0} compare(%param_1.549, %param_0.408), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=59}
+  %negate.14.5 = s32[2,4]{1,0} negate(%param_1.549), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=59}
+  %select.22.5 = s32[2,4]{1,0} select(%compare.22.3, %negate.14.5, %param_1.549), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=59}
+  %and.16.7 = s32[2,4]{1,0} and(%select.22.5, %broadcast.45.96), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=59}
+  %negate.15.5 = s32[2,4]{1,0} negate(%and.16.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=59}
+  %select.23.5 = s32[2,4]{1,0} select(%compare.22.3, %negate.15.5, %and.16.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=59}
+  %ne.27.5 = pred[2,4]{1,0} compare(%select.23.5, %param_0.408), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=59}
+  %and.6.3 = pred[2,4]{1,0} and(%ne.26.5, %ne.27.5), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/and" stack_frame_id=59}
+  %shift-right-logical.2.7 = s32[2,4]{1,0} shift-right-logical(%select.22.5, %broadcast.45.96), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=59}
+  %negate.17.5 = s32[2,4]{1,0} negate(%shift-right-logical.2.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=59}
+  %select.25.5 = s32[2,4]{1,0} select(%compare.22.3, %negate.17.5, %shift-right-logical.2.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=59}
+  %add.13.7 = s32[2,4]{1,0} add(%select.25.5, %broadcast.74.30), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sub" stack_frame_id=59}
+  %select_n.14.5 = s32[2,4]{1,0} select(%and.6.3, %add.13.7, %select.25.5), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/jit(_where)/select_n" stack_frame_id=59}
+  %add.68.3 = s32[2,4,2]{2,1,0} broadcast(%select_n.14.5), dimensions={0,1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=56}
+  %iota.27.42 = s32[2,4,2]{2,1,0} iota(), iota_dimension=2, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=58}
+  %add.72.23 = s32[2,4,2]{2,1,0} add(%add.68.3, %iota.27.42), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=56}
+  %add.62.7 = s32[2,4]{1,0} add(%param_1.549, %broadcast.45.96), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=55}
+  %sign.16.5 = s32[2,4]{1,0} sign(%add.62.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sign" stack_frame_id=54}
+  %ne.29.9 = pred[2,4]{1,0} compare(%sign.16.5, %broadcast.45.96), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=54}
+  %compare.24.5 = pred[2,4]{1,0} compare(%add.62.7, %param_0.408), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=54}
+  %negate.19.7 = s32[2,4]{1,0} negate(%add.62.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=54}
+  %select.26.7 = s32[2,4]{1,0} select(%compare.24.5, %negate.19.7, %add.62.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=54}
+  %and.17.9 = s32[2,4]{1,0} and(%select.26.7, %broadcast.45.96), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=54}
+  %negate.20.7 = s32[2,4]{1,0} negate(%and.17.9), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=54}
+  %select.27.9 = s32[2,4]{1,0} select(%compare.24.5, %negate.20.7, %and.17.9), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/rem" stack_frame_id=54}
+  %ne.30.9 = pred[2,4]{1,0} compare(%select.27.9, %param_0.408), direction=NE, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/ne" stack_frame_id=54}
+  %and.7.7 = pred[2,4]{1,0} and(%ne.29.9, %ne.30.9), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/and" stack_frame_id=54}
+  %shift-right-logical.3.7 = s32[2,4]{1,0} shift-right-logical(%select.26.7, %broadcast.45.96), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=54}
+  %negate.22.7 = s32[2,4]{1,0} negate(%shift-right-logical.3.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=54}
+  %select.29.7 = s32[2,4]{1,0} select(%compare.24.5, %negate.22.7, %shift-right-logical.3.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/div" stack_frame_id=54}
+  %add.14.9 = s32[2,4]{1,0} add(%select.29.7, %broadcast.74.30), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/sub" stack_frame_id=54}
+  %select_n.16.7 = s32[2,4]{1,0} select(%and.7.7, %add.14.9, %select.29.7), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(floor_divide)))/jit(_where)/select_n" stack_frame_id=54}
+  %le.14.5 = s32[2,4,2]{2,1,0} broadcast(%select_n.16.7), dimensions={0,1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/le" stack_frame_id=53}
+  %le.15.5 = pred[2,4,2]{2,1,0} compare(%add.72.23, %le.14.5), direction=LE, metadata={op_name="jit(loss_batched)/jvp(vmap())/le" stack_frame_id=53}
+  %ge.3.7 = pred[2,4,2]{2,1,0} compare(%add.72.23, %broadcast.42.14), direction=GE, metadata={op_name="jit(loss_batched)/jvp(vmap())/ge" stack_frame_id=52}
+  %and.25.5 = pred[2,4,2]{2,1,0} and(%le.15.5, %ge.3.7), metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=50}
+  %lt.26.5 = pred[2,4,2]{2,1,0} compare(%add.72.23, %broadcast.41.13), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=51}
+  %and.26.3 = pred[2,4,2]{2,1,0} and(%and.25.5, %lt.26.5), metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=50}
+  %and.32.3 = pred[2,4,2,2]{3,2,1,0} broadcast(%and.26.3), dimensions={0,1,3}, metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=48}
+  %and.33.3 = pred[2,4,2,2]{3,2,1,0} and(%and.29.3, %and.32.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=48}
+  %iota.12.3 = s32[4]{0} iota(), iota_dimension=0, metadata={op_name="jit(loss_batched)/jvp(vmap())/iota" stack_frame_id=47}
+  %constant_50_3 = s32[] constant(4)
+  %broadcast.40.3 = s32[4]{0} broadcast(%constant_50_3), dimensions={}
+  %lt.27.3 = pred[4]{0} compare(%iota.12.3, %broadcast.40.3), direction=LT, metadata={op_name="jit(loss_batched)/jvp(vmap())/lt" stack_frame_id=47}
+  %and.36.3 = pred[2,4,2,2]{3,2,1,0} broadcast(%lt.27.3), dimensions={1}, metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=46}
+  %and.37.3 = pred[2,4,2,2]{3,2,1,0} and(%and.33.3, %and.36.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/and" stack_frame_id=46}
+  %mul.0.3 = s32[2,4,2]{2,1,0} multiply(%add.61.25, %broadcast.41.13), metadata={op_name="jit(loss_batched)/jvp(vmap())/mul" stack_frame_id=45}
+  %add.75.1 = s32[2,4,2,2]{3,2,1,0} broadcast(%mul.0.3), dimensions={0,1,2}, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=45}
+  %add.78.3 = s32[2,4,2,2]{3,2,1,0} broadcast(%add.72.23), dimensions={0,1,3}, metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=45}
+  %add.79.3 = s32[2,4,2,2]{3,2,1,0} add(%add.75.1, %add.78.3), metadata={op_name="jit(loss_batched)/jvp(vmap())/add" stack_frame_id=45}
+  %broadcast_in_dim.0.1 = s32[2,4,2,2]{3,2,1,0} broadcast(%constant_50_3), dimensions={}, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/broadcast_in_dim" stack_frame_id=44}
+  ROOT %select_n.18.1 = s32[2,4,2,2]{3,2,1,0} select(%and.37.3, %add.79.3, %broadcast_in_dim.0.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/select_n" stack_frame_id=44}
+}
+
+%fused_broadcast.1 () -> f32[1,1,3,3] {
+  %constant_42_1 = f32[] constant(0)
+  ROOT %broadcast.28.1 = f32[1,1,3,3]{3,2,1,0} broadcast(%constant_42_1), dimensions={}
+}
+
+%fused_broadcast.2 () -> (s32[2,4,4], s32[2,4,4]) {
+  %constant_50_1 = s32[] constant(4)
+  %broadcast.34.1 = s32[2,4,4]{2,1,0} broadcast(%constant_50_1), dimensions={}
+  %copy.3 = s32[2,4,4]{2,1,0} copy(%broadcast.34.1)
+  ROOT %tuple.2 = (s32[2,4,4]{2,1,0}, s32[2,4,4]{2,1,0}) tuple(%broadcast.34.1, %copy.3)
+}
+
+%fused_broadcast.3 () -> s32[2,4] {
+  %constant_58_4 = s32[] constant(0)
+  ROOT %broadcast.142.1 = s32[2,4]{1,0} broadcast(%constant_58_4), dimensions={}, metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=65}
+}
+
+ENTRY %main.19 (x_b.1: s32[2,4], y_b.1: s32[2,4], c_b.1: s32[2,4]) -> f32[1,1,3,3] {
+  %loop_broadcast_fusion.3 = s32[2,4]{1,0} fusion(), kind=kLoop, calls=%fused_broadcast.3, metadata={op_name="jit(loss_batched)/jvp(vmap())/sub" stack_frame_id=65}
+  %x_b.1 = s32[2,4]{1,0} parameter(0), metadata={op_name="x_b"}
+  %y_b.1 = s32[2,4]{1,0} parameter(1), metadata={op_name="y_b"}
+  %loop_select_fusion.1 = s32[2,4,2,2]{3,2,1,0} fusion(%loop_broadcast_fusion.3, %x_b.1, %y_b.1), kind=kLoop, calls=%fused_select.1, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/select_n" stack_frame_id=44}
+  %bitcast.30 = s32[2,16]{1,0} bitcast(%loop_select_fusion.1), metadata={op_name="jit(loss_batched)/jvp(vmap(jit(_where)))/select_n" stack_frame_id=44}
+  %loop_broadcast_fusion = s32[2,16]{1,0} fusion(), kind=kLoop, calls=%fused_broadcast, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(lexsort)))/broadcast_in_dim" stack_frame_id=15}
+  %fusion = (s32[2,16]{1,0}, s32[2,16]{1,0}, s32[2,16]{1,0}, s32[2,16]{1,0}) fusion(%bitcast.30, %loop_broadcast_fusion), kind=kCustom, calls=%fused_computation, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(lexsort)))/sort" stack_frame_id=15}
+  %sort.3.0 = s32[2,16]{1,0} get-tuple-element(%fusion), index=2, metadata={op_name="jit(loss_batched)/jvp(vmap(jit(lexsort)))/sort" stack_frame_id=15}
+  %loop_gather_fusion = (s32[32,1]{1,0}, s32[32,1,1]{2,1,0}) fusion(%sort.3.0, %loop_broadcast_fusion.3, %x_b.1, %y_b.1), kind=kLoop, calls=%fused_gather, metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=42}
+  %get-tuple-element.11 = s32[32,1,1]{2,1,0} get-tuple-element(%loop_gather_fusion), index=1, metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=42}
+  %constant_147_0 = s32[3]{0} constant({16, 4, 1})
+  %loop_reduce_fusion = s32[32]{0} fusion(%constant_147_0, %get-tuple-element.11), kind=kLoop, calls=%fused_reduce.1
+  %get-tuple-element.10 = s32[32,1]{1,0} get-tuple-element(%loop_gather_fusion), index=0, metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=42}
+  %bitcast.9.0 = s32[32]{0} bitcast(%get-tuple-element.10), metadata={op_name="jit(loss_batched)/jvp(vmap())/gather" stack_frame_id=42}
+  %fusion.1 = (s32[32]{0}, s32[32]{0}, s32[32]{0}) fusion(%loop_reduce_fusion, %bitcast.9.0), kind=kCustom, calls=%fused_computation.1
+  %get-tuple-element.1.0 = s32[32]{0} get-tuple-element(%fusion.1), index=1
+  %get-tuple-element.2.0 = s32[32]{0} get-tuple-element(%fusion.1), index=2
+  %get-tuple-element.9 = s32[32]{0} get-tuple-element(%fusion.1), index=0
+  %loop_broadcast_fusion.2 = (s32[2,4,4]{2,1,0}, s32[2,4,4]{2,1,0}) fusion(), kind=kLoop, calls=%fused_broadcast.2
+  %get-tuple-element.13 = s32[2,4,4]{2,1,0} get-tuple-element(%loop_broadcast_fusion.2), index=1
+  %constant_21_0 = s32[3]{0} constant({2, 4, 4})
+  %input_scatter_fusion.2 = s32[2,4,4]{2,1,0} fusion(%get-tuple-element.13, %get-tuple-element.2.0, %constant_21_0, %get-tuple-element.9, %get-tuple-element.1.0, /*index=5*/%get-tuple-element.11), kind=kInput, calls=%fused_scatter.2, metadata={op_name="jit(loss_batched)/jvp(vmap())/scatter" stack_frame_id=18}
+  %get-tuple-element.12 = s32[2,4,4]{2,1,0} get-tuple-element(%loop_broadcast_fusion.2), index=0
+  %c_b.1 = s32[2,4]{1,0} parameter(2), metadata={op_name="c_b"}
+  %loop_pad_fusion = s32[32,4]{1,0} fusion(%c_b.1, %x_b.1, %y_b.1, %get-tuple-element.12, %input_scatter_fusion.2), kind=kLoop, calls=%fused_pad
+  %constant_148_0 = s32[4]{0} constant({9, 3, 1, 9})
+  %constant_152_0 = s32[4]{0} constant({1, 3, 3, 0})
+  %constant_73_0 = s32[4]{0} constant({0, 2, 2, 0})
+  %input_reduce_fusion = s32[32]{0} fusion(%constant_148_0, %loop_pad_fusion, %constant_152_0, %constant_73_0), kind=kCustom, calls=%fused_reduce, backend_config={"device_type":"DEVICE_TYPE_INVALID","force_earliest_schedule":false,"fusion_backend_config":{"block_level_fusion_config":{"is_tma_allowed":false,"is_warp_specialization_allowed":false,"num_ctas":1,"num_stages":1,"num_tiles_per_pid":0,"num_warps":"1","output_tiles":[{"sizes":["4"]}],"waves_per_eu":0},"kind":"__triton"},"operation_queue_id":"0","reification_cost":[]}
+  %input_scatter_fusion.1 = s32[2,4]{1,0} fusion(%loop_broadcast_fusion.3, %get-tuple-element.11), kind=kInput, calls=%fused_scatter.1, metadata={op_name="jit(loss_batched)/jvp(vmap())/scatter-max" stack_frame_id=16}
+  %loop_select_fusion = f32[2,4,4]{2,1,0} fusion(%input_scatter_fusion.1), kind=kLoop, calls=%fused_select, metadata={op_name="jit(loss_batched)/transpose(jvp(vmap(vmap(jit(_where)))))/select_n" stack_frame_id=69}
+  %bitcast.26.0 = f32[32]{0} bitcast(%loop_select_fusion), metadata={op_name="jit(loss_batched)/transpose(jvp(vmap(vmap(jit(_where)))))/select_n" stack_frame_id=69}
+  %fusion.2 = (s32[32]{0}, f32[32]{0}, s32[32]{0}) fusion(%input_reduce_fusion, %bitcast.26.0), kind=kCustom, calls=%fused_computation.2
+  %get-tuple-element.3.0 = s32[32]{0} get-tuple-element(%fusion.2), index=0
+  %get-tuple-element.4.0 = f32[32]{0} get-tuple-element(%fusion.2), index=1
+  %get-tuple-element.5.0 = s32[32]{0} get-tuple-element(%fusion.2), index=2
+  %loop_broadcast_fusion.1 = f32[1,1,3,3]{3,2,1,0} fusion(), kind=kLoop, calls=%fused_broadcast.1
+  %constant_85_0 = s32[4]{0} constant({1, 3, 3, 1})
+  ROOT %input_scatter_fusion = f32[1,1,3,3]{3,2,1,0} fusion(%loop_broadcast_fusion.1, %constant_85_0, %get-tuple-element.5.0, %get-tuple-element.3.0, %loop_pad_fusion, /*index=5*/%constant_152_0, %get-tuple-element.4.0, %constant_73_0), kind=kInput, calls=%fused_scatter, metadata={op_name="jit(loss_batched)/transpose(jvp(vmap(vmap())))/scatter-add" stack_frame_id=9}
+}
+
