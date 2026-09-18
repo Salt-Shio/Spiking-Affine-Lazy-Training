@@ -1,0 +1,77 @@
+run_name: compressed_weight_decay_only_verify
+# 單獨驗證 weight_decay:複製自 baseline.yaml,只加 train.weight_decay,不碰
+# grad_clip_norm/label_smoothing_alpha(那兩個這次完全不設)。
+#
+# 動機(docs/問題紀錄.md 第十五節、docs/math/梯度下降曲率穩定性推導.md 第 8
+# 節):三個旋鈕一起上時,拆解實驗(只拿掉 weight_decay,clip+smoothing 還在)
+# 顯示前 25 epoch 的 firing-rate 崩壞、val_accuracy 下滑依然出現,代表兇手是
+# clip/smoothing 那兩個,不是 weight_decay——但這也只證明「拿掉它、留另外
+# 兩個」時它不是唯一兇手,還沒單獨驗證過 weight_decay **自己一個**接上去,
+# 對這個訓練中期梯度爆炸的問題到底有沒有效、會不會有副作用。這個 config 用
+# 來補這一格。
+
+model:
+  decoder: membrane_regression
+
+  input_shape: [2, 34, 34]
+
+  layers:
+    - type: conv
+      oc: 8
+      k: 3
+      s: 2
+      p: 1
+      tau: 16.0
+      v_th: 1.0
+      alpha: 2.0
+      chunk_size: 4
+      L: 185
+      max_out_spikes: 1
+      max_steps: 1
+      init_k: 5.0
+      L_grow_factor: 1.5
+      out_grow_factor: 1.5
+      out_shrink_threshold: 0.5
+      max_steps_grow_factor: 1.5
+      max_steps_shrink_threshold: 0.5
+    - type: conv
+      oc: 16
+      k: 3
+      s: 2
+      p: 1
+      tau: 16.0
+      v_th: 1.0
+      alpha: 2.0
+      chunk_size: 4
+      L: 32
+      max_out_spikes: 1
+      max_steps: 1
+      init_k: 5.0
+      L_grow_factor: 1.5
+      out_grow_factor: 1.5
+      out_shrink_threshold: 0.5
+      max_steps_grow_factor: 1.5
+      max_steps_shrink_threshold: 0.5
+    - type: fc
+      name: out
+      n_out: 10
+      tau: 16.0
+      v_th: 1.0e+9
+      alpha: 2.0
+      chunk_size: 1024
+      init_k: 5.0
+
+data:
+  max_events: 2000
+  train_size: 1000
+  val_size: 200
+  seed_train: 0
+  seed_val: 0
+
+train:
+  lr: 1.0e-2
+  epochs: 100
+  batch_size: 4
+  seed: 42
+  weight_snapshot_every: 1
+  weight_decay: 1.0e-2

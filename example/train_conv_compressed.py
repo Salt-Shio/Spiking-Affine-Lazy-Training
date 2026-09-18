@@ -65,16 +65,33 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def make_train_step(net, optimizer, decoder):
+def _cross_entropy_loss(scores: jax.Array, batch_labels_onehot: jax.Array,
+                        score_cap: float | None) -> jax.Array:
+    """夾住輸出上限(docs/math/梯度下降曲率穩定性推導.md §8.4)。`score_cap`
+    是 `None`(預設)時原樣通過,等價於原本的 cross entropy。設定時用
+    `score_cap * tanh(scores / score_cap)` 把每個類別的分數飽和限制在
+    `[-score_cap, score_cap]`,logit 差距因此有硬上限 `2*score_cap`。跟
+    label smoothing(已撤除,見同節)不同:這裡不改變分類目標本身,對還沒
+    逼近上限的樣本梯度幾乎不受影響,只有分數已經接近上限時才開始飽和——用
+    `tanh` 而不是硬 `jnp.clip`,是因為硬裁切在超過門檻後梯度完全變成 0,等於
+    製造另一種死區。eval 那邊(example/utils.py)維持原始未夾住的分數,不然
+    驗證指標會被訓練用的飽和轉換污染。回傳每筆樣本的 loss,形狀 `(batch,)`。"""
+    if score_cap is not None:
+        scores = score_cap * jnp.tanh(scores / score_cap)
+    return optax.softmax_cross_entropy(scores, batch_labels_onehot)
+
+
+def make_train_step(net, optimizer, decoder, score_cap: float | None = None):
     def loss_fn(params, batch_event_times, batch_x, batch_y, batch_c, batch_n_real,
                 batch_labels_onehot):
         result, diagnostics = net.apply_batched(params, batch_event_times, batch_x, batch_y,
                                                  batch_c, batch_n_real)
         # 解碼器把最後一層的 LayerForwardResult 讀成分數(膜電位回歸 = v_final、
         # 頻率/群體 = s_value 加總),網路本身不挑 readout。dec_metrics 是這個
-        # 編碼特定的純量(可空,膜電位回歸就是空的)。
+        # 編碼特定的純量(可空,膜電位回歸就是空的)。這次單獨測試,weight_decay
+        # 維持關閉(config 不填,預設 0)。
         scores, dec_metrics = jax.vmap(decoder.decode)(result)
-        per_sample_loss = optax.softmax_cross_entropy(scores, batch_labels_onehot)
+        per_sample_loss = _cross_entropy_loss(scores, batch_labels_onehot, score_cap)
         loss = jnp.mean(per_sample_loss)
         # 每層一份「批次縮減後的 LayerDiag」:firing_rate / spike_count 取批次
         # **平均**(給 metrics.csv 當哨兵指標),max_real_queue / n_out_spikes /
@@ -357,7 +374,15 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
     best = Best(params=None, val_accuracy=-1.0, epoch=-1)
     while True:
         net = ConvNetCompressed(layers)
-        optimizer = optax.adam(train_cfg["lr"])
+        # `train.weight_decay`(選填,不填 = 0,關閉):對治訓練中期梯度爆炸的
+        # 根因層解法之一(docs/math/梯度下降曲率穩定性推導.md §8.2)。用
+        # `optax.adamw` 而不是手動把 decay 項塞進 loss,是因為 decay 要繞過
+        # Adam 的自適應縮放才能保住跟 L2 正則化的等價關係,見同節說明。單獨
+        # 測過 1e-2:沒有引發神經元死亡,擋住了不可逆崩潰,但沒有消除震盪本身
+        # (docs/問題紀錄.md 第十五節)。跟 §8.4 的 score_cap 機制上不衝突(一個
+        # 限權重量級、一個限輸出上限,都不碰分類目標本身),可以疊加。
+        # grad_clip_norm/label_smoothing 已撤除,不要再用(§8.3、§8.1 討論)。
+        optimizer = optax.adamw(train_cfg["lr"], weight_decay=train_cfg.get("weight_decay", 0.0))
 
         if not checkpointer.exists():
             params = net.init(set_seed(train_cfg["seed"]))
@@ -375,7 +400,8 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
 
         outcome = run_epochs(
             layers=layers,
-            train_step=make_train_step(net, optimizer, decoder),
+            train_step=make_train_step(
+                net, optimizer, decoder, score_cap=train_cfg.get("score_cap")),
             evaluate=make_evaluate(net, decoder, eval_batch_size=batch_size),
             params=params, opt_state=opt_state, shuffle_key=shuffle_key,
             start_epoch=start_epoch, total_epochs=train_cfg["epochs"],

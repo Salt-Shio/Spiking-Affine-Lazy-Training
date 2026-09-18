@@ -54,7 +54,7 @@ from salt_core.layers import LayerDiag
 from example.models.conv_net import ConvNetCompressed, build_network
 from example.paths import EXPERIMENTS_DIR
 from example.checkpoint import Checkpointer
-from example.train_conv_compressed import train
+from example.train_conv_compressed import _cross_entropy_loss, train
 from example.utils import TRAIN_DIRNAME
 
 # 這份 e2e 測試會呼叫真正的 train(),每個案例吐一個 conv_compressed_*_<時間戳>
@@ -203,6 +203,88 @@ def test_checkpoint_roundtrip_preserves_all_fields():
 
     assert jnp.array_equal(shuffle_key, loaded_shuffle_key)
     assert loaded_epoch == epoch
+
+
+def test_optax_adamw_weight_decay_pulls_params_with_zero_gradient():
+    """`train_conv_compressed.train()` 把 `optax.adam` 換成
+    `optax.adamw(lr, weight_decay=train_cfg.get("weight_decay", 0.0))`
+    (docs/math/梯度下降曲率穩定性推導.md §8.2)。這裡直接測 `optax.adamw` 本身
+    decoupled weight decay 的行為:即使梯度是 0,只要 `weight_decay>0`,update
+    仍然非 0——直接對 params 做縮放,不經過 Adam 的動量/自適應縮放。
+    `weight_decay=0`(預設,等價於原本的 `optax.adam`)時,Adam 對 0 梯度的
+    update 恆為 0,兩者要能區分開才算真的接上 decoupled 這條路,不是普通 L2。"""
+    params = {"w": jnp.array([10.0, 10.0, 10.0])}
+    zero_grad = {"w": jnp.zeros((3,))}
+
+    no_decay = optax.adamw(1e-2, weight_decay=0.0)
+    no_decay_updates, _ = no_decay.update(zero_grad, no_decay.init(params), params)
+    assert float(jnp.linalg.norm(no_decay_updates["w"])) == 0.0
+
+    with_decay = optax.adamw(1e-2, weight_decay=1.0)
+    with_decay_updates, _ = with_decay.update(zero_grad, with_decay.init(params), params)
+    assert float(jnp.linalg.norm(with_decay_updates["w"])) > 0.0
+
+
+def test_weight_decay_knob_plumbed_through_training_and_checkpoint():
+    """`train.weight_decay` 從 config 讀到、接進真正的 `train()` entrypoint,
+    含 checkpoint 存讀(`optax.adamw` 的 opt_state 形狀跟 `optax.adam` 不同,
+    多一份 decoupled decay 用不到額外 state,但整條 while 外圈的重編譯/存讀
+    路徑要能正常跑完 2 個 epoch,不出錯)。"""
+    cfg = _base_cfg("weight_decay_smoke", seed=0, conv2_L_init=2000, grow=1.5, epochs=2)
+    cfg["train"]["weight_decay"] = 1e-4
+    path = _write_yaml(cfg)
+    exp_dir, _, _, _, _, _ = train(path, exp_root=_TEST_TEMP)
+    rows = _read_metrics_csv(exp_dir)
+    assert [int(r["epoch"]) for r in rows] == [0, 1]
+
+
+def test_score_cap_none_matches_plain_cross_entropy():
+    """`score_cap=None`(預設)時,`_cross_entropy_loss` 要跟原始
+    `optax.softmax_cross_entropy` 逐位元一致——這是「不設就是原樣通過」的
+    基本保證。"""
+    scores = jnp.array([[0.0, 3.0, -1.0]])
+    labels_onehot = jax.nn.one_hot(jnp.array([1]), 3)
+
+    capped = _cross_entropy_loss(scores, labels_onehot, None)
+    plain = optax.softmax_cross_entropy(scores, labels_onehot)
+
+    assert jnp.array_equal(capped, plain)
+
+
+def test_score_cap_does_not_distort_scores_far_below_the_cap():
+    """`score_cap` 只在分數逼近上限時才該生效(docs/math/梯度下降曲率穩定性
+    推導.md §8.4)——分數遠小於 cap 時,`tanh(x/C) ≈ x/C`,loss 應該幾乎跟
+    不設 cap 時一樣,不能連正常訓練階段的推力都跟著打折。"""
+    scores = jnp.array([[0.0, 1.0, 0.0]])  # logit 差距只有 1,遠低於 cap
+    labels_onehot = jax.nn.one_hot(jnp.array([1]), 3)
+
+    uncapped = _cross_entropy_loss(scores, labels_onehot, None)
+    capped = _cross_entropy_loss(scores, labels_onehot, 6.0)
+
+    assert jnp.allclose(uncapped, capped, atol=1e-2)
+
+
+def test_score_cap_saturates_extreme_scores_to_a_fixed_loss():
+    """分數遠超過 cap 時,`tanh` 飽和到 ±1,不管原始分數多誇張,轉換後的分數
+    都趨近同一個值——loss 因此不再隨原始分數繼續下降,不像沒有 cap 時
+    logit 差距可以無界增長、loss 可以無界壓向 0。"""
+    labels_onehot = jax.nn.one_hot(jnp.array([1]), 3)
+    loss_1e6 = _cross_entropy_loss(jnp.array([[0.0, 1e6, 0.0]]), labels_onehot, 6.0)
+    loss_1e9 = _cross_entropy_loss(jnp.array([[0.0, 1e9, 0.0]]), labels_onehot, 6.0)
+
+    assert jnp.allclose(loss_1e6, loss_1e9, atol=1e-6)
+    assert float(loss_1e6[0]) > 1e-4  # 有實質下限,不會被沖到趨近 0
+
+
+def test_score_cap_knob_plumbed_through_training_and_checkpoint():
+    """`train.score_cap` 從 config 讀到、接進真正的 `train()` entrypoint,
+    整條 while 外圈的重編譯/存讀路徑要能正常跑完 2 個 epoch,不出錯。"""
+    cfg = _base_cfg("score_cap_smoke", seed=0, conv2_L_init=2000, grow=1.5, epochs=2)
+    cfg["train"]["score_cap"] = 6.0
+    path = _write_yaml(cfg)
+    exp_dir, _, _, _, _, _ = train(path, exp_root=_TEST_TEMP)
+    rows = _read_metrics_csv(exp_dir)
+    assert [int(r["epoch"]) for r in rows] == [0, 1]
 
 
 def test_grown_to_fit_bumps_only_the_overflowing_knob():
