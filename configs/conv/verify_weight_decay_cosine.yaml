@@ -1,0 +1,78 @@
+run_name: compressed_weight_decay_cosine_verify
+# weight_decay(§8.2)+ 餘弦退火(§9)疊加驗證:複製自 baseline.yaml,只加
+# train.weight_decay + train.lr_cosine_decay,不設 score_cap(先跟 score_cap
+# 分開驗證,不然震盪變少時分不出是哪個機制的功勞)。
+#
+# 動機(docs/math/梯度下降曲率穩定性推導.md 第 9 節):weight_decay 單獨測
+# 兩次都穩定,但反彈均勻分布在整個訓練過程,包括接近結尾的 epoch,沒有隨
+# 訓練進行變少——因為穩定門檻 2/η 全程固定,η(學習率)從沒動過。餘弦退火
+# 讓 η 隨訓練進行下降,2/η 隨訓練進行升高,理論上訓練後段的反彈應該明顯
+# 變少。具體預測:跟 weight_decay 單獨測的結果對照,epoch70 之後的
+# step_ratio 反彈應該少很多,不像現在到 epoch92~93 都還有 3 倍反彈。
+
+model:
+  decoder: membrane_regression
+
+  input_shape: [2, 34, 34]
+
+  layers:
+    - type: conv
+      oc: 8
+      k: 3
+      s: 2
+      p: 1
+      tau: 16.0
+      v_th: 1.0
+      alpha: 2.0
+      chunk_size: 4
+      L: 185
+      max_out_spikes: 1
+      max_steps: 1
+      init_k: 5.0
+      L_grow_factor: 1.5
+      out_grow_factor: 1.5
+      out_shrink_threshold: 0.5
+      max_steps_grow_factor: 1.5
+      max_steps_shrink_threshold: 0.5
+    - type: conv
+      oc: 16
+      k: 3
+      s: 2
+      p: 1
+      tau: 16.0
+      v_th: 1.0
+      alpha: 2.0
+      chunk_size: 4
+      L: 32
+      max_out_spikes: 1
+      max_steps: 1
+      init_k: 5.0
+      L_grow_factor: 1.5
+      out_grow_factor: 1.5
+      out_shrink_threshold: 0.5
+      max_steps_grow_factor: 1.5
+      max_steps_shrink_threshold: 0.5
+    - type: fc
+      name: out
+      n_out: 10
+      tau: 16.0
+      v_th: 1.0e+9
+      alpha: 2.0
+      chunk_size: 1024
+      init_k: 5.0
+
+data:
+  max_events: 2000
+  train_size: 1000
+  val_size: 200
+  seed_train: 0
+  seed_val: 0
+
+train:
+  lr: 1.0e-2
+  epochs: 100
+  batch_size: 4
+  seed: 42
+  weight_snapshot_every: 1
+  weight_decay: 1.0e-2
+  lr_cosine_decay: true

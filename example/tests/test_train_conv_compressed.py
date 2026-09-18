@@ -48,13 +48,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import pytest
 import yaml
 
 from salt_core.layers import LayerDiag
 from example.models.conv_net import ConvNetCompressed, build_network
 from example.paths import EXPERIMENTS_DIR
 from example.checkpoint import Checkpointer
-from example.train_conv_compressed import _cross_entropy_loss, train
+from example.train_conv_compressed import _build_learning_rate, _cross_entropy_loss, train
 from example.utils import TRAIN_DIRNAME
 
 # 這份 e2e 測試會呼叫真正的 train(),每個案例吐一個 conv_compressed_*_<時間戳>
@@ -281,6 +282,42 @@ def test_score_cap_knob_plumbed_through_training_and_checkpoint():
     整條 while 外圈的重編譯/存讀路徑要能正常跑完 2 個 epoch,不出錯。"""
     cfg = _base_cfg("score_cap_smoke", seed=0, conv2_L_init=2000, grow=1.5, epochs=2)
     cfg["train"]["score_cap"] = 6.0
+    path = _write_yaml(cfg)
+    exp_dir, _, _, _, _, _ = train(path, exp_root=_TEST_TEMP)
+    rows = _read_metrics_csv(exp_dir)
+    assert [int(r["epoch"]) for r in rows] == [0, 1]
+
+
+def test_build_learning_rate_without_cosine_decay_returns_plain_float():
+    """`train.lr_cosine_decay` 不填(預設)時,`_build_learning_rate` 原樣
+    傳回 `train.lr` 這個純量,不包成 schedule——這是「不設就是原樣通過」的
+    基本保證,跟 `score_cap=None`/`weight_decay=0` 同一個慣例。"""
+    train_cfg = {"lr": 1e-2, "epochs": 10}
+    data_cfg = {"train_size": 40}
+    lr = _build_learning_rate(train_cfg, data_cfg, batch_size=4)
+    assert lr == 1e-2
+
+
+def test_build_learning_rate_cosine_decay_starts_high_ends_low():
+    """`lr_cosine_decay=True` 時,回傳的是 schedule(呼叫得出值的函式),
+    第 0 步等於 `train.lr`,退火到最後一步時降到接近 `alpha` 那個下限比例
+    (docs/math/梯度下降曲率穩定性推導.md 第 5 節:讓 $2/\\eta$ 隨訓練進行
+    升高)。"""
+    train_cfg = {"lr": 1e-2, "epochs": 10, "lr_cosine_decay": True, "lr_cosine_alpha": 0.0}
+    data_cfg = {"train_size": 40}
+    schedule = _build_learning_rate(train_cfg, data_cfg, batch_size=4)
+    total_steps = train_cfg["epochs"] * (data_cfg["train_size"] // 4)  # 10 * 10 = 100
+
+    assert float(schedule(0)) == pytest.approx(1e-2, rel=1e-3)
+    assert float(schedule(total_steps - 1)) < 1e-2 * 0.01  # alpha=0,退火到接近 0
+
+
+def test_lr_cosine_decay_knob_plumbed_through_training_and_checkpoint():
+    """`train.lr_cosine_decay` 從 config 讀到、接進真正的 `train()`
+    entrypoint,整條 while 外圈的重編譯/存讀路徑要能正常跑完 2 個 epoch,
+    不出錯(schedule 存在 opt_state 的內部 step 計數要能正確存讀)。"""
+    cfg = _base_cfg("lr_cosine_smoke", seed=0, conv2_L_init=2000, grow=1.5, epochs=2)
+    cfg["train"]["lr_cosine_decay"] = True
     path = _write_yaml(cfg)
     exp_dir, _, _, _, _, _ = train(path, exp_root=_TEST_TEMP)
     rows = _read_metrics_csv(exp_dir)

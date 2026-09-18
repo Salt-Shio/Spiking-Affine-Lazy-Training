@@ -1,0 +1,80 @@
+run_name: compressed_score_cap_weight_decay_cosine_verify
+# 三個機制疊加:score_cap(§8.4)+ weight_decay(§8.2)+ 餘弦退火(§9)。
+#
+# 動機:weight_decay+餘弦退火疊加已經獨立驗證兩次,結果一致且是目前最好的
+# (docs/問題紀錄.md 第十五節):最後 20 epoch val_accuracy 平均
+# 0.806/0.830,epoch70 之後 step_ratio 幾乎沒有反彈(最大 1.19/1.22),只剩
+# 前中段各一次中等反彈(9.9倍@epoch29、7.1倍@epoch50)。這兩次都還沒加
+# score_cap——score_cap 限制輸出上限,跟 weight_decay(限權重量級)、餘弦退火
+# (拉高門檻)是三個不同位置的機制,理論上不衝突,這次測試加上它能不能把
+# 僅剩的前中段反彈也壓下去。
+#
+# lr 起始值維持 1e-2(不降,這次先不測 lr=1e-3 那個方向)。
+
+model:
+  decoder: membrane_regression
+
+  input_shape: [2, 34, 34]
+
+  layers:
+    - type: conv
+      oc: 8
+      k: 3
+      s: 2
+      p: 1
+      tau: 16.0
+      v_th: 1.0
+      alpha: 2.0
+      chunk_size: 4
+      L: 185
+      max_out_spikes: 1
+      max_steps: 1
+      init_k: 5.0
+      L_grow_factor: 1.5
+      out_grow_factor: 1.5
+      out_shrink_threshold: 0.5
+      max_steps_grow_factor: 1.5
+      max_steps_shrink_threshold: 0.5
+    - type: conv
+      oc: 16
+      k: 3
+      s: 2
+      p: 1
+      tau: 16.0
+      v_th: 1.0
+      alpha: 2.0
+      chunk_size: 4
+      L: 32
+      max_out_spikes: 1
+      max_steps: 1
+      init_k: 5.0
+      L_grow_factor: 1.5
+      out_grow_factor: 1.5
+      out_shrink_threshold: 0.5
+      max_steps_grow_factor: 1.5
+      max_steps_shrink_threshold: 0.5
+    - type: fc
+      name: out
+      n_out: 10
+      tau: 16.0
+      v_th: 1.0e+9
+      alpha: 2.0
+      chunk_size: 1024
+      init_k: 5.0
+
+data:
+  max_events: 2000
+  train_size: 1000
+  val_size: 200
+  seed_train: 0
+  seed_val: 0
+
+train:
+  lr: 1.0e-2
+  epochs: 100
+  batch_size: 4
+  seed: 42
+  weight_snapshot_every: 1
+  score_cap: 6.0
+  weight_decay: 1.0e-2
+  lr_cosine_decay: true

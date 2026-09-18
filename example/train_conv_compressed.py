@@ -65,6 +65,31 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def _build_learning_rate(train_cfg: dict, data_cfg: dict, batch_size: int):
+    """`train.lr_cosine_decay`(選填,預設關閉):餘弦退火,對治
+    docs/math/梯度下降曲率穩定性推導.md 第 5 節提到、目前還沒處理的 $\\eta$
+    那一側——`weight_decay`/`score_cap` 都只能拖住 $\\lambda$ 的成長,穩定
+    門檻 $2/\\eta$ 全程固定,$\\eta$ 不會隨訓練進行變安全。單獨測過的兩次
+    `weight_decay`,反彈都均勻分布在整個訓練過程、包括接近結尾的地方(見
+    `docs/問題紀錄.md` 第十五節),吻合「門檻沒有隨時間變寬」這個推論。餘弦
+    退火讓 $\\eta$ 隨訓練進行下降,$2/\\eta$ 因此隨訓練進行升高。
+
+    退火的總步數用這次 run **規劃**的 epoch 數換算
+    (`steps_per_epoch * epochs`),不是實際走過的 optimizer step 數——出界
+    退回 checkpoint 續練時沿用同一個 schedule(不重新算);中途還沒存過
+    checkpoint 就整個重來(訓練最初期)才會讓 schedule 也跟著從頭起算,這是
+    預期行為,不是 bug——那個時間點 `params` 本來就也是全新初始化,schedule
+    的進度(存在 `opt_state` 裡)理應跟著歸零。
+    """
+    if not train_cfg.get("lr_cosine_decay", False):
+        return train_cfg["lr"]
+    steps_per_epoch = data_cfg["train_size"] // batch_size
+    total_steps = train_cfg["epochs"] * steps_per_epoch
+    return optax.cosine_decay_schedule(
+        init_value=train_cfg["lr"], decay_steps=total_steps,
+        alpha=train_cfg.get("lr_cosine_alpha", 0.0))
+
+
 def _cross_entropy_loss(scores: jax.Array, batch_labels_onehot: jax.Array,
                         score_cap: float | None) -> jax.Array:
     """夾住輸出上限(docs/math/梯度下降曲率穩定性推導.md §8.4)。`score_cap`
@@ -382,7 +407,9 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
         # (docs/問題紀錄.md 第十五節)。跟 §8.4 的 score_cap 機制上不衝突(一個
         # 限權重量級、一個限輸出上限,都不碰分類目標本身),可以疊加。
         # grad_clip_norm/label_smoothing 已撤除,不要再用(§8.3、§8.1 討論)。
-        optimizer = optax.adamw(train_cfg["lr"], weight_decay=train_cfg.get("weight_decay", 0.0))
+        optimizer = optax.adamw(
+            _build_learning_rate(train_cfg, data_cfg, batch_size),
+            weight_decay=train_cfg.get("weight_decay", 0.0))
 
         if not checkpointer.exists():
             params = net.init(set_seed(train_cfg["seed"]))
