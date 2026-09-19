@@ -69,7 +69,7 @@ data:
   seed_val: 0
 
 train:
-  lr: 1.0e-2
+  lr: 1.0e-3
   epochs: 100
   batch_size: 4
   seed: 42
