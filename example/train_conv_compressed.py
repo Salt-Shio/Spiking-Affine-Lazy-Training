@@ -90,6 +90,25 @@ def _build_learning_rate(train_cfg: dict, data_cfg: dict, batch_size: int):
         alpha=train_cfg.get("lr_cosine_alpha", 0.0))
 
 
+def _build_optimizer(train_cfg: dict, data_cfg: dict, batch_size: int):
+    """`train.grad_clip_norm`(選填,預設關閉):症狀層解法
+    (docs/math/梯度下降曲率穩定性推導.md §8.1)。不改變模型的體質(§8.2 的
+    `weight_decay`/§8.4 的 `score_cap` 才是根因層),只把單步梯度的長度砍到
+    這個門檻,擋住 Edge of Stability 發作當下那一步的過大位移。用
+    `optax.clip_by_global_norm` 接在 `optax.adamw` 前面——clip 作用在原始梯度
+    上,再交給 Adam 做自適應縮放,這樣 Adam 的一階/二階動量估計吃到的也是
+    被夾過的梯度,不是砍完 update 才夾(那樣動量估計還是會被爆炸的原始梯度
+    污染)。之前唯一測過的一次(三機制合測)沒有乾淨隔離——真正的死亡崩潰
+    元凶後來定位是同批合測的 `label_smoothing`(已撤除,§8.3),`grad_clip_norm`
+    本身從未單獨驗證過。"""
+    lr = _build_learning_rate(train_cfg, data_cfg, batch_size)
+    adamw = optax.adamw(lr, weight_decay=train_cfg.get("weight_decay", 0.0))
+    grad_clip_norm = train_cfg.get("grad_clip_norm")
+    if grad_clip_norm is None:
+        return adamw
+    return optax.chain(optax.clip_by_global_norm(grad_clip_norm), adamw)
+
+
 def _cross_entropy_loss(scores: jax.Array, batch_labels_onehot: jax.Array,
                         score_cap: float | None) -> jax.Array:
     """夾住輸出上限(docs/math/梯度下降曲率穩定性推導.md §8.4)。`score_cap`
@@ -399,17 +418,9 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
     best = Best(params=None, val_accuracy=-1.0, epoch=-1)
     while True:
         net = ConvNetCompressed(layers)
-        # `train.weight_decay`(選填,不填 = 0,關閉):對治訓練中期梯度爆炸的
-        # 根因層解法之一(docs/math/梯度下降曲率穩定性推導.md §8.2)。用
-        # `optax.adamw` 而不是手動把 decay 項塞進 loss,是因為 decay 要繞過
-        # Adam 的自適應縮放才能保住跟 L2 正則化的等價關係,見同節說明。單獨
-        # 測過 1e-2:沒有引發神經元死亡,擋住了不可逆崩潰,但沒有消除震盪本身
-        # (docs/問題紀錄.md 第十五節)。跟 §8.4 的 score_cap 機制上不衝突(一個
-        # 限權重量級、一個限輸出上限,都不碰分類目標本身),可以疊加。
-        # grad_clip_norm/label_smoothing 已撤除,不要再用(§8.3、§8.1 討論)。
-        optimizer = optax.adamw(
-            _build_learning_rate(train_cfg, data_cfg, batch_size),
-            weight_decay=train_cfg.get("weight_decay", 0.0))
+        # 優化器組裝(`weight_decay`/`grad_clip_norm`)見 `_build_optimizer`。
+        # label_smoothing 已撤除,不要再用(§8.3 討論)。
+        optimizer = _build_optimizer(train_cfg, data_cfg, batch_size)
 
         if not checkpointer.exists():
             params = net.init(set_seed(train_cfg["seed"]))

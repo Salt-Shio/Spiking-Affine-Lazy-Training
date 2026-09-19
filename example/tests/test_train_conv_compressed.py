@@ -55,7 +55,8 @@ from salt_core.layers import LayerDiag
 from example.models.conv_net import ConvNetCompressed, build_network
 from example.paths import EXPERIMENTS_DIR
 from example.checkpoint import Checkpointer
-from example.train_conv_compressed import _build_learning_rate, _cross_entropy_loss, train
+from example.train_conv_compressed import (_build_learning_rate, _build_optimizer,
+                                            _cross_entropy_loss, train)
 from example.utils import TRAIN_DIRNAME
 
 # 這份 e2e 測試會呼叫真正的 train(),每個案例吐一個 conv_compressed_*_<時間戳>
@@ -233,6 +234,55 @@ def test_weight_decay_knob_plumbed_through_training_and_checkpoint():
     路徑要能正常跑完 2 個 epoch,不出錯)。"""
     cfg = _base_cfg("weight_decay_smoke", seed=0, conv2_L_init=2000, grow=1.5, epochs=2)
     cfg["train"]["weight_decay"] = 1e-4
+    path = _write_yaml(cfg)
+    exp_dir, _, _, _, _, _ = train(path, exp_root=_TEST_TEMP)
+    rows = _read_metrics_csv(exp_dir)
+    assert [int(r["epoch"]) for r in rows] == [0, 1]
+
+
+def test_grad_clip_norm_none_matches_plain_adamw():
+    """`train.grad_clip_norm` 不填(預設)時,`_build_optimizer` 要跟原本的
+    `optax.adamw` 逐位元一致——「不設就是原樣通過」的慣例,跟
+    `score_cap=None`/`weight_decay=0` 同一套。"""
+    train_cfg = {"lr": 1e-2, "weight_decay": 0.0}
+    data_cfg = {"train_size": 40}
+    built = _build_optimizer(train_cfg, data_cfg, batch_size=4)
+    plain = optax.adamw(1e-2, weight_decay=0.0)
+
+    params = {"w": jnp.array([1.0, 2.0, 3.0])}
+    grad = {"w": jnp.array([5.0, -3.0, 1.0])}
+    upd_a, _ = built.update(grad, built.init(params), params)
+    upd_b, _ = plain.update(grad, plain.init(params), params)
+    assert jnp.array_equal(upd_a["w"], upd_b["w"])
+
+
+def test_grad_clip_norm_changes_update_relative_to_unclipped():
+    """驗證 `grad_clip_norm` 真的接進 optimizer chain、且順序在 `adamw` 前面
+    (docs/math/梯度下降曲率穩定性推導.md §8.1)。Adam 對非零梯度的 update
+    大小本身是比例縮放不變的(踩過的坑:單純把梯度縮小一點,Adam 會自己把
+    update 正規化回同一個量級,測不出差異)——要把 `grad_clip_norm` 設到讓
+    夾完的梯度掉到 Adam 內部 `eps`(1e-8)量級以下,`m/sqrt(v+eps)` 的行為
+    才會明顯偏離未夾版本,才算真的驗證到 clip 有接進管線、不是被 Adam
+    悄悄吃掉。"""
+    params = {"w": jnp.array([1.0, 1.0, 1.0])}
+    huge_grad = {"w": jnp.array([1e6, 1e6, 1e6])}
+
+    unclipped = _build_optimizer({"lr": 1e-2}, {"train_size": 40}, batch_size=4)
+    clipped = _build_optimizer({"lr": 1e-2, "grad_clip_norm": 1e-10},
+                               {"train_size": 40}, batch_size=4)
+
+    upd_u, _ = unclipped.update(huge_grad, unclipped.init(params), params)
+    upd_c, _ = clipped.update(huge_grad, clipped.init(params), params)
+
+    assert not jnp.allclose(upd_u["w"], upd_c["w"])
+
+
+def test_grad_clip_norm_knob_plumbed_through_training_and_checkpoint():
+    """`train.grad_clip_norm` 從 config 讀到、接進真正的 `train()` entrypoint,
+    整條 while 外圈的重編譯/存讀路徑要能正常跑完 2 個 epoch,不出錯(chain
+    多一段 clip transform,opt_state 的形狀也跟著多一份,要能正常存讀)。"""
+    cfg = _base_cfg("grad_clip_norm_smoke", seed=0, conv2_L_init=2000, grow=1.5, epochs=2)
+    cfg["train"]["grad_clip_norm"] = 10.0
     path = _write_yaml(cfg)
     exp_dir, _, _, _, _, _ = train(path, exp_root=_TEST_TEMP)
     rows = _read_metrics_csv(exp_dir)
