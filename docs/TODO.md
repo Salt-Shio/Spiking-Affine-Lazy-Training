@@ -50,12 +50,21 @@
   寫成可重用、可單元測試的純函式,比照 `salt_core/dormant.py` 的模式。
 
   完整推導見 [`math/權重量化推導.md`](math/權重量化推導.md),方法決策見
-  [`規格書.md`](規格書.md)「FPGA 部署:權重量化」。**目前進度(2026-09-24)**:
-  `salt_core/quantize.py`(`fake_quantize_tensor`/`quantization_error`/
-  `quantize_params`)跟對應測試 `salt_core/tests/test_quantize.py` 已寫,但
-  **這個 session 的環境沒有裝 JAX、沒有 GPU,測試完全沒跑過**,下一次有能跑
-  的環境要先執行測試、確認邏輯正確,才能當作這步「做完」。`example/
-  notebooks/` 的權重分布視覺化/PTQ 掃描 notebook 還沒寫。
+  [`規格書.md`](規格書.md)「FPGA 部署:權重量化」。**目前進度(2026-09-24,
+  另一個 fork 補跑)**:換到有 JAX/GPU 的環境,`salt_core/tests/test_quantize.py`
+  12 個測試全過,`salt_core/quantize.py` 邏輯已確認正確,可以信任。新增
+  `example/notebooks/weight_quantization_ptq.ipynb`:對
+  `conv_compressed_compressed_scale_10k_20260919_050446` 這個 checkpoint(
+  `best_params.npz`,baseline val_accuracy=0.9275)做權重分布 histogram/
+  per-channel outlier 視覺化,再用 `quantize_params` 掃 bit-width/per-channel
+  vs per-tensor/clip percentile,已對真實 checkpoint 跑通(不是只跑過
+  synthetic 測資)。實測數字:8 bits 幾乎無損(0.9265);6/5 bits 掉一點
+  (0.9230/0.9205);4 bits 掉比較多(per-channel 0.8985 > per-tensor 0.8830,
+  證實 per-channel 預設是對的方向);3 bits 以下崩掉(0.7310、0.1640)。
+  4 bits 下降 clip percentile(100→90)反而讓準確率回升到 0.9185,證實
+  outlier 截斷對低 bit width 有幫助,但這只掃了 2 conv + 1 FC 這組小網路
+  的一次結果,**最終要選哪個 bit width/percentile 組合還沒定案,留給下一次
+  討論**。
 
   **還沒做:真正給硬體用的「量化後」介面,要跟現有的 PTQ 工具分開設計。**
   `fake_quantize_tensor` 現在回傳的 `x_hat` 是量化再立刻還原成浮點數的值
