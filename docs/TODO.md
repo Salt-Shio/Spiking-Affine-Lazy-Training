@@ -30,13 +30,23 @@
      estimator,跟現有 spike 的 surrogate gradient 是同一族手法)。權重
      量化預設抓 per-channel(對低 bit 通常比 per-tensor 準,且跟現有
      `channel_spike_stats_epoch59.png` 這種 per-channel 視覺化的顆粒度一致)。
-  2. **剪枝。** 權重量化定案後才做。用既有的 `dormant_frac`/
-     `channel_spike_stats` 當剪枝依據,不重新設計判準;channel-level
-     structural pruning 優先於 unstructured——這個 event-driven compressed
-     queue 架構下,砍 channel 才會直接讓 `L`/`max_out_spikes`/`max_steps`
-     三個容量旋鈕一起縮小,這才是 FPGA 真正在意的資源節省,unstructured
-     sparsity 在這個結構裡沒有直接對應的硬體收益(除非硬體那邊有稀疏
-     gather 支援)。剪完大概率要 fine-tune,不能假設準確率沒事。
+  2. **剪枝——評估後暫不實作,只留分析/視覺化/統計(2026-09-24 定案)。**
+     原規劃用既有的 `dormant_frac`/`channel_spike_stats` 當剪枝依據,
+     channel-level structural pruning 優先於 unstructured,理由見
+     [`math/剪枝推導.md`](math/剪枝推導.md)。實際評估這個網路的規模後,
+     判斷 ROI 不划算,暫緩真的去剪:
+     - 網路本身很小(conv1 8 channel、conv2 16 channel,FC 只有一層且是
+       不可剪的輸出分類層,10 個神經元對應 10 類別)。剪 2~3 個 channel
+       就是動 25%~35%,邊際效益跟風險不成比例。
+     - 只有兩層 conv,channel 耦合(conv1 輸出 channel 數 = conv2 輸入
+       channel 數)代表沒有分散吸收的空間,牽一發動全身。
+     - 最新 checkpoint(`conv_compressed_compressed_scale_10k_20260919_050446`)
+       最後一個 epoch 逐神經元 dormant_frac:conv1≈0.497、conv2≈0.464。
+       但這是逐神經元(空間位置 × channel 攤平)不是逐 channel,不能直接
+       讀成「一半 channel 可砍」,要靠視覺化才能確定是不是空間稀疏
+       (例如邊緣偵測器只在邊緣位置活躍)造成的假象。
+     不做的事:實際砍 channel、fine-tune、剪枝驗收流程——這些留著,之後
+     如果分析結果顯示真的有明顯冗餘,再重新評估要不要做。
   3. **膜電位量化。** 剪枝+權重量化都定案、結構固定之後才能測——提早測
      沒有意義,範圍會隨後續改動整個過期。用 `example/replay_epoch.py`
      對最終結構重跑,取得逐事件精確軌跡(chunk_size 強制 1,forward 結果
