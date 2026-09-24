@@ -15,6 +15,58 @@
 
 ## 待處理
 
+- **FPGA 部署:權重量化/剪枝/膜電位量化三部曲的整體順序(2026-09-24 定案,
+  這個 session 只做第 1 步)。** 目標硬體 CSNN-FPGA 的位寬候選最大 8 bits,
+  能再小更好。三個變動軸互相耦合(剪枝改變累加的輸入數、權重量化改變數值
+  量級,兩者都會平移膜電位的動態範圍),不同時做全組合實驗,依序處理、
+  用實測準確率當每步的驗收標準,不是憑理論猜:
+  1. **權重量化(目前這個 session 的範圍)。** 對現有 checkpoint(
+     `experiments/conv_compressed_compressed_scale_10k_20260919_050446/
+     train/params.npz`,val_accuracy 0.9275)做 per-layer/per-channel 權重
+     分布分析(histogram、percentile/outlier),決定量化 scheme
+     (symmetric/asymmetric、per-tensor vs per-channel、clip range)。先用
+     PTQ(post-training,不重訓)掃 bit-width 量測準確率掉多少;掉太多才上
+     QAT(quantization-aware training,fake-quant + straight-through
+     estimator,跟現有 spike 的 surrogate gradient 是同一族手法)。權重
+     量化預設抓 per-channel(對低 bit 通常比 per-tensor 準,且跟現有
+     `channel_spike_stats_epoch59.png` 這種 per-channel 視覺化的顆粒度一致)。
+  2. **剪枝。** 權重量化定案後才做。用既有的 `dormant_frac`/
+     `channel_spike_stats` 當剪枝依據,不重新設計判準;channel-level
+     structural pruning 優先於 unstructured——這個 event-driven compressed
+     queue 架構下,砍 channel 才會直接讓 `L`/`max_out_spikes`/`max_steps`
+     三個容量旋鈕一起縮小,這才是 FPGA 真正在意的資源節省,unstructured
+     sparsity 在這個結構裡沒有直接對應的硬體收益(除非硬體那邊有稀疏
+     gather 支援)。剪完大概率要 fine-tune,不能假設準確率沒事。
+  3. **膜電位量化。** 剪枝+權重量化都定案、結構固定之後才能測——提早測
+     沒有意義,範圍會隨後續改動整個過期。用 `example/replay_epoch.py`
+     對最終結構重跑,取得逐事件精確軌跡(chunk_size 強制 1,forward 結果
+     跟 chunk_size 無關、逐位元相同),收集 per-layer/per-channel 的膜電位
+     實際分布,再決定定點格式的整數/小數位元分配。
+  
+  程式碼分工比照專案既有判準(見本節最後一條 2026-09-13 決策):一次性
+  視覺化/統計探索寫 notebook(比照 `plot_metrics.ipynb`/
+  `replay_animation.ipynb` 前例,不留可測試的 `.py`);量化本身的核心邏輯
+  (fake-quantize 函式、per-channel scale 計算、量化後跑 accuracy 的迴圈)
+  寫成可重用、可單元測試的純函式,比照 `salt_core/dormant.py` 的模式。
+
+  完整推導見 [`math/權重量化推導.md`](math/權重量化推導.md),方法決策見
+  [`規格書.md`](規格書.md)「FPGA 部署:權重量化」。**目前進度(2026-09-24)**:
+  `salt_core/quantize.py`(`fake_quantize_tensor`/`quantization_error`/
+  `quantize_params`)跟對應測試 `salt_core/tests/test_quantize.py` 已寫,但
+  **這個 session 的環境沒有裝 JAX、沒有 GPU,測試完全沒跑過**,下一次有能跑
+  的環境要先執行測試、確認邏輯正確,才能當作這步「做完」。`example/
+  notebooks/` 的權重分布視覺化/PTQ 掃描 notebook 還沒寫。
+
+  **還沒做:真正給硬體用的「量化後」介面,要跟現有的 PTQ 工具分開設計。**
+  `fake_quantize_tensor` 現在回傳的 `x_hat` 是量化再立刻還原成浮點數的值
+  (`q * scale`),這對「量測準確率掉多少」的 PTQ 用途是對的,但不是硬體真正
+  執行的方式。per-channel 量化下,`scale` 對某個輸出 channel 的所有累加項是
+  同一個常數,可以直接提到整條線性累加(conv 的乘加、或這個專案的衰減
+  遞迴 $V_k=a_kV_{k-1}+w_k$)外面——硬體上應該是**整數 $q$ 做累加、最後才乘一次
+  `scale`**,不是每個乘加項都各自還原成浮點數再乘。之後要做真正的
+  quantized/integer-only inference 路徑時,介面要回傳 `(q, scale)` 兩個分開的
+  東西,不能沿用現在這個「立刻乘回去」的 `fake_quantize_tensor`,得另外寫。
+
 - **SNN 活動 monitor,ReDo 的前置。** 設計定案見 [`監測規格.md`](監測規格.md)。
   `salt_core` 側已完成:`dormant` 搬進 `salt_core/dormant.py`(`dormant_score` 純歸約
   primitive + `dormant_report` 自己逐層跑 forward,不碰 `LayerDiag`);`LayerDiag` 依
