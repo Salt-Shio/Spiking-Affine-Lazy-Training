@@ -31,10 +31,11 @@ from salt_core.chunk_scan import (LayerForwardResult, LayerForwardResultInt,
                                    run_layer_forward, run_layer_forward_int,
                                    run_layer_forward_int_traced, run_layer_forward_traced)
 from salt_core.core import spike_step_upper_bound
-from salt_core.connectivity.conv import (build_conv_queue_compressed,
+from salt_core.connectivity.conv import (CompressedConvQueue, build_conv_queue_compressed,
                                           conv_layer_receptive_field_firing_rate,
                                           unravel_conv_source)
-from salt_core.connectivity.fc import build_fc_queue, fc_delta_t
+from salt_core.connectivity.fc import FCQueue, build_fc_queue
+from salt_core.fixed_point import OverflowMode, RoundMode
 from salt_core.layer_chain import (EventStream, extract_output_events,
                                     extract_output_events_compressed)
 from salt_core.monitor import (LayerForwardTrace, resolve_ms_compressed,
@@ -122,6 +123,77 @@ def _grow(observed: int, current: int, factor: float) -> int:
     """容量放大:放大到蓋過觀測值,再上浮 factor 倍留餘裕。對齊原
     train_conv_compressed.py 的 `int(math.ceil(max(observed, current) * factor))`。"""
     return int(math.ceil(max(int(observed), int(current)) * factor))
+
+
+class QuantizedLayerParams(NamedTuple):
+    """一層整數版 forward(`forward_quantized`)要的量化設定,推導見
+    docs/math/膜電位量化推導.md。"""
+    q: jax.Array                   # 整數權重碼(`quantize.quantize_to_int` 的 q),整數 dtype,
+                                   # shape 同 `layer.weight_shape`
+    decay_table_int: jax.Array     # `quantize.build_decay_table_int(f_a, layer.tau)`
+    v_th_int: jax.Array | None     # `quantize.v_th_to_int` 的整數門檻,純量或 (n_neurons,);
+                                   # None 代表這層不 fire(例如膜電位回歸的輸出層)
+    scale: jax.Array               # 逐神經元的權重量化步長 s_c,純量或 (n_neurons,);
+                                   # 只在讀出換回物理尺度時用(`dequantize_v_final`)
+    f_a: int                       # 衰減碼小數位元
+    f_V: int                       # 暫存器小數位元
+    i_V: int                       # 暫存器整數位元(含符號位)
+    overflow_mode: OverflowMode | str = OverflowMode.WRAP  # 暫存器溢位處理,見 fixed_point
+
+
+class LayerDiagInt(NamedTuple):
+    """整數版 forward 的容量診斷,全部是 bool 純量。容量(`L`/
+    `max_out_spikes`)是照浮點模型的放電量校準的,量化之後放電量會變;超過
+    容量時多出來的輸入事件或輸出 spike 會被默默截掉,這組結果就不能用。"""
+    queue_truncated: jax.Array   # 壓縮佇列需要的長度超過 L(FC 沒有壓縮佇列,固定 False)
+    output_truncated: jax.Array  # 這層真正吐出的 spike 數超過輸出容量
+
+
+def _run_quantized_scan(queue: CompressedConvQueue | FCQueue, params: QuantizedLayerParams,
+                        round_mode: RoundMode | str, trace: bool):
+    """Conv/FC 整數版 forward 共用的「查表 → 取權重碼 → 整數掃描」。回傳
+    `(result, v_steps)`,`v_steps` 只有 `trace=True` 時是陣列,否則 `None`。"""
+    a_int, is_identity = apply_decay_table_int(queue.delta_t, params.decay_table_int)
+    # 佇列建構把權重碼帶成 float32(AffineMap.b)。q 是整數 dtype(入口檢查過),
+    # |q| < 2^24 時 float32 表示是精確的,直接轉回 int32 不會改值。
+    q_int = queue.maps.b.astype(jnp.int32)
+    scan_args = (a_int, is_identity, q_int, params.v_th_int)
+    scan_kwargs = dict(f_a=params.f_a, f_V=params.f_V, i_V=params.i_V, round_mode=round_mode,
+                       overflow_mode=params.overflow_mode)
+    if trace:
+        return run_layer_forward_int_traced(*scan_args, **scan_kwargs)
+    return run_layer_forward_int(*scan_args, **scan_kwargs), None
+
+
+def dequantize_v_final(result: LayerForwardResultInt,
+                       params: QuantizedLayerParams) -> LayerForwardResultInt:
+    """把整數版結果的 `v_final` 從暫存器值換回物理尺度
+    $V=\\tilde V\\cdot s_c = v_{int}\\cdot2^{-f_V}\\cdot s_c$(逐神經元),
+    其他欄位不變。
+
+    膜電位回歸的讀出要用換過的值:權重逐輸出 channel 量化時,每顆輸出
+    神經元的 $s_c$ 不同,整數暫存器值直接比大小會選錯類別。整層共用一個
+    $s_c$ 時乘同一個正數不改變 argmax,所以同一段讀出對兩種量化粒度都對。
+    """
+    v_physical = (result.v_final.astype(jnp.float32) * 2.0 ** -params.f_V
+                  * jnp.asarray(params.scale, dtype=jnp.float32))
+    return result._replace(v_final=v_physical)
+
+
+def _check_weight_codes(q: jax.Array) -> None:
+    """整數版 forward 的入口檢查:`q` 必須是整數 dtype。傳成乘回 scale 的
+    浮點權重(量值大約 0.01)時,轉成整數碼會全部變成 0,forward 照樣跑完,
+    不會有任何錯誤訊息。"""
+    dtype = jnp.asarray(q).dtype
+    if not jnp.issubdtype(dtype, jnp.integer):
+        raise ValueError(
+            f"q 必須是整數權重碼(quantize.quantize_to_int 的 q),拿到的 dtype 是 {dtype}")
+
+
+def _constant_spike_gain(spike_mask: jax.Array) -> jax.Array:
+    """整數版沒有 surrogate gradient,跨層的 event_gain 直接用常數 1。下一層
+    gather 出整數權重碼之後乘上這個 1,值不變。"""
+    return jnp.ones_like(spike_mask, dtype=jnp.float32)
 
 
 @dataclass(frozen=True)
@@ -271,92 +343,58 @@ class ConvLayer:
                                    v_steps=v_steps, event_ms=event_ms)
         return out_stream, trace
 
-    def _run_forward_quantized(self, q: jax.Array, in_stream: EventStream, *,
-                               decay_table_int: jax.Array, v_th_int: jax.Array | int,
-                               f_a: int, f_V: int, i_V: int, round_mode: str, trace: bool):
-        """`forward_quantized`/`forward_quantized_traced` 共用的組裝。回傳
-        `(out_stream, result, v_steps)`,後者只有 `trace=True` 時是陣列,
-        否則 `None`。見 `forward_quantized` 的說明。"""
+    def _run_forward_quantized(self, params: QuantizedLayerParams, in_stream: EventStream, *,
+                               round_mode: RoundMode | str, trace: bool):
+        """`forward_quantized`/`forward_quantized_traced` 共用。回傳
+        `(out_stream, result, v_steps, diag)`,`v_steps` 只有 `trace=True` 時
+        是陣列,否則 `None`。"""
+        _check_weight_codes(params.q)
         x, y, c = unravel_conv_source(in_stream.event_source_idx, self.h_in, self.w_in)
         cq = build_conv_queue_compressed(
-            in_stream.event_times, x, y, c, q, self.tau,
+            in_stream.event_times, x, y, c, params.q, self.tau,
             self.s, self.p, self.h_out, self.w_out, self.L,
             event_gain=in_stream.event_gain, n_real_events=in_stream.n_real_events)
-        a_int, is_identity = apply_decay_table_int(cq.delta_t, decay_table_int)
-        # cq.maps.b 是 create_affine_maps 內部轉成 float32 的 q(build_conv_queue_compressed
-        # 對權重的 dtype 不敏感,只負責 gather;q 的量值遠小於 float32 exact-integer
-        # 上界 2^24,轉型不會有誤差,round 只是防呆,不是真的期待這裡會有雜訊)。
-        q_int = jnp.round(cq.maps.b).astype(jnp.int32)
-        if trace:
-            result, v_steps = run_layer_forward_int_traced(
-                a_int, is_identity, q_int, v_th_int, max_steps=self.L,
-                n_real_events=cq.n_real_events, f_a=f_a, f_V=f_V, i_V=i_V,
-                round_mode=round_mode)
-        else:
-            result = run_layer_forward_int(
-                a_int, is_identity, q_int, v_th_int, max_steps=self.L,
-                n_real_events=cq.n_real_events, f_a=f_a, f_V=f_V, i_V=i_V,
-                round_mode=round_mode)
-            v_steps = None
-        # 沒有 surrogate gradient,跨層 event_gain 直接用常數 1(不是某個可微分的
-        # s_spike)——下一層的權重量化 gather 用整數 dtype 乘上這個常數 1 之後轉型,
-        # 值完全不變,見 `_run_forward_quantized`(FCLayer)同一段說明。
-        s_spike_placeholder = jnp.ones_like(result.spike_mask, dtype=jnp.float32)
+        result, v_steps = _run_quantized_scan(cq, params, round_mode, trace)
         out_stream = extract_output_events_compressed(
-            result.spike_mask, result.spike_event_idx, s_spike_placeholder,
+            result.spike_mask, result.spike_event_idx, _constant_spike_gain(result.spike_mask),
             in_stream.event_times, cq.local_to_global_j,
             max_total_spikes=self.max_out_spikes)
-        return out_stream, result, v_steps
+        diag = LayerDiagInt(queue_truncated=jnp.max(cq.n_real_events) > self.L,
+                            output_truncated=out_stream.n_real_events > self.max_out_spikes)
+        return out_stream, result, v_steps, diag
 
-    def forward_quantized(self, q: jax.Array, in_stream: EventStream, *,
-                          decay_table_int: jax.Array, v_th_int: jax.Array | int,
-                          f_a: int, f_V: int, i_V: int,
-                          round_mode: str = "round") -> tuple[EventStream, LayerForwardResultInt]:
-        """膜電位量化模擬用的整數版 forward(見 docs/問題紀錄.md 第十七~
-        十九節),跟 `forward`/`forward_traced` 完全獨立、不共用
-        `_run_forward`,不會動到訓練熱路徑。全程只有整數運算,沒有 `s_c`、
-        沒有浮點除法:
+    def forward_quantized(self, params: QuantizedLayerParams, in_stream: EventStream, *,
+                          round_mode: RoundMode | str = RoundMode.ROUND
+                          ) -> tuple[EventStream, LayerForwardResultInt, LayerDiagInt]:
+        """整數版 forward(膜電位量化模擬,見 docs/math/膜電位量化推導.md):
+        全程整數運算,沒有 $s_c$、沒有浮點除法,模擬 FPGA 逐事件更新暫存器。
+        跟 `forward` 不共用程式碼,不影響訓練路徑。
 
-        1. `q`:整數權重碼(`quantize.quantize_to_int` 的 `q`,不是乘回
-           `scale` 的 `w_hat`),shape 跟 `self.weight_shape` 一樣,只是內容
-           是整數。佇列建構(`build_conv_queue_compressed`)本身不管權重是
-           物理尺度還是整數尺度,一樣能用——這裡只是餵給它的數字換了意義。
-        2. `a` 不再用「反推 Δt 再查表」那條路(`quantize.apply_decay_table`,
-           見第十九節),改用佇列建構順便算出來的真正整數 `cq.delta_t` 直接
-           查 `quantize.apply_decay_table_int`。
-        3. `v_th`/捨入格距都不再是物理尺度的浮點數——`v_th_int` 是
-           `quantize.v_th_to_int` 算好的整數門檻,捨入格距不用另外傳,直接
-           用 `f_a`(衰減查表小數位元)在 `core.process_event_int` 內部算。
-        4. `chunk_size` 恆為 1(`run_layer_forward_int` 本來就沒有這個參數,
-           理由見該函式文件),`max_steps` 用 `self.L`,跟原本浮點量化路徑
-           同一個理由(訓練時用 `chunk_size` 校準過的 `self.max_steps` 不能
-           沿用)。
+        `params`:這層的 `QuantizedLayerParams`;`q` 不是整數 dtype 時 raise
+        `ValueError`。`round_mode`:乘法後的捨入規則(`fixed_point.RoundMode`)。
+        一步處理一筆事件(chunk_size 恆為 1),掃描長度就是壓縮佇列長度
+        `self.L`,跟訓練用的 `self.chunk_size`/`self.max_steps` 無關。
 
-        不算 `LayerDiag`——這是對已經訓練好、結構固定的網路做事後模擬,不需要
-        動態容量放大的診斷。
+        回傳 `(out_stream, result, diag)`:`result` 是 `LayerForwardResultInt`;
+        `diag` 是 `LayerDiagInt`,任一旗標為 True 時這組結果不能用。
         """
-        out_stream, result, _v_steps = self._run_forward_quantized(
-            q, in_stream, decay_table_int=decay_table_int, v_th_int=v_th_int,
-            f_a=f_a, f_V=f_V, i_V=i_V, round_mode=round_mode, trace=False)
-        return out_stream, result
+        out_stream, result, _v_steps, diag = self._run_forward_quantized(
+            params, in_stream, round_mode=round_mode, trace=False)
+        return out_stream, result, diag
 
-    def forward_quantized_traced(self, q: jax.Array, in_stream: EventStream, *,
-                                 decay_table_int: jax.Array, v_th_int: jax.Array | int,
-                                 f_a: int, f_V: int, i_V: int,
-                                 round_mode: str = "round"
-                                 ) -> tuple[EventStream, LayerForwardResultInt, jax.Array]:
-        """跟 `forward_quantized` 跑一模一樣的量化 forward,額外回傳
-        `v_steps`(shape `(n_neurons, max_steps)`)——溢位驗證(見
-        docs/問題紀錄.md 第十七節「Step 5」)要拿量化後**逐步**的 $\\tilde V$
-        去跟 `i_V` 比,不能只看 `v_final`:神經元可能在某一步衝到最高點,
+    def forward_quantized_traced(self, params: QuantizedLayerParams, in_stream: EventStream, *,
+                                 round_mode: RoundMode | str = RoundMode.ROUND
+                                 ) -> tuple[EventStream, LayerForwardResultInt, jax.Array,
+                                            LayerDiagInt]:
+        """跟 `forward_quantized` 一樣,額外回傳每步(寫回之後)的暫存器值
+        `v_steps`,shape `(n_neurons, L)`。回傳 `(out_stream, result, v_steps, diag)`。
+
+        溢位驗證要看逐步值,不能只看 `v_final`:神經元可能在某一步衝到最高點,
         之後因為衰減或後面的事件又掉下來,只看最終值會漏掉中間真正的峰值。
-        回傳型別是 `(out_stream, result, v_steps)`,不是 `LayerForwardTrace`
-        ——這條路沒有梯度,不需要 `LayerForwardTrace` 那套給訓練期 probe 用
-        的 `event_ms` 時間戳反查機制,`result.overflowed` 本身已經逐步疊好,
-        夠溢位驗證用。"""
-        return self._run_forward_quantized(
-            q, in_stream, decay_table_int=decay_table_int, v_th_int=v_th_int,
-            f_a=f_a, f_V=f_V, i_V=i_V, round_mode=round_mode, trace=True)
+        不回傳 `LayerForwardTrace`:這條路沒有梯度,不需要 `event_ms` 時間戳
+        反查;`result.overflowed` 已經逐步疊好。
+        """
+        return self._run_forward_quantized(params, in_stream, round_mode=round_mode, trace=True)
 
     def calibration_measure(self, calib_stream_batch: EventStream, chunk: int = 16):
         """回傳一個 `measure(weight) -> 純量`:對一批校準輸入流跑這層 forward,
@@ -495,7 +533,7 @@ class FCLayer:
         時是陣列,否則 `None`。"""
         maps = build_fc_queue(
             in_stream.event_times, in_stream.event_source_idx, w, self.tau,
-            event_gain=in_stream.event_gain, n_real_events=in_stream.n_real_events)
+            event_gain=in_stream.event_gain, n_real_events=in_stream.n_real_events).maps
         # 積分預算 = 上一層宣告的輸出容量(輸入流固定長度),不是自己的欄位。
         scan_steps = -(-in_stream.event_times.shape[0] // self.chunk_size)  # ceil div
         if trace:
@@ -538,69 +576,37 @@ class FCLayer:
                                    v_steps=v_steps, event_ms=event_ms)
         return out_stream, trace
 
-    def _run_forward_quantized(self, q: jax.Array, in_stream: EventStream, *,
-                               decay_table_int: jax.Array, v_th_int: jax.Array | int,
-                               f_a: int, f_V: int, i_V: int, round_mode: str, trace: bool):
-        """跟 `ConvLayer._run_forward_quantized` 同一個組裝方式,見
-        `forward_quantized` 的說明。回傳 `(out_stream, result, v_steps)`,
-        後者只有 `trace=True` 時是陣列,否則 `None`。"""
-        maps = build_fc_queue(
-            in_stream.event_times, in_stream.event_source_idx, q, self.tau,
+    def _run_forward_quantized(self, params: QuantizedLayerParams, in_stream: EventStream, *,
+                               round_mode: RoundMode | str, trace: bool):
+        """跟 `ConvLayer._run_forward_quantized` 同一個組裝方式。回傳
+        `(out_stream, result, v_steps, diag)`。"""
+        _check_weight_codes(params.q)
+        queue = build_fc_queue(
+            in_stream.event_times, in_stream.event_source_idx, params.q, self.tau,
             event_gain=in_stream.event_gain, n_real_events=in_stream.n_real_events)
-        delta_t = fc_delta_t(in_stream.event_times, self.n_out)
-        a_int, is_identity = apply_decay_table_int(delta_t, decay_table_int)
-        # maps.b 是 create_affine_maps 內部轉成 float32 的 q,見
-        # ConvLayer._run_forward_quantized 同一段說明(exact-integer 範圍內
-        # 轉型不失真,round 只是防呆)。
-        q_int = jnp.round(maps.b).astype(jnp.int32)
-        scan_steps = in_stream.event_times.shape[0]  # chunk_size=1 => 一步一筆事件
-        if trace:
-            result, v_steps = run_layer_forward_int_traced(
-                a_int, is_identity, q_int, v_th_int, max_steps=scan_steps,
-                n_real_events=in_stream.n_real_events, f_a=f_a, f_V=f_V, i_V=i_V,
-                round_mode=round_mode)
-        else:
-            result = run_layer_forward_int(
-                a_int, is_identity, q_int, v_th_int, max_steps=scan_steps,
-                n_real_events=in_stream.n_real_events, f_a=f_a, f_V=f_V, i_V=i_V,
-                round_mode=round_mode)
-            v_steps = None
-        # 沒有 surrogate gradient,跨層 event_gain 直接用常數 1——下一層的
-        # 權重量化 gather(整數 dtype)乘上這個常數之後轉型,值完全不變,跟
-        # `atan_spike` 算出來、forward 精確等於 1 的 s_spike 效果一樣,只是
-        # 不需要那套可微分機制。
-        s_spike_placeholder = jnp.ones_like(result.spike_mask, dtype=jnp.float32)
+        result, v_steps = _run_quantized_scan(queue, params, round_mode, trace)
         out_stream = extract_output_events(
-            result.spike_mask, result.spike_event_idx, s_spike_placeholder,
+            result.spike_mask, result.spike_event_idx, _constant_spike_gain(result.spike_mask),
             in_stream.event_times, max_total_spikes=self.n_out)
-        return out_stream, result, v_steps
+        diag = LayerDiagInt(queue_truncated=jnp.zeros((), dtype=bool),
+                            output_truncated=out_stream.n_real_events > self.n_out)
+        return out_stream, result, v_steps, diag
 
-    def forward_quantized(self, q: jax.Array, in_stream: EventStream, *,
-                          decay_table_int: jax.Array, v_th_int: jax.Array | int,
-                          f_a: int, f_V: int, i_V: int,
-                          round_mode: str = "round") -> tuple[EventStream, LayerForwardResultInt]:
-        """跟 `ConvLayer.forward_quantized` 同一套差異(見該函式的說明):
-        `q`(整數權重碼)、`decay_table_int`(整數查表 + 真正的 Δt,不反推)、
-        `v_th_int`(整數門檻)、`f_a`/`f_V`/`i_V`(位元寬度設定)、`chunk_size`
-        恆為 1。FC 沒有 `ConvLayer` 那個 `max_steps` 陷阱——`scan_steps` 本來
-        就是用輸入流長度現算,不是讀某個用訓練時 `chunk_size` 校準過的靜態
-        欄位。"""
-        out_stream, result, _v_steps = self._run_forward_quantized(
-            q, in_stream, decay_table_int=decay_table_int, v_th_int=v_th_int,
-            f_a=f_a, f_V=f_V, i_V=i_V, round_mode=round_mode, trace=False)
-        return out_stream, result
+    def forward_quantized(self, params: QuantizedLayerParams, in_stream: EventStream, *,
+                          round_mode: RoundMode | str = RoundMode.ROUND
+                          ) -> tuple[EventStream, LayerForwardResultInt, LayerDiagInt]:
+        """同 `ConvLayer.forward_quantized`;掃描長度是輸入流長度
+        (`in_stream.event_times.shape[0]`)。"""
+        out_stream, result, _v_steps, diag = self._run_forward_quantized(
+            params, in_stream, round_mode=round_mode, trace=False)
+        return out_stream, result, diag
 
-    def forward_quantized_traced(self, q: jax.Array, in_stream: EventStream, *,
-                                 decay_table_int: jax.Array, v_th_int: jax.Array | int,
-                                 f_a: int, f_V: int, i_V: int,
-                                 round_mode: str = "round"
-                                 ) -> tuple[EventStream, LayerForwardResultInt, jax.Array]:
-        """跟 `ConvLayer.forward_quantized_traced` 同一個理由(溢位驗證要逐步
-        $\\tilde V$,不能只看 `v_final`),回傳 `(out_stream, result, v_steps)`,
-        不是 `LayerForwardTrace`——理由同 `ConvLayer.forward_quantized_traced`。"""
-        return self._run_forward_quantized(
-            q, in_stream, decay_table_int=decay_table_int, v_th_int=v_th_int,
-            f_a=f_a, f_V=f_V, i_V=i_V, round_mode=round_mode, trace=True)
+    def forward_quantized_traced(self, params: QuantizedLayerParams, in_stream: EventStream, *,
+                                 round_mode: RoundMode | str = RoundMode.ROUND
+                                 ) -> tuple[EventStream, LayerForwardResultInt, jax.Array,
+                                            LayerDiagInt]:
+        """同 `ConvLayer.forward_quantized_traced`。"""
+        return self._run_forward_quantized(params, in_stream, round_mode=round_mode, trace=True)
 
     def grown_to_fit(self, diag: LayerDiag) -> "FCLayer":
         # 輸出層沒有自己的容量旋鈕:積分預算來自上一層的輸出容量(輸入流長度),
@@ -669,48 +675,43 @@ def run_network_traced(layers, input_stream: EventStream, weights):
     return jax.tree_util.tree_map(jax.lax.stop_gradient, traces)
 
 
-def run_network_quantized(layers, input_stream: EventStream, weights, *,
-                          decay_tables_int, v_th_int, f_a, f_V, i_V,
-                          round_mode: str = "round"):
-    """`run_network` 的整數版膜電位量化模擬姊妹(見 docs/問題紀錄.md 第十七
-    節):逐層跑 `forward_quantized`,不是 `forward`。定位跟 `run_network_traced`
-    一樣是事後分析用,不進訓練熱路徑。
+def run_network_quantized(layers, input_stream: EventStream,
+                          quant_params: list[QuantizedLayerParams], *,
+                          round_mode: RoundMode | str = RoundMode.ROUND):
+    """`run_network` 的整數版姊妹(膜電位量化模擬):逐層跑
+    `forward_quantized`。定位是事後分析,不進訓練路徑。
 
-    `weights`:每層的整數權重碼 `q`(`quantize.quantize_to_int` 的 `q`,不是
-    `w_hat`)。`decay_tables_int`/`v_th_int`/`f_a`/`f_V`/`i_V`:對齊 `layers`
-    的 list,每層各自的整數 $a_k$ 查表、整數門檻、位元寬度設定——這幾樣逐層
-    不同(每層自己的 `tau`、每個 channel 各自的量測範圍),呼叫端(notebook)
-    要先照 docs/math/膜電位量化推導.md 的公式算好才傳進來,這裡只負責一層接
-    一層轉手。`round_mode`(round/truncate)是整個掃描共用的單一設計選擇,
-    不會逐層不同,所以是單一參數不是 list。
+    `quant_params`:對齊 `layers` 的 `QuantizedLayerParams` list,每層各自的
+    權重碼、查表、門檻、位元寬度,呼叫端照 docs/math/膜電位量化推導.md 的
+    公式算好傳進來。`round_mode` 是整個網路共用的單一設計選擇。
 
-    回傳最後一層的 `LayerForwardResultInt`(給解碼器算準確率用),不收集
-    `LayerDiag`——跟 `forward_quantized` 同一個理由,結構已經固定,不需要
-    動態容量診斷。
+    回傳 `(readout, diags)`:
+    - `readout`:最後一層的 `LayerForwardResultInt`,`v_final` 已經用
+      `dequantize_v_final` 換回物理尺度,直接餵解碼器。要看暫存器裡的
+      整數值,用 `run_network_quantized_traced`。
+    - `diags`:每層的 `LayerDiagInt`,任何一個旗標為 True 時這組結果不能用。
     """
     stream = input_stream
     result = None
-    for layer, q, table, v_th, fa, fv, iv in zip(layers, weights, decay_tables_int,
-                                                  v_th_int, f_a, f_V, i_V):
-        stream, result = layer.forward_quantized(
-            q, stream, decay_table_int=table, v_th_int=v_th,
-            f_a=fa, f_V=fv, i_V=iv, round_mode=round_mode)
-    return result
+    diags = []
+    for layer, params in zip(layers, quant_params):
+        stream, result, diag = layer.forward_quantized(params, stream, round_mode=round_mode)
+        diags.append(diag)
+    return dequantize_v_final(result, quant_params[-1]), diags
 
 
-def run_network_quantized_traced(layers, input_stream: EventStream, weights, *,
-                                 decay_tables_int, v_th_int, f_a, f_V, i_V,
-                                 round_mode: str = "round"):
+def run_network_quantized_traced(layers, input_stream: EventStream,
+                                 quant_params: list[QuantizedLayerParams], *,
+                                 round_mode: RoundMode | str = RoundMode.ROUND):
     """`run_network_quantized` 的逐步軌跡版本:逐層跑 `forward_quantized_traced`,
-    每層收一份 `(result, v_steps)`,回傳 list(對齊 `layers`)——溢位驗證
-    (docs/問題紀錄.md 第十七節「Step 5」)要逐層各自的逐步 $\\tilde V$,不是
-    只有最後一層。參數意義跟 `run_network_quantized` 完全相同。"""
+    回傳對齊 `layers` 的 list,每層一份 `(result, v_steps, diag)`,
+    `result.v_final`/`v_steps` 都是暫存器裡的整數值(沒有換回物理尺度)。
+    為什麼溢位驗證要逐步值,見 `ConvLayer.forward_quantized_traced`。參數同
+    `run_network_quantized`。"""
     stream = input_stream
     traces = []
-    for layer, q, table, v_th, fa, fv, iv in zip(layers, weights, decay_tables_int,
-                                                  v_th_int, f_a, f_V, i_V):
-        stream, result, v_steps = layer.forward_quantized_traced(
-            q, stream, decay_table_int=table, v_th_int=v_th,
-            f_a=fa, f_V=fv, i_V=iv, round_mode=round_mode)
-        traces.append((result, v_steps))
+    for layer, params in zip(layers, quant_params):
+        stream, result, v_steps, diag = layer.forward_quantized_traced(
+            params, stream, round_mode=round_mode)
+        traces.append((result, v_steps, diag))
     return traces

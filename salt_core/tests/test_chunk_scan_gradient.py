@@ -39,7 +39,7 @@ def assert_allclose(actual, expected, msg, tol=TOL):
 
 
 def _loss(W, event_times, event_source_idx, tau, v_th, chunk_size, alpha):
-    maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0])
+    maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0]).maps
     n_real_events = event_times.shape[0]
     _, _, _, s_value, _ = run_layer_forward(maps, v_th, chunk_size=chunk_size,
                                             max_steps=n_real_events, alpha=alpha,
@@ -100,7 +100,7 @@ def _loss_v_final(W, event_times, event_source_idx, tau, v_th, chunk_size, max_s
     """膜電位回歸型的 loss:直接對 v_final 求梯度,不透過任何 s_value——
     對照 sum(s_value) 那種頻率編碼型 loss,驗證 process_chunk 對外交付的
     兩種量(v_final、s_value)各自的梯度路徑都是對的,不是只驗過其中一種。"""
-    maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0])
+    maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0]).maps
     _, _, _, _, v_final = run_layer_forward(maps, v_th, chunk_size=chunk_size,
                                             max_steps=max_steps, alpha=alpha,
                                             n_real_events=maps.a.shape[1])

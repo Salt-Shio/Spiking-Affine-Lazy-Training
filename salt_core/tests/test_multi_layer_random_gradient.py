@@ -114,7 +114,7 @@ def _real_pipeline_multi_layer(event_times, event_source_idx, weight_matrices, t
     v_final = s_value = None
     for li, W in enumerate(weight_matrices):
         maps = build_fc_queue(times, source_idx, W, tau, event_gain=gain,
-                               n_real_events=n_real_events)
+                               n_real_events=n_real_events).maps
         max_steps = maps.a.shape[1]
         spike_mask, spike_event_idx, s_spike, s_value, v_final = run_layer_forward(
             maps, v_th, chunk_size=chunk_size, max_steps=max_steps, alpha=alpha,

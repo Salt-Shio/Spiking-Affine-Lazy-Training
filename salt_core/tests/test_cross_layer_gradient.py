@@ -55,7 +55,7 @@ def _two_layer_v_final_q(W1, event_times, event_source_idx, tau, v_th, alpha, W2
     max_steps=2:layer1 處理完事件0、事件1(fire)就停,事件2 從來沒被讀取過。
     use_gain=False 時刻意不傳 event_gain,模擬「補之前」的算法,對照組。"""
     maps1 = build_fc_queue(event_times, event_source_idx, W1, tau,
-                            n_real_events=event_times.shape[0])
+                            n_real_events=event_times.shape[0]).maps
     spike_mask, spike_event_idx, s_spike, _, _ = run_layer_forward(
         maps1, v_th, chunk_size=1, max_steps=2, alpha=alpha,
         n_real_events=maps1.a.shape[1])
@@ -65,7 +65,7 @@ def _two_layer_v_final_q(W1, event_times, event_source_idx, tau, v_th, alpha, W2
 
     maps2 = build_fc_queue(times2, src2, W2, tau,
                             event_gain=(gain2 if use_gain else None),
-                            n_real_events=n_real_events2)
+                            n_real_events=n_real_events2).maps
     _, _, _, _, v_final2 = run_layer_forward(
         maps2, v_th, chunk_size=1, max_steps=maps2.a.shape[1], alpha=alpha,
         n_real_events=n_real_events2)

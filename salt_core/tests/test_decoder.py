@@ -110,7 +110,7 @@ def test_bring_your_own_readout_through_the_primitive_is_not_blocked():
     event_source_idx = jnp.array([0, 1, 0])
 
     def loss(W):
-        maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0])
+        maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0]).maps
         result = run_layer_forward(maps, v_th, chunk_size=1, max_steps=3, alpha=alpha, n_real_events=maps.a.shape[1])
         S = jnp.sum(result.s_value, axis=1)
         return S[0] - S[1]

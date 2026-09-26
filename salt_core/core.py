@@ -6,23 +6,20 @@
 本檔案不處理:
 - 幫每個神經元建構事件佇列(全連接/conv 的連接關係,屬於後續任務)
 - chunk 與 chunk 之間的序列迴圈(屬於訓練迴圈,後續任務)
-只實作「給定一個已排序、已切好的 chunk」該怎麼算。
 
-`process_event_int` 是另一條路:整數尺度的膜電位量化模擬(見
-docs/問題紀錄.md 第十七節),全程只有整數運算,不碰 `s_c`,也不是這裡的
-`process_chunk` 泛化出來的,是獨立的函式——`process_chunk` 訓練熱路徑不動
-一行。**不開 `jax_enable_x64`**:實測過這個全域設定會讓 `jax.lax.scan`/
-`jnp.argmax` 等等一大票地方的預設整數 dtype 從 int32 變成 int64,直接讓
-訓練熱路徑一堆既有測試炸掉(69 個),不是原本評估的「幾乎不影響」——所以
-`process_event_int` 全程留在 `int32`,呼叫端要自己保證 `f_a+i_V+f_V` 不超過
-`int32` 能安全相乘的範圍(見 `process_event_int` 文件的說明跟顯式檢查)。
+提供兩種單步運算:
+- `process_chunk`:浮點,給定一個已排序、已切好的 chunk 怎麼算,訓練跟
+  浮點推論用。
+- `process_event_int`:整數,一次一筆事件,模擬 FPGA 膜電位暫存器的更新
+  (膜電位量化,見 docs/math/膜電位量化推導.md)。整數運算電路本身在
+  `salt_core/fixed_point.py`。
 """
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
-from salt_core.quantize import wide_mul_shift, wrap_to_bits
+from salt_core.fixed_point import OverflowMode, RoundMode, fit_to_bits, wide_mul_shift
 from salt_core.surrogate import atan_spike
 
 
@@ -126,9 +123,8 @@ class ChunkForwardResult(NamedTuple):
     s_sequence: jax.Array  # shape (chunk_size,),可微分的 spike 強度序列,forward 精確等於 0/1
 
 
-def process_chunk(v0: jax.Array, maps: AffineMap, v_th: float, alpha: float = 2.0,
-                   round_step: jax.Array | float | None = None,
-                   round_mode: str = "round") -> ChunkForwardResult:
+def process_chunk(v0: jax.Array, maps: AffineMap, v_th: float,
+                   alpha: float = 2.0) -> ChunkForwardResult:
     """處理一個 chunk 內已排序的事件,偵測第一次 spike 並 reset,之後事件全部丟棄。
 
     maps 的 leading axis 是 chunk 內的事件數(chunk_size),maps.a[i]/maps.b[i]
@@ -143,43 +139,9 @@ def process_chunk(v0: jax.Array, maps: AffineMap, v_th: float, alpha: float = 2.
     能穿過這個原本不可微分的判斷點。「哪個事件是第一個 spike」這個離散選擇
     本身用 jax.lax.stop_gradient 明確標成常數——只對「有沒有 spike」這個值
     套用 surrogate,不對「選中哪個 index」求梯度,這是業界標準做法。
-
-    round_step:預設 None,訓練/既有呼叫端行為不變。給定時對「衰減後、還沒加
-    這筆事件貢獻」的值套用定點捨入(docs/math/膜電位量化推導.md 的 r(·):
-    $\\tilde V_k=r(a_k\\tilde V_{k-1})+q_k$),捨完才加上這筆事件的貢獻——
-    **順序不能反過來**:round 模式下「先加再捨」跟「先捨再加」數學上等價
-    (round 建立在 floor 上,floor 對「加整數平移」不分正負號都成立),但
-    truncate(向零捨去)對負數的方向跟正數相反,一旦這筆事件的貢獻讓值跨過
-    0,「先加再捨」跟「先捨再加」會算出不同答案(反例:衰減值 -0.6、貢獻
-    +1、格距 1:文件順序 trunc(-0.6)+1=0+1=1.0,若先加總再捨會變成
-    trunc(-0.6+1)=trunc(0.4)=0——膜電位本來就會出現負值,不是邊緣情況)。
-    只有 chunk_size=1(呼叫端每個 chunk 剛好一筆事件)時,這個捨入才對應
-    硬體「每筆事件更新後立刻捨入」的語意;chunk_size>1 時 composed 是
-    associative_scan 合成多筆事件之後的結果,對它套用不會等於逐筆捨入,
-    呼叫端要自己保證 chunk_size=1。
-
-    這裡故意不用一個外部傳入的捨入函式(呼叫端一度這樣設計過):
-    `process_chunk` 是逐神經元 `jax.vmap` 出來的,每個 channel 的捨入格距
-    `s_c * 2^-f_V` 不一樣,格距必須跟 v_th 一樣當成 vmap 的陣列參數
-    (`in_axes=0`)才能逐 channel 各自生效;一個共用的 Python 函式物件做不到
-    這件事(vmap 只能讓它对每顆神經元的輸入做一樣的事)。round_mode(要
-    round 還是 truncate)是全域一次決定的設計選擇,不會逐 channel 不同,
-    維持純量/靜態字串即可。
-
-    這裡不做 clip/飽和——溢位規則(飽和 or wrap-around)還沒定案(見推導
-    文件「目前狀態」表),這個函式只管捨入,不管數值範圍,呼叫端要自己
-    另外驗證有沒有溢位。
     """
-    if round_mode not in ("round", "truncate"):
-        raise ValueError(f"round_mode 必須是 'round' 或 'truncate',給的是 {round_mode!r}")
     composed = jax.lax.associative_scan(combine, maps)
-    if round_step is None:
-        v_sequence = composed.a * v0 + composed.b  # 對應 docs 推導的 x_k
-    else:
-        decayed = composed.a * v0
-        scaled = decayed / round_step
-        rounded_decay = (jnp.round(scaled) if round_mode == "round" else jnp.trunc(scaled)) * round_step
-        v_sequence = rounded_decay + composed.b  # r(a_k * V_{k-1}) + q_k,順序對齊推導文件
+    v_sequence = composed.a * v0 + composed.b  # 對應 docs 推導的 x_k
 
     s_sequence = atan_spike(v_sequence - v_th, alpha)
     spiked_mask = jax.lax.stop_gradient(s_sequence) >= 0.5
@@ -201,83 +163,56 @@ def process_chunk(v0: jax.Array, maps: AffineMap, v_th: float, alpha: float = 2.
 
 
 # ============================================================================
-# 整數尺度的膜電位量化模擬(見 docs/問題紀錄.md 第十七節)。跟上面
-# process_chunk 那條路完全獨立,不共用、不影響訓練熱路徑。
+# 整數單步運算(膜電位量化模擬)
 # ============================================================================
 
 class EventStepResultInt(NamedTuple):
     """`process_event_int` 的回傳:一筆事件更新完之後的整數膜電位狀態。"""
     v_final: jax.Array     # 這筆事件之後的膜電位(int32,spike 時已硬重置為 0)
     is_spiked: jax.Array   # bool
-    overflowed: jax.Array  # bool,這次寫回暫存器有沒有溢位(繞回去之前的真實值有沒有超出 i_V+f_V 位元)
+    overflowed: jax.Array  # bool,寫回之前的真實值有沒有超出 i_V+f_V 位元
 
 
 def process_event_int(v0_int: jax.Array, a_int: jax.Array, is_identity: jax.Array,
-                      q_int: jax.Array, v_th_int: jax.Array, *, f_a: int, f_V: int,
-                      i_V: int, round_mode: str = "round") -> EventStepResultInt:
-    """整數尺度單一事件更新,對應 $\\tilde V_k=r(a_k\\tilde V_{k-1})+q_k$,
-    全程只有整數運算,沒有 `s_c`、沒有浮點除法(見 docs/問題紀錄.md 第十七
-    節)。
+                      q_int: jax.Array, v_th_int: jax.Array | None, *, f_a: int, f_V: int,
+                      i_V: int, round_mode: RoundMode | str = RoundMode.ROUND,
+                      overflow_mode: OverflowMode | str = OverflowMode.WRAP
+                      ) -> EventStepResultInt:
+    """整數單一事件更新,對應 $\\tilde V_k=r(a_k\\tilde V_{k-1})+q_k$。
 
-    跟 `process_chunk` 的差異:
-    - 這裡永遠只處理**一筆事件**,呼叫端要保證 `chunk_size=1`——理由跟
-      `process_chunk` 文件裡「round_step 只有 chunk_size=1 時才對應硬體
-      逐事件捨入語意」完全一樣,單一事件不需要 associative_scan 合成、
-      不需要在 chunk 內找「第一個 spike」。
-    - 沒有 surrogate gradient:這條路是凍結好的模型事後拿整數模擬硬體行為
-      用的,不會對輸出做反向傳播,直接硬判斷 `>=`、硬重置成 0,不需要
-      `atan_spike`。
+    暫存器值是 $\\tilde V\\cdot2^{f_V}$ 的整數;`a_int` 是 Q0.`f_a` 的衰減碼;
+    `q_int` 是權重整數碼,加進暫存器前左移 `f_V` 位。全程只有整數運算,
+    沒有 $s_c$、沒有浮點除法。一次只處理一筆事件,因為硬體每筆事件更新後
+    就立刻捨入。沒有 surrogate gradient,直接硬判斷 `>=`、硬重置成 0。
 
     `a_int`/`is_identity` 來自 `quantize.apply_decay_table_int`:
-    `is_identity=True`(Δt=0)時跳過衰減這一步(`decayed=v0_int` 原封不動,
-    `Q0.f_a` 整數格式存不下剛好等於 1 的衰減係數,見該函式文件)。
+    `is_identity=True`(Δt=0)時跳過衰減,`decayed` 直接等於 `v0_int`。
 
-    衰減這一步(`quantize.wide_mul_shift`)不檢查溢位——該函式的底層
-    `round_shift` 已經證明過,只要 `a_int<2^f_a`(衰減嚴格小於 1),捨入後的
-    量值不可能超過 `v0_int` 本身。真正會讓量值變大、需要檢查的地方是加上
-    `q_int` 之後,交給 `wrap_to_bits` 處理。
+    `v_th_int=None` 代表這層不 fire(例如膜電位回歸的輸出層):不做 fire
+    判斷、不重置,暫存器一路累積。
 
-    溢位當下依然照第十七節定案的政策(直接繞回去)算出 `v_final`,`overflowed`
-    只是讓呼叫端知道發生了,不代表這個位置的結果被丟棄或修正——選對 `i_V`
-    是呼叫端自己的責任。fire 判斷(`>= v_th_int`)比較的是**繞回去之後**的
-    `wrapped` 值,不是繞回去之前的真實值:硬體暫存器物理上只留得住繞回去
-    之後的位元,比較電路讀到的就是這個被溢位污染過的值,這正是選錯 `i_V`
-    會讓 fire 判斷跟著出錯的原因。
+    溢位照 `overflow_mode` 處理(`fixed_point.fit_to_bits`,預設繞回,定案
+    理由見 docs/math/膜電位量化推導.md「溢位政策」節):`overflowed` 只回報
+    有沒有發生,`v_final` 是寫回之後的值。fire 判斷比的也是寫回之後的值,
+    因為硬體比較電路讀到的就是暫存器裡的位元。
 
-    輸入的整數陣列(`v0_int`/`a_int`/`q_int`/`v_th_int`)全程留在 JAX 預設的
-    `int32`——**這裡本來想用 `int64` 當乘法暫存空間避免自己先溢位,實測發現
-    `jax_enable_x64` 是全域設定,一開下去會讓 `jax.lax.scan`/`jnp.argmax`
-    等等一大票地方的預設整數 dtype 從 int32 變成 int64,直接讓訓練熱路徑
-    一堆既有測試炸掉,不能這樣做(見 docs/問題紀錄.md 第十七節)**。改成
-    在 `int32` 容器裡算,乘法本身透過 `quantize.wide_mul_shift` 拆成高低兩半
-    分開乘(細節見該函式文件),不需要真的湊出 `a_int*v0_int` 這個寬乘積,
-    所以這裡的位元寬度限制拆成兩個各自獨立的檢查(比原本「`f_a+i_V+f_V`
-    綁在一起不能超過 30」寬鬆很多):`f_a` 自己不能超過 15(`wide_mul_shift`
-    內部低位那一半的乘積是 `2*f_a` 位元);`i_V+f_V`(暫存器總寬度)不能
-    超過 30(`wrap_to_bits` 的 mask/加上 `q_int` 貢獻那一步需要的安全邊際)。
+    位元寬度限制:`f_a <= fixed_point.MAX_SHIFT_BITS`、
+    `i_V + f_V <= fixed_point.MAX_REGISTER_BITS`,超過時由
+    `fixed_point` 的 primitive raise `ValueError`(理由見該模組說明)。
     """
-    if round_mode not in ("round", "truncate"):
-        raise ValueError(f"round_mode 必須是 'round' 或 'truncate',給的是 {round_mode!r}")
-    if f_a > 15:
-        raise ValueError(
-            f"f_a={f_a} 超過 15,wide_mul_shift 內部的低位乘積(2*f_a 位元)會先"
-            "溢位 int32。這個專案的 jax_enable_x64 不能開(見上面的說明),選"
-            "小一點的 f_a。")
-    if i_V + f_V > 30:
-        raise ValueError(
-            f"i_V+f_V={i_V + f_V} 超過 30,暫存器總寬度容不進 int32 的安全範圍"
-            "(wrap_to_bits 的位元遮罩、加上 q_int 貢獻都需要安全邊際)。選窄"
-            "一點的 i_V/f_V 組合。")
     v0_int = jnp.asarray(v0_int, dtype=jnp.int32)
     a_int = jnp.asarray(a_int, dtype=jnp.int32)
     q_int = jnp.asarray(q_int, dtype=jnp.int32)
-    v_th_int = jnp.asarray(v_th_int, dtype=jnp.int32)
 
-    decayed_active = wide_mul_shift(a_int, v0_int, shift_bits=f_a, mode=round_mode)
+    decayed_active = wide_mul_shift(a_int, v0_int, shift_bits=f_a, round_mode=round_mode)
     decayed = jnp.where(is_identity, v0_int, decayed_active)
-    raw = decayed + q_int * (1 << f_V)
-    wrapped, overflowed = wrap_to_bits(raw, total_bits=i_V + f_V)
+    v_unfitted = decayed + q_int * (1 << f_V)
+    fitted, overflowed = fit_to_bits(v_unfitted, total_bits=i_V + f_V,
+                                     overflow_mode=overflow_mode)
 
-    is_spiked = wrapped >= v_th_int
-    v_final = jnp.where(is_spiked, jnp.zeros_like(wrapped), wrapped)
+    if v_th_int is None:
+        return EventStepResultInt(v_final=fitted, is_spiked=jnp.zeros_like(fitted, dtype=bool),
+                                  overflowed=overflowed)
+    is_spiked = fitted >= jnp.asarray(v_th_int, dtype=jnp.int32)
+    v_final = jnp.where(is_spiked, jnp.zeros_like(fitted), fitted)
     return EventStepResultInt(v_final=v_final, is_spiked=is_spiked, overflowed=overflowed)

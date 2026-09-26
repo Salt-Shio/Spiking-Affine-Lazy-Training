@@ -246,7 +246,7 @@ def test_conv_to_fc_cross_layer_gradient_matches_hand_calc():
         ev = _conv1_fire_then_extract(W1)
         W_fc = jnp.zeros((2, 9), dtype=jnp.float32).at[:, 0].set(jnp.array([3.0, -1.0]))
         maps_fc = build_fc_queue(ev.event_times, ev.event_source_idx, W_fc, TAU,
-                                  event_gain=ev.event_gain, n_real_events=ev.n_real_events)
+                                  event_gain=ev.event_gain, n_real_events=ev.n_real_events).maps
         r_fc = run_layer_forward(maps_fc, v_th=1e9, chunk_size=maps_fc.a.shape[1],
                                   max_steps=maps_fc.a.shape[1], n_real_events=ev.n_real_events)
         return r_fc.v_final[0]

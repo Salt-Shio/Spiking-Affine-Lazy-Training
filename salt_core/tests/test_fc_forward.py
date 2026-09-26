@@ -17,7 +17,7 @@
 import jax.numpy as jnp
 
 from salt_core.chunk_scan import run_layer_forward
-from salt_core.connectivity.fc import build_fc_queue, fc_delta_t
+from salt_core.connectivity.fc import build_fc_queue
 
 TOL = 1e-4
 
@@ -36,7 +36,7 @@ def _run(chunk_size):
     W = jnp.array([[0.6, 0.5],
                    [0.3, 0.2]])
 
-    maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0])
+    maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0]).maps
     assert maps.a.shape == (2, 3)
 
     n_real_events = event_times.shape[0]
@@ -65,21 +65,35 @@ def test_fc_forward_chunk_size_full():
     _check(*_run(chunk_size=3))
 
 
-def test_fc_delta_t_matches_hand_computation():
-    """跟上面同一組 event_times=[1,2,4]:Δt(跟 t=0 的差,不是跟前一筆事件的
-    差)是 [1-0, 2-1, 4-2]=[1,1,2],兩顆輸出神經元共用同一組(見
-    docs/問題紀錄.md 第十九節,fc_delta_t 給整數版量化查表直接用)。"""
+def test_fc_queue_delta_t_matches_hand_computation():
+    """跟上面同一組 event_times=[1,2,4]:Δt 是跟前一筆事件的差,第一筆跟 t=0
+    比,[1-0, 2-1, 4-2]=[1,1,2]。兩顆輸出神經元共用同一組,`maps.a` 就是用
+    這組 Δt 算的。"""
     event_times = jnp.array([1.0, 2.0, 4.0])
-    delta_t = fc_delta_t(event_times, n_out_neurons=2)
-    assert delta_t.shape == (2, 3)
-    assert list(delta_t[0]) == [1, 1, 2]
-    assert list(delta_t[1]) == [1, 1, 2], "兩顆輸出神經元的 Δt 要一樣(FC 沒有逐神經元差異)"
+    queue = build_fc_queue(event_times, jnp.array([0, 1, 0]), jnp.ones((2, 2)), 4.0,
+                           n_real_events=3)
+    assert queue.delta_t.shape == (2, 3)
+    assert list(queue.delta_t[0]) == [1, 1, 2]
+    assert list(queue.delta_t[1]) == [1, 1, 2], "兩顆輸出神經元的 Δt 要一樣(FC 沒有逐神經元差異)"
+    assert jnp.allclose(queue.maps.a, 0.75 ** queue.delta_t)
+
+
+def test_fc_queue_pad_positions_are_identity_with_zero_delta_t():
+    """n_real_events=2:第三筆是 pad 事件,時間是多層串接用的假時間 1e12。
+    pad 位置的 Δt 要是 0(不是 1e12-2 這種天文數字)、a=1、b=0。"""
+    event_times = jnp.array([1.0, 2.0, 1e12])
+    queue = build_fc_queue(event_times, jnp.array([0, 1, 0]), jnp.array([[0.5, 0.7]]), 4.0,
+                           n_real_events=2)
+    assert list(queue.delta_t[0]) == [1, 1, 0]
+    assert float(queue.maps.a[0, 2]) == 1.0
+    assert float(queue.maps.b[0, 2]) == 0.0
 
 
 TESTS = [
     test_fc_forward_chunk_size_1,
     test_fc_forward_chunk_size_full,
-    test_fc_delta_t_matches_hand_computation,
+    test_fc_queue_delta_t_matches_hand_computation,
+    test_fc_queue_pad_positions_are_identity_with_zero_delta_t,
 ]
 
 

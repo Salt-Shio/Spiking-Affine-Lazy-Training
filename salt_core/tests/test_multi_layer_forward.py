@@ -49,7 +49,7 @@ def test_two_layer_fc_forward():
     W1 = jnp.array([[0.6, 0.5],
                     [0.3, 0.2]])
 
-    layer1_maps = build_fc_queue(layer1_event_times, layer1_event_source_idx, W1, tau, n_real_events=layer1_event_times.shape[0])
+    layer1_maps = build_fc_queue(layer1_event_times, layer1_event_source_idx, W1, tau, n_real_events=layer1_event_times.shape[0]).maps
     n_real_events_1 = layer1_event_times.shape[0]
     spike_mask_1, spike_event_idx_1, s_spike_1, _, v_final_1 = run_layer_forward(
         layer1_maps, v_th, chunk_size=1, max_steps=n_real_events_1, n_real_events=n_real_events_1)
@@ -69,7 +69,7 @@ def test_two_layer_fc_forward():
 
     layer2_maps = build_fc_queue(
         layer2_event_times, layer2_event_source_idx, W2, tau,
-        event_gain=layer2_event_gain, n_real_events=n_real_events_2)
+        event_gain=layer2_event_gain, n_real_events=n_real_events_2).maps
     spike_mask_2, spike_event_idx_2, _, _, v_final_2 = run_layer_forward(
         layer2_maps, v_th, chunk_size=1, max_steps=layer2_maps.a.shape[1],
         n_real_events=n_real_events_2)
@@ -109,7 +109,7 @@ def test_two_layer_fc_forward_multi_fire_interleaved():
     W1 = jnp.array([[0.5, 0.3],   # b1: w11=0.5(a1), w21=0.3(a2)
                     [0.5, 0.9]])  # b2: w12=0.5(a1), w22=0.9(a2)
 
-    layer1_maps = build_fc_queue(layer1_event_times, layer1_event_source_idx, W1, tau, n_real_events=layer1_event_times.shape[0])
+    layer1_maps = build_fc_queue(layer1_event_times, layer1_event_source_idx, W1, tau, n_real_events=layer1_event_times.shape[0]).maps
     n_real_events_1 = layer1_event_times.shape[0]
     spike_mask_1, spike_event_idx_1, s_spike_1, _, v_final_1 = run_layer_forward(
         layer1_maps, v_th, chunk_size=1, max_steps=n_real_events_1, n_real_events=n_real_events_1)
@@ -142,7 +142,7 @@ def test_two_layer_fc_forward_multi_fire_interleaved():
 
     layer2_maps = build_fc_queue(
         layer2_event_times, layer2_event_source_idx, W2, tau,
-        event_gain=layer2_event_gain, n_real_events=n_real_events_2)
+        event_gain=layer2_event_gain, n_real_events=n_real_events_2).maps
     spike_mask_2, spike_event_idx_2, _, _, v_final_2 = run_layer_forward(
         layer2_maps, v_th, chunk_size=1, max_steps=layer2_maps.a.shape[1],
         n_real_events=n_real_events_2)
@@ -172,7 +172,7 @@ def test_empty_layer_output():
     W1 = jnp.array([[0.05, 0.05],
                     [0.05, 0.05]])
 
-    layer1_maps = build_fc_queue(layer1_event_times, layer1_event_source_idx, W1, tau, n_real_events=layer1_event_times.shape[0])
+    layer1_maps = build_fc_queue(layer1_event_times, layer1_event_source_idx, W1, tau, n_real_events=layer1_event_times.shape[0]).maps
     n_real_events_1 = layer1_event_times.shape[0]
     spike_mask_1, spike_event_idx_1, s_spike_1, _, _ = run_layer_forward(
         layer1_maps, v_th, chunk_size=1, max_steps=n_real_events_1, n_real_events=n_real_events_1)
@@ -192,7 +192,7 @@ def test_empty_layer_output():
     W2 = jnp.array([[0.5, 0.5]])
     layer2_maps = build_fc_queue(
         layer2_event_times, layer2_event_source_idx, W2, tau,
-        event_gain=layer2_event_gain, n_real_events=n_real_events_2)
+        event_gain=layer2_event_gain, n_real_events=n_real_events_2).maps
     assert layer2_maps.a.shape == (1, 6)
 
     spike_mask_2, _, _, _, v_final_2 = run_layer_forward(

@@ -17,7 +17,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from salt_core.core import AffineMap, create_affine_maps
+from salt_core.core import AffineMap
 
 
 def _axis_candidates(i: jax.Array, K: int, S: int, P: int, N: int,
@@ -121,7 +121,7 @@ def conv_layer_receptive_field_firing_rate(spike_mask: jax.Array, x: jax.Array, 
 
 class CompressedConvQueue(NamedTuple):
     """壓縮版 build_conv_queue 的回傳型別,對應推導文件第 5.1 節列的三樣
-    東西,加上第四個欄位 `delta_t`。前三個欄位 shape 的第一維都是
+    東西,加上第四個欄位 `delta_t`(整數版量化查表用)。四個欄位 shape 的第一維都是
     OC*H_out*W_out,跟密集版的 n_out_neurons 是同一個量,方便之後
     run_layer_forward/extract_output_events(第 2、3 階段)當成密集版的直接
     替代品接上去。
@@ -129,9 +129,8 @@ class CompressedConvQueue(NamedTuple):
     maps: AffineMap              # a/b shape (OC*H_out*W_out, L)
     local_to_global_j: jax.Array  # shape (OC*H_out*W_out, L) int32,(神經元,局部欄)-> 全域事件 index
     n_real_events: jax.Array     # shape (OC*H_out*W_out,) int32,只算真正的 tap,不含 catch-up/identity
-    delta_t: jax.Array           # shape (OC*H_out*W_out, L) int32,真 tap/catch-up/identity 三段規則
-                                  # 統一算出來的整數 Δt(見 _delta_t_three_regimes),供整數版量化查表
-                                  # 直接用,不需要反推 log(a)/log(1-1/tau)(docs/問題紀錄.md 第十九節)
+    delta_t: jax.Array           # shape (OC*H_out*W_out, L) float32,maps.a 就是用它算的
+                                  # (真 tap/catch-up/identity 三段規則,見 _delta_t_three_regimes)
 
 
 def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: int,
@@ -225,23 +224,27 @@ def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: in
 
 
 def _delta_t_three_regimes(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
-                           global_last_time: jax.Array) -> jax.Array:
-    """壓縮版佇列的三段 Δt 規則(推導文件第 4.3、4.4 節),`_affine_with_catchup`
-    的 `a` 完全由這裡算出來的整數 Δt 決定(見該函式),獨立抽出來是因為整數版
-    量化查表要直接用這個真正的整數 Δt 當 index,不能像浮點版那樣事後反推
-    `log(a)/log(1-1/tau)`(docs/問題紀錄.md 第十九節)。
+                           global_last_time: jax.Array) -> tuple[jax.Array, jax.Array]:
+    """壓縮版佇列每一欄的 Δt(推導文件第 4.3、4.4 節)。
 
-    參數意義跟 `_affine_with_catchup` 完全相同(`t_gathered`/`n_real_per_neuron`/
-    `global_last_time`)。三段規則:
-      col < n_real_per_neuron[n]   (真 tap):自己這條子序列的 diff(col=0 是
-        「跟 t=0 的差」,問題紀錄第七節同一個基準)
+    t_gathered: shape (n_out, L),第 (n, col) 格是 local_to_global_j[n,col]
+      對應的全域事件時間(呼叫端用 event_times[local_to_global_j] 算好再傳
+      進來,這個函式不知道、也不需要知道 local_to_global_j 本身)。
+    n_real_per_neuron: shape (n_out,),見 `_compress_candidates`。
+    global_last_time: 純量,「全域最後一筆事件的時間」(第 4.3 節)——這裡
+      刻意讓呼叫端算好傳進來,因為呼叫端可能還要處理 n_real_events(pad
+      事件)的情況,「全域最後一筆」在那種情況下指的是最後一筆真事件,不是
+      陣列最後一格,這個函式本身不處理 pad,只認呼叫端給的這個值。
+
+    三段規則:
+      col < n_real_per_neuron[n]   (真 tap):自己這條子序列裡跟前一筆的差,
+        col=0 跟 t=0 比(問題紀錄第七節同一個基準)
       col == n_real_per_neuron[n]  (catch-up):全域最後一筆時間 - 這個神經元
         自己最後一筆相關事件的時間
-      col > n_real_per_neuron[n]   (identity):Δt=0——不是「查表查出來的
-        Δt=0」,是這裡直接定義成 0,對應 `(1-1/tau)**0=1.0` 剛好就是 identity
-        映射的 `a`,不需要另外特判(見 `_affine_with_catchup`)。
+      col > n_real_per_neuron[n]   (identity):Δt 定義成 0
 
-    回傳 shape (n_out, L) 的 int32 陣列。
+    回傳 `(delta_t, is_real)`,shape 都是 (n_out, L):`delta_t` 是浮點;
+    `is_real` 標出真 tap 的欄位,`_affine_with_catchup` 拿它蓋掉非真 tap 的 b。
     """
     n_out, L = t_gathered.shape
     col_idx = jnp.arange(L, dtype=jnp.int32)[None, :]
@@ -256,34 +259,26 @@ def _delta_t_three_regimes(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
     delta_t_catchup = global_last_time - t_last_real
 
     delta_t = jnp.where(is_real, delta_t_real, jnp.where(is_catchup, delta_t_catchup[:, None], 0.0))
-    return delta_t.astype(jnp.int32)
+    return delta_t, is_real
 
 
 def _affine_with_catchup(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
                           global_last_time: jax.Array, tau: float,
-                          b_real: jax.Array):
+                          b_real: jax.Array) -> tuple[AffineMap, jax.Array]:
     """局部 Δt + 補位規則。對應推導文件第 3、4 節,是壓縮版跟密集版唯一的
     數值差異來源:密集版的 a 全域算一次、所有神經元共用;壓縮版每一列要用
     自己篩選後的子序列重算 Δt,而且補位不能直接補 identity(第 4.1、4.2
     節已經用反例證明過,直接補 identity 會跟密集版算出不同的 v_final)。
 
-    t_gathered: shape (n_out, L),第 (n, col) 格是 local_to_global_j[n,col]
-      對應的全域事件時間(呼叫端用 event_times[local_to_global_j] 算好再傳
-      進來,這個函式不知道、也不需要知道 local_to_global_j 本身)。
-    n_real_per_neuron: shape (n_out,),見 `_compress_candidates`。
-    global_last_time: 純量,「全域最後一筆事件的時間」(第 4.3 節)——這裡
-      刻意讓呼叫端算好傳進來,因為呼叫端可能還要處理 n_real_events(pad
-      事件)的情況,「全域最後一筆」在那種情況下指的是最後一筆真事件,不是
-      陣列最後一格,這個函式本身不處理 pad,只認呼叫端給的這個值。
+    `t_gathered`/`n_real_per_neuron`/`global_last_time` 見
+    `_delta_t_three_regimes`。
     b_real: shape (n_out, L),第 (n, col) 格是真的 tap 才有意義的權重值
       (通常是 W[oc, c_gathered, k_y_gathered, k_x_gathered] gather 出來的),
       非真 tap 的位置數值不重要,這個函式會用 is_real mask 蓋掉。
 
-    回傳 `(AffineMap, delta_t)`:`AffineMap` 的 a/b shape 都是 (n_out, L);
-    `delta_t` 是 `_delta_t_three_regimes` 算出來的整數 Δt,同一個 shape——
-    三段規則統一算出 Δt 之後,`a` 可以直接用 `(1-1/tau)**delta_t` 一次算完
-    (identity 的 Δt=0 剛好對應 `a=1`),不需要再分別算「真 tap 用 diff 出來
-    的 a」跟「catch-up 用解析式算的 a」兩次然後拼接,見 `_delta_t_three_regimes`。
+    回傳 `(AffineMap, delta_t)`:`AffineMap` 的 a/b shape 都是 (n_out, L),
+    `a = (1-1/tau)**delta_t`(identity 欄 Δt=0,a 剛好是 1),catch-up 欄
+    b=0(純衰減);`delta_t` 是 `_delta_t_three_regimes` 算出來的浮點 Δt。
 
     n_real_per_neuron[n]==max_queue_len(剛好收滿,見第 1 階段測試重點)時,
     col 的值域 [0,L) 永遠不會等於 n_real_per_neuron[n](=L),自然沒有
@@ -293,12 +288,8 @@ def _affine_with_catchup(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
     衰減不會讓電壓憑空出現的引理,單狀態仿射平行掃描推導第 4 節),不需要
     特判成別的分支。
     """
-    n_out, L = t_gathered.shape
-    col_idx = jnp.arange(L, dtype=jnp.int32)[None, :]
-    is_real = col_idx < n_real_per_neuron[:, None]
-
-    delta_t = _delta_t_three_regimes(t_gathered, n_real_per_neuron, global_last_time)
-    a = (1.0 - 1.0 / tau) ** delta_t.astype(jnp.float32)
+    delta_t, is_real = _delta_t_three_regimes(t_gathered, n_real_per_neuron, global_last_time)
+    a = (1.0 - 1.0 / tau) ** delta_t
     b = jnp.where(is_real, b_real, 0.0)
     return AffineMap(a=a, b=b), delta_t
 
@@ -338,7 +329,7 @@ def build_conv_queue_compressed(event_times: jax.Array, x: jax.Array, y: jax.Arr
     `mask_pad_events` 把 pad 那段蓋成 identity 的效果一致:pad 事件不該
     貢獻任何真實衰減。
 
-    回傳 CompressedConvQueue,三個欄位 shape 第一維都是 OC*H_out*W_out。
+    回傳 CompressedConvQueue,四個欄位 shape 第一維都是 OC*H_out*W_out。
     """
     event_times = jnp.asarray(event_times, dtype=jnp.float32)
     x = jnp.asarray(x, dtype=jnp.int32)

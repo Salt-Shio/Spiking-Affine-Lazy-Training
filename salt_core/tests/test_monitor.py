@@ -79,7 +79,7 @@ def _toy_fc_maps(n_out, n_events, seed):
     times = jnp.sort(jax.random.uniform(k, (n_events,), minval=1.0, maxval=40.0))
     w = jax.random.uniform(jax.random.PRNGKey(seed + 1), (n_out, 3), minval=-1.0, maxval=1.0)
     maps = build_fc_queue(times, src, w, tau=8.0,
-                          event_gain=jnp.ones((n_events,)), n_real_events=n_events)
+                          event_gain=jnp.ones((n_events,)), n_real_events=n_events).maps
     return maps, times
 
 

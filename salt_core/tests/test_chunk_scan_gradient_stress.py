@@ -29,7 +29,7 @@ def assert_allclose(actual, expected, msg, tol=TOL):
 
 
 def _loss(W, event_times, event_source_idx, tau, v_th, chunk_size, alpha):
-    maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0])
+    maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0]).maps
     n_real_events = event_times.shape[0]
     _, _, _, s_value, _ = run_layer_forward(maps, v_th, chunk_size=chunk_size,
                                             max_steps=n_real_events, alpha=alpha,

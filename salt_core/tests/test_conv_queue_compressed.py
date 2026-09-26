@@ -120,7 +120,7 @@ def test_affine_with_catchup_matches_worked_example():
     assert_allclose(maps.b[0, 0], 0.2, "神經元5 col0 b")
     assert_allclose(maps.b[0, 1], 0.4, "神經元5 col1 b")
     assert_allclose(maps.b[0, 2], 0.5, "神經元5 col2 b")
-    assert list(delta_t[0]) == [1, 1, 3], "神經元5 三個真 tap 的整數 Δt(1,2,5 的相鄰差)"
+    assert list(delta_t[0]) == [1, 1, 3], "神經元5 三個真 tap 的 Δt(1,2,5 的相鄰差)"
 
     # 神經元 6(索引 1):col2 是 catch-up,但因為最後相關事件剛好等於全域
     # 最後一筆,退化成 a=1,b=0(第 4.4 節)
