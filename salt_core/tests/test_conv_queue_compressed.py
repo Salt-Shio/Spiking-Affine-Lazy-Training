@@ -111,7 +111,7 @@ def test_affine_with_catchup_matches_worked_example():
         [0.7, 0.0, 0.0],
     ])
 
-    maps = _affine_with_catchup(t_gathered, n_real, global_last_time, TAU, b_real)
+    maps, delta_t = _affine_with_catchup(t_gathered, n_real, global_last_time, TAU, b_real)
 
     # 神經元 5(索引 0):全部都是真 tap,沒有補位
     assert_allclose(maps.a[0, 0], 0.75, "神經元5 col0 a")
@@ -120,6 +120,7 @@ def test_affine_with_catchup_matches_worked_example():
     assert_allclose(maps.b[0, 0], 0.2, "神經元5 col0 b")
     assert_allclose(maps.b[0, 1], 0.4, "神經元5 col1 b")
     assert_allclose(maps.b[0, 2], 0.5, "神經元5 col2 b")
+    assert list(delta_t[0]) == [1, 1, 3], "神經元5 三個真 tap 的整數 Δt(1,2,5 的相鄰差)"
 
     # 神經元 6(索引 1):col2 是 catch-up,但因為最後相關事件剛好等於全域
     # 最後一筆,退化成 a=1,b=0(第 4.4 節)
@@ -129,6 +130,7 @@ def test_affine_with_catchup_matches_worked_example():
     assert_allclose(maps.b[1, 0], -0.3, "神經元6 col0 b")
     assert_allclose(maps.b[1, 1], 0.6, "神經元6 col1 b")
     assert_allclose(maps.b[1, 2], 0.0, "神經元6 catch-up b")
+    assert list(delta_t[1]) == [3, 2, 0], "神經元6 catch-up Δt=5-5=0,跟 a=1 一致"
 
     # 神經元 7(索引 2):col1 是真正的 catch-up(Δt=5-2=3),col2 是純 identity
     assert_allclose(maps.a[2, 0], 0.5625, "神經元7 col0 a")
@@ -137,6 +139,7 @@ def test_affine_with_catchup_matches_worked_example():
     assert_allclose(maps.b[2, 0], 0.7, "神經元7 col0 b")
     assert_allclose(maps.b[2, 1], 0.0, "神經元7 catch-up b")
     assert_allclose(maps.b[2, 2], 0.0, "神經元7 identity b")
+    assert list(delta_t[2]) == [2, 3, 0], "神經元7 catch-up Δt=5-2=3,identity Δt=0"
 
 
 def test_affine_with_catchup_identity_pitfall_matches_hand_derivation():
@@ -149,7 +152,7 @@ def test_affine_with_catchup_identity_pitfall_matches_hand_derivation():
     global_last_time = jnp.asarray(5.0)
     b_real = jnp.array([[0.7, 0.0, 0.0]])
 
-    maps = _affine_with_catchup(t_gathered, n_real, global_last_time, TAU, b_real)
+    maps, _delta_t = _affine_with_catchup(t_gathered, n_real, global_last_time, TAU, b_real)
 
     v0 = 0.0
     v1 = maps.a[0, 0] * v0 + maps.b[0, 0]

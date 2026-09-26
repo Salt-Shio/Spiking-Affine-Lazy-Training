@@ -121,13 +121,17 @@ def conv_layer_receptive_field_firing_rate(spike_mask: jax.Array, x: jax.Array, 
 
 class CompressedConvQueue(NamedTuple):
     """壓縮版 build_conv_queue 的回傳型別,對應推導文件第 5.1 節列的三樣
-    東西。三個欄位 shape 的第一維都是 OC*H_out*W_out,跟密集版的
-    n_out_neurons 是同一個量,方便之後 run_layer_forward/extract_output_events
-    (第 2、3 階段)當成密集版的直接替代品接上去。
+    東西,加上第四個欄位 `delta_t`。前三個欄位 shape 的第一維都是
+    OC*H_out*W_out,跟密集版的 n_out_neurons 是同一個量,方便之後
+    run_layer_forward/extract_output_events(第 2、3 階段)當成密集版的直接
+    替代品接上去。
     """
     maps: AffineMap              # a/b shape (OC*H_out*W_out, L)
     local_to_global_j: jax.Array  # shape (OC*H_out*W_out, L) int32,(神經元,局部欄)-> 全域事件 index
     n_real_events: jax.Array     # shape (OC*H_out*W_out,) int32,只算真正的 tap,不含 catch-up/identity
+    delta_t: jax.Array           # shape (OC*H_out*W_out, L) int32,真 tap/catch-up/identity 三段規則
+                                  # 統一算出來的整數 Δt(見 _delta_t_three_regimes),供整數版量化查表
+                                  # 直接用,不需要反推 log(a)/log(1-1/tau)(docs/問題紀錄.md 第十九節)
 
 
 def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: int,
@@ -220,9 +224,44 @@ def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: in
     return local_to_global_j, n_real_per_neuron
 
 
+def _delta_t_three_regimes(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
+                           global_last_time: jax.Array) -> jax.Array:
+    """壓縮版佇列的三段 Δt 規則(推導文件第 4.3、4.4 節),`_affine_with_catchup`
+    的 `a` 完全由這裡算出來的整數 Δt 決定(見該函式),獨立抽出來是因為整數版
+    量化查表要直接用這個真正的整數 Δt 當 index,不能像浮點版那樣事後反推
+    `log(a)/log(1-1/tau)`(docs/問題紀錄.md 第十九節)。
+
+    參數意義跟 `_affine_with_catchup` 完全相同(`t_gathered`/`n_real_per_neuron`/
+    `global_last_time`)。三段規則:
+      col < n_real_per_neuron[n]   (真 tap):自己這條子序列的 diff(col=0 是
+        「跟 t=0 的差」,問題紀錄第七節同一個基準)
+      col == n_real_per_neuron[n]  (catch-up):全域最後一筆時間 - 這個神經元
+        自己最後一筆相關事件的時間
+      col > n_real_per_neuron[n]   (identity):Δt=0——不是「查表查出來的
+        Δt=0」,是這裡直接定義成 0,對應 `(1-1/tau)**0=1.0` 剛好就是 identity
+        映射的 `a`,不需要另外特判(見 `_affine_with_catchup`)。
+
+    回傳 shape (n_out, L) 的 int32 陣列。
+    """
+    n_out, L = t_gathered.shape
+    col_idx = jnp.arange(L, dtype=jnp.int32)[None, :]
+    n_real = n_real_per_neuron[:, None]
+    is_real = col_idx < n_real
+    is_catchup = col_idx == n_real
+
+    delta_t_real = jnp.diff(t_gathered, axis=1,
+                            prepend=jnp.zeros((n_out, 1), dtype=t_gathered.dtype))
+    last_real_col = jnp.clip(n_real_per_neuron - 1, 0, L - 1)
+    t_last_real = jnp.take_along_axis(t_gathered, last_real_col[:, None], axis=1)[:, 0]
+    delta_t_catchup = global_last_time - t_last_real
+
+    delta_t = jnp.where(is_real, delta_t_real, jnp.where(is_catchup, delta_t_catchup[:, None], 0.0))
+    return delta_t.astype(jnp.int32)
+
+
 def _affine_with_catchup(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
                           global_last_time: jax.Array, tau: float,
-                          b_real: jax.Array) -> AffineMap:
+                          b_real: jax.Array):
     """局部 Δt + 補位規則。對應推導文件第 3、4 節,是壓縮版跟密集版唯一的
     數值差異來源:密集版的 a 全域算一次、所有神經元共用;壓縮版每一列要用
     自己篩選後的子序列重算 Δt,而且補位不能直接補 identity(第 4.1、4.2
@@ -240,14 +279,11 @@ def _affine_with_catchup(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
       (通常是 W[oc, c_gathered, k_y_gathered, k_x_gathered] gather 出來的),
       非真 tap 的位置數值不重要,這個函式會用 is_real mask 蓋掉。
 
-    回傳 AffineMap,a/b shape 都是 (n_out, L)。
-
-    三段規則(第 4.3、4.4 節):
-      col < n_real_per_neuron[n]        (真 tap):Δt 用自己這條子序列的
-        diff(col=0 是「跟 t=0 的差」,問題紀錄第七節同一個基準),b 用真權重
-      col == n_real_per_neuron[n]       (catch-up):Δt = 全域最後一筆時間 -
-        這個神經元自己最後一筆相關事件的時間,b=0(純衰減)
-      col > n_real_per_neuron[n]        (identity):a=1, b=0
+    回傳 `(AffineMap, delta_t)`:`AffineMap` 的 a/b shape 都是 (n_out, L);
+    `delta_t` 是 `_delta_t_three_regimes` 算出來的整數 Δt,同一個 shape——
+    三段規則統一算出 Δt 之後,`a` 可以直接用 `(1-1/tau)**delta_t` 一次算完
+    (identity 的 Δt=0 剛好對應 `a=1`),不需要再分別算「真 tap 用 diff 出來
+    的 a」跟「catch-up 用解析式算的 a」兩次然後拼接,見 `_delta_t_three_regimes`。
 
     n_real_per_neuron[n]==max_queue_len(剛好收滿,見第 1 階段測試重點)時,
     col 的值域 [0,L) 永遠不會等於 n_real_per_neuron[n](=L),自然沒有
@@ -259,22 +295,12 @@ def _affine_with_catchup(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
     """
     n_out, L = t_gathered.shape
     col_idx = jnp.arange(L, dtype=jnp.int32)[None, :]
-    n_real = n_real_per_neuron[:, None]
-    is_real = col_idx < n_real
-    is_catchup = col_idx == n_real
+    is_real = col_idx < n_real_per_neuron[:, None]
 
-    delta_t_real = jnp.diff(t_gathered, axis=1,
-                             prepend=jnp.zeros((n_out, 1), dtype=t_gathered.dtype))
-    naive = create_affine_maps(delta_t_real, b_real, tau)
-
-    last_real_col = jnp.clip(n_real_per_neuron - 1, 0, L - 1)
-    t_last_real = jnp.take_along_axis(t_gathered, last_real_col[:, None], axis=1)[:, 0]
-    delta_t_catchup = global_last_time - t_last_real
-    a_catchup = (1.0 - 1.0 / tau) ** delta_t_catchup
-
-    a = jnp.where(is_real, naive.a, jnp.where(is_catchup, a_catchup[:, None], 1.0))
-    b = jnp.where(is_real, naive.b, 0.0)
-    return AffineMap(a=a, b=b)
+    delta_t = _delta_t_three_regimes(t_gathered, n_real_per_neuron, global_last_time)
+    a = (1.0 - 1.0 / tau) ** delta_t.astype(jnp.float32)
+    b = jnp.where(is_real, b_real, 0.0)
+    return AffineMap(a=a, b=b), delta_t
 
 
 def build_conv_queue_compressed(event_times: jax.Array, x: jax.Array, y: jax.Array,
@@ -395,14 +421,15 @@ def build_conv_queue_compressed(event_times: jax.Array, x: jax.Array, y: jax.Arr
 
     global_last_time = event_times[effective_n_events - 1]
 
-    maps_per_oc = jax.vmap(
+    maps_per_oc, delta_t_per_oc = jax.vmap(
         lambda b_oc: _affine_with_catchup(t_g, n_real_per_neuron_spatial, global_last_time,
                                            tau, b_oc)
-    )(weight_vals)  # maps_per_oc.a/.b shape (OC, n_out_spatial, L)
+    )(weight_vals)  # maps_per_oc.a/.b, delta_t_per_oc shape (OC, n_out_spatial, L)
 
     n_out_neurons = OC * n_out_spatial
     a_final = maps_per_oc.a.reshape(n_out_neurons, max_queue_len)
     b_final = maps_per_oc.b.reshape(n_out_neurons, max_queue_len)
+    delta_t_final = delta_t_per_oc.reshape(n_out_neurons, max_queue_len)
     local_to_global_j_final = jnp.broadcast_to(
         local_to_global_j[None, :, :], (OC, n_out_spatial, max_queue_len)
     ).reshape(n_out_neurons, max_queue_len)
@@ -412,4 +439,5 @@ def build_conv_queue_compressed(event_times: jax.Array, x: jax.Array, y: jax.Arr
 
     return CompressedConvQueue(maps=AffineMap(a=a_final, b=b_final),
                                 local_to_global_j=local_to_global_j_final,
-                                n_real_events=n_real_events_final)
+                                n_real_events=n_real_events_final,
+                                delta_t=delta_t_final)

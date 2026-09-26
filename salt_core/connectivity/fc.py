@@ -13,6 +13,27 @@ import jax.numpy as jnp
 from salt_core.core import AffineMap, create_affine_maps, mask_pad_events
 
 
+def fc_delta_t(event_times: jax.Array, n_out_neurons: int) -> jax.Array:
+    """FC 佇列裡每筆事件的整數 Δt,廣播成 shape (n_out_neurons, n_total_events)。
+
+    跟 `build_fc_queue` 內部算 `n_ms` 用的是同一個基準(跟 t=0 的差,不是跟
+    前一筆事件的差,`prepend=0` 才對得上手算數字)——FC 沒有 conv 壓縮版
+    那種逐神經元不同子序列/catch-up 的複雜度,所有輸出神經元看到同一組事件、
+    同一組 Δt,只有權重不同(見 `build_fc_queue` 說明),不需要像
+    `connectivity.conv._delta_t_three_regimes` 那樣分三段處理。
+
+    供整數版量化查表直接用,不需要反推 `log(a)/log(1-1/tau)`(見
+    docs/問題紀錄.md 第十九節)。這裡刻意不改 `build_fc_queue` 的回傳型別
+    (現有一堆呼叫端把它的回傳值直接當 `AffineMap` 用,改動範圍太大),用一
+    個獨立函式讓量化路徑自己另外呼叫。pad 位置(超過 n_real_events)算出來
+    的 Δt 可能是誇張的數字沒關係,下游(`chunk_scan._run_layer_scan_int`)
+    本來就會強制 pad 位置當 identity,不會用到這裡算出來的值。
+    """
+    event_times = jnp.asarray(event_times, dtype=jnp.float32)
+    n_ms = jnp.diff(event_times, prepend=jnp.zeros(1, dtype=event_times.dtype))
+    return jnp.broadcast_to(n_ms, (n_out_neurons, event_times.shape[0])).astype(jnp.int32)
+
+
 def build_fc_queue(event_times: jax.Array, event_source_idx: jax.Array, W: jax.Array,
                     tau: float, n_real_events: jax.Array | int,
                     event_gain: jax.Array | None = None) -> AffineMap:
@@ -49,6 +70,13 @@ def build_fc_queue(event_times: jax.Array, event_source_idx: jax.Array, W: jax.A
     # m_last 初始值是 0,不是第一筆事件的時間本身,兩者只有在第一筆事件剛好
     # 發生在 t=0 時才會一樣。prepend=0 才能讓算出來的係數跟
     # docs/math/全連接forward訓練範例.md 第 4 節的手算數字對上。
+    #
+    # 這裡刻意不重用 fc_delta_t(雖然算式看起來一樣):fc_delta_t 內部會轉成
+    # int32(給整數量化路徑用,那裡 Δt 保證是整數 ms),但這個函式服務的是
+    # 訓練用的浮點路徑,呼叫端(例如測試用的隨機資料)不保證 event_times 是
+    # 整數,轉 int32 會截斷小數、悄悄改變衰減係數——這個 bug 曾經真的讓
+    # test_multi_layer_random_gradient.py 的 s_value 算錯(45 的落差),
+    # 修正時發現的,不是憑空猜的風險。
     n_ms = jnp.diff(event_times, prepend=jnp.zeros(1, dtype=event_times.dtype))
     weights = W[:, event_source_idx]  # shape (n_out_neurons, n_total_events)
     if event_gain is not None:

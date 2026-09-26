@@ -17,7 +17,7 @@
 import jax.numpy as jnp
 
 from salt_core.chunk_scan import run_layer_forward
-from salt_core.connectivity.fc import build_fc_queue
+from salt_core.connectivity.fc import build_fc_queue, fc_delta_t
 
 TOL = 1e-4
 
@@ -65,9 +65,21 @@ def test_fc_forward_chunk_size_full():
     _check(*_run(chunk_size=3))
 
 
+def test_fc_delta_t_matches_hand_computation():
+    """跟上面同一組 event_times=[1,2,4]:Δt(跟 t=0 的差,不是跟前一筆事件的
+    差)是 [1-0, 2-1, 4-2]=[1,1,2],兩顆輸出神經元共用同一組(見
+    docs/問題紀錄.md 第十九節,fc_delta_t 給整數版量化查表直接用)。"""
+    event_times = jnp.array([1.0, 2.0, 4.0])
+    delta_t = fc_delta_t(event_times, n_out_neurons=2)
+    assert delta_t.shape == (2, 3)
+    assert list(delta_t[0]) == [1, 1, 2]
+    assert list(delta_t[1]) == [1, 1, 2], "兩顆輸出神經元的 Δt 要一樣(FC 沒有逐神經元差異)"
+
+
 TESTS = [
     test_fc_forward_chunk_size_1,
     test_fc_forward_chunk_size_full,
+    test_fc_delta_t_matches_hand_computation,
 ]
 
 
