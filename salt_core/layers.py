@@ -87,6 +87,14 @@ class Layer(Protocol):
         """這一層的權重張量(形狀 / fan_in / init_k 都是層自己的知識)。"""
         ...
 
+    def unflatten_neurons(self, values):
+        """逐神經元的值還原成 (channel, h, w, ...),其餘軸原樣保留。"""
+        ...
+
+    def broadcast_channels(self, values):
+        """逐 channel 的值展開成逐神經元 (n_neurons, ...)。"""
+        ...
+
     def forward(self, w: jax.Array,
                 in_stream: EventStream) -> tuple[EventStream, LayerForwardResult, LayerDiag]:
         """讀一條標準事件流 + 這層權重,吐 (標準輸出事件流, 原始 forward 結果,
@@ -189,6 +197,12 @@ def _check_weight_codes(q: jax.Array) -> None:
     if not jnp.issubdtype(dtype, jnp.integer):
         raise ValueError(
             f"q 必須是整數權重碼(quantize.quantize_to_int 的 q),拿到的 dtype 是 {dtype}")
+
+
+def _check_leading_axis(values, expected: int, what: str) -> None:
+    """unflatten_neurons / broadcast_channels 的入口檢查。"""
+    if values.ndim == 0 or values.shape[0] != expected:
+        raise ValueError(f"第 0 軸長度要等於 {what}={expected},拿到的形狀是 {values.shape}")
 
 
 def _constant_spike_gain(spike_mask: jax.Array) -> jax.Array:
@@ -296,6 +310,26 @@ class ConvLayer:
 
     def init_weight(self, key: jax.Array) -> jax.Array:
         return uniform_init(key, self.weight_shape, self.fan_in, self.init_k)
+
+    def unflatten_neurons(self, values):
+        """逐神經元的值還原成 (oc, h_out, w_out, ...)。
+
+        values: 第 0 軸長度 n_neurons,神經元編號 = c*h_out*w_out + y*w_out + x;
+            其餘軸原樣保留。numpy、jax 陣列都可以,回傳同一種。
+        第 0 軸長度不對時 raise ValueError。
+        """
+        _check_leading_axis(values, self.n_neurons, "n_neurons")
+        return values.reshape(self.oc, self.h_out, self.w_out, *values.shape[1:])
+
+    def broadcast_channels(self, values):
+        """逐 channel 的值展開成逐神經元,同一個 channel 的 h_out*w_out 顆神經元同一個值。
+
+        values: 第 0 軸長度 oc,其餘軸原樣保留。回傳第 0 軸長度 n_neurons,
+            numpy、jax 陣列都可以,回傳同一種。
+        第 0 軸長度不對時 raise ValueError。
+        """
+        _check_leading_axis(values, self.oc, "oc")
+        return values.repeat(self.h_out * self.w_out, axis=0)
 
     def _run_forward(self, w: jax.Array, in_stream: EventStream, *, trace: bool):
         """建壓縮佇列 + 跑一層 + 抽輸出流。`forward` / `forward_traced` 共用。
@@ -514,6 +548,17 @@ class FCLayer:
 
     def init_weight(self, key: jax.Array) -> jax.Array:
         return uniform_init(key, self.weight_shape, self.fan_in, self.init_k)
+
+    def unflatten_neurons(self, values):
+        """同 ConvLayer.unflatten_neurons。每顆神經元自成一個 channel,
+        回傳 (n_out, 1, 1, ...)。"""
+        _check_leading_axis(values, self.n_out, "n_out")
+        return values.reshape(self.n_out, 1, 1, *values.shape[1:])
+
+    def broadcast_channels(self, values):
+        """同 ConvLayer.broadcast_channels。每顆神經元自成一個 channel,原樣回傳。"""
+        _check_leading_axis(values, self.n_out, "n_out")
+        return values
 
     def _run_forward(self, w: jax.Array, in_stream: EventStream, *, trace: bool):
         """建密集佇列 + 跑一層 + 抽輸出流。`forward` / `forward_traced` 共用。

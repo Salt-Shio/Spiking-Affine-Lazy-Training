@@ -1,9 +1,7 @@
-"""「一堆各自獨立的 2D 圖排成網格」這種資料性質的還原 + 繪圖。
+"""「一堆各自獨立的 2D 圖排成網格」這種資料性質的繪圖。
 
-`unflatten_channels` 是 conv 層攤平神經元陣列的還原(通用幾何運算,不知道
-`epoch`/`quantity` 這些字眼);`ImageGridPlot` 吃一串已經算好的 `(H, W)` 圖 +
-標題,排成網格畫出來,每一格完全獨立、各自的色階範圍——不假設同一批圖之間
-有任何關係(可能是不同 epoch、不同 quantity、不同 channel 的任意組合),所以
+`ImageGridPlot` 吃一串已經算好的 `(H, W)` 圖 + 標題,排成網格畫出來,每一格
+完全獨立、各自的色階範圍——不假設同一批圖之間有任何關係(可能是不同 epoch、不同 quantity、不同 channel 的任意組合),所以
 不像 `epoch_series` 的 `groups` 那樣把同組疊在一起比較,這裡「同時比較」就是
 並排本身。
 
@@ -131,19 +129,6 @@ def _style_axis(fig, ax, img: np.ndarray, title: str | None, is_discrete: bool,
     if ylabel:
         ax.set_ylabel(ylabel, fontsize=8)
     return im
-
-
-def unflatten_channels(flat: np.ndarray, oc: int, h: int, w: int) -> np.ndarray:
-    """把 conv 層攤平的 `(n,)` 神經元陣列(`n = oc*h*w`,channel-major:
-    `flat_index = c*h*w + y*w + x`)還原成 `(oc, h, w)`,單純 reshape,不用
-    transpose(攤平公式見 `salt_core/connectivity/conv.py` 的佇列建構跟
-    `salt_core/tests/test_conv_geometry.py`,兩處確認一致)。"""
-    flat = np.asarray(flat)
-    expected = oc * h * w
-    if flat.shape[-1] != expected:
-        raise ValueError(f"長度 {flat.shape[-1]} 跟 oc*h*w={expected}(oc={oc}, "
-                         f"h={h}, w={w})對不上")
-    return flat.reshape(oc, h, w)
 
 
 class ImageGridPlot:

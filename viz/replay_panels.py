@@ -22,7 +22,6 @@ import numpy as np
 
 from salt_core.layers import ConvLayer, FCLayer
 from salt_core.monitor import LayerForwardTrace
-from viz.channel_grid import unflatten_channels
 from viz.time_resample import pad_events_by_neuron, resample_decay, resample_pulse, sliding_windows
 
 
@@ -67,7 +66,7 @@ class InputChannelPanel:
         values = np.ones(padded_ms.shape, dtype=bool)
         resampled = resample_pulse(padded_ms, values, frame_ms, dt=dt_ms, background=False)
         self._frames = np.stack([
-            unflatten_channels(resampled[:, t], oc, h_in, w_in)[channel]
+            resampled[:, t].reshape(oc, h_in, w_in)[channel]
             for t in range(resampled.shape[1])
         ]).astype(np.float64)
 
@@ -85,7 +84,7 @@ class InputChannelPanel:
 
 class ConvChannelPanel:
     """conv 層某一個 channel 的逐 frame 空間快照,攤成 `(h_out, w_out)` 圖
-    (`unflatten_channels`)。conv 的 pixel 位置沒有真實座標意義,不設
+    (`ConvLayer.unflatten_neurons`)。conv 的 pixel 位置沒有真實座標意義,不設
     `extent`/標籤。"""
 
     def __init__(self, layer: ConvLayer, channel: int, quantity: str,
@@ -96,7 +95,7 @@ class ConvChannelPanel:
 
         resampled, self.discrete = _resample_quantity(layer, quantity, trace, frame_ms, dt_ms)
         self._frames = np.stack([
-            unflatten_channels(resampled[:, t], layer.oc, layer.h_out, layer.w_out)[channel]
+            layer.unflatten_neurons(resampled[:, t])[channel]
             for t in range(resampled.shape[1])
         ]).astype(np.float64)
 
@@ -114,7 +113,7 @@ class ConvChannelPanel:
 
 class FCWindowPanel:
     """FC 層一段 neuron 範圍的滑動時間窗口——FC 沒有空間結構,neuron index
-    本身就是座標,不像 conv 要經過 `unflatten_channels` 轉換;範圍/窗口寬度
+    本身就是座標,不像 conv 要經過 `unflatten_neurons` 轉換;範圍/窗口寬度
     都要可控,不能把整段軌跡硬塞成一張圖(見 `viz/time_resample.py` 的
     `sliding_windows`)。座標軸是真實座標(neuron index / 相對播放時間的 ms
     偏移)。"""

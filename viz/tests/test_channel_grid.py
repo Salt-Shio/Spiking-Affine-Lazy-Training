@@ -3,36 +3,13 @@ import numpy as np
 from matplotlib.animation import FuncAnimation
 from matplotlib.colors import to_rgb, to_rgba
 
-from viz.channel_grid import ChannelGridAnimation, ColorOverlayPanel, ImageGridPlot, unflatten_channels
+from viz.channel_grid import ChannelGridAnimation, ColorOverlayPanel, ImageGridPlot
 
 # 跟 viz/channel_grid.py 的 _PAD_COLOR/_DISCRETE_OFF_COLOR 對齊——這裡故意
 # 寫死字面值而不是 import 私有常數,測的是「呼叫端看得到的顏色」這個外部
 # 行為,不是內部實作細節。
 _PAD_COLOR_RGBA = to_rgba("#ff00ff")
 _DISCRETE_OFF_RGB = to_rgb("#d9d9d9")
-
-
-def test_unflatten_channels_matches_channel_major_order():
-    oc, h, w = 2, 3, 4
-    flat = np.arange(oc * h * w)
-
-    out = unflatten_channels(flat, oc, h, w)
-
-    assert out.shape == (oc, h, w)
-    # channel-major:flat_index = c*h*w + y*w + x,第 0 個 channel 應該是
-    # 0..(h*w-1) 這段連續數字 reshape 回 (h, w)。
-    assert np.array_equal(out[0], np.arange(h * w).reshape(h, w))
-    assert np.array_equal(out[1], np.arange(h * w, 2 * h * w).reshape(h, w))
-
-
-def test_unflatten_channels_wrong_length_raises():
-    flat = np.zeros(10)
-    try:
-        unflatten_channels(flat, oc=2, h=3, w=4)   # 2*3*4=24 != 10
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("預期長度對不上要拋 ValueError")
 
 
 def _grid_axes(fig):

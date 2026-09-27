@@ -29,7 +29,7 @@ from salt_core.layers import ConvLayer, raw_events_to_stream, run_network_traced
 from salt_core.monitor import summarize_trace_scalars
 
 
-def _force_chunk_size_one(layers: list) -> list:
+def force_chunk_size_one(layers: list) -> list:
     """把每一層的 `chunk_size` 覆蓋成 1。`ConvLayer` 額外把 `max_steps` 補到
     `L`——`chunk_size=1` 下的安全上界(跟 `ConvLayer.__post_init__` 沒填
     `max_steps` 時的 fallback 同一個值),避免沿用舊 `chunk_size` 校準出的
@@ -48,7 +48,7 @@ def _force_chunk_size_one(layers: list) -> list:
 def load_epoch_weights(exp_dir: str, epoch: int) -> tuple[list, tuple]:
     """回傳 `(chunk_size=1 的 layers, 那個 epoch 存的權重)`。"""
     run_record = load_run_record(exp_dir)
-    layers = _force_chunk_size_one(rebuild_layers(run_record))
+    layers = force_chunk_size_one(rebuild_layers(run_record))
     weights_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
     params = load_params_npz(weight_snapshot_path(weights_dir, epoch), layers)
     return layers, params

@@ -120,7 +120,7 @@ def quantization_error(x: jnp.ndarray, x_hat: jnp.ndarray) -> dict:
     return {"mse": mse, "max_abs_err": max_abs_err, "sqnr_db": sqnr_db}
 
 
-def _percentile_abs_threshold(x: jnp.ndarray, percentile: float, axis: int | None):
+def percentile_abs_threshold(x: jnp.ndarray, percentile: float, axis: int | None):
     """`|x|` 的 percentile 當 clip threshold。`axis=None` 對整個 tensor 取;
     給定 `axis` 時,對其餘所有軸攤平後在該軸的每個位置各自取,回傳形狀跟
     `fake_quantize_tensor` 的 `threshold` 參數(keepdims 廣播用)相容。
@@ -149,7 +149,7 @@ def quantize_params(params: tuple, *, bits: int, per_channel: bool = True,
     out = []
     for w in params:
         axis = 0 if per_channel else None
-        threshold = _percentile_abs_threshold(w, clip_percentile, axis=axis)
+        threshold = percentile_abs_threshold(w, clip_percentile, axis=axis)
         w_hat, _scale = fake_quantize_tensor(w, bits, axis=axis, threshold=threshold)
         out.append(w_hat)
     return tuple(out)

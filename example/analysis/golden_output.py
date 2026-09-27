@@ -4,9 +4,12 @@ save:用那次 run 的容量跑一次,記下哪些樣本出界;有出界就放�
     全部不出界,把結果存成黃金輸出。
 compare:用黃金輸出記下的容量重跑,逐筆比對。預測類別、每層 spike 數要相等,
     v_final 容差 V_FINAL_ATOL。有不同就回傳非 0。
+save_quant / compare_quant:量化版 forward,規格固定為 QUANT_SPEC,容量用 save 記下的;
+    要先有 save 的結果。比對全部逐值相等。
 
-用法:python -m example.analysis.golden_output {save,compare}
-輸出:experiments/<那次 run>/golden/golden.npz、report.yaml
+用法:python -m example.analysis.golden_output {save,compare,save_quant,compare_quant}
+輸出:experiments/<那次 run>/golden/ 底下的 golden.npz、report.yaml、
+    golden_quant.npz、report_quant.yaml
 """
 import argparse
 import dataclasses
@@ -22,8 +25,12 @@ import yaml
 from data.src.nmnist import NMNISTDataset
 from example.models.conv_net import ConvNetCompressed, build_decoder
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
+from example.replay_epoch import force_chunk_size_one
 from example.utils import load_run_params, load_run_record, rebuild_layers
-from salt_core.layers import LayerDiag
+from salt_core.layers import (LayerDiag, dequantize_v_final, raw_events_to_stream,
+                              run_network_quantized_traced, run_network_traced)
+from salt_core.quant.calibrate import merge_v_ranges, v_abs_max_per_channel, v_range_per_channel
+from salt_core.quant.convert import LayerQuantSpec, build_quantized_params
 
 RUN_DIR = EXPERIMENTS_DIR / "conv_compressed_compressed_scale_10k_20260919_050446"
 GOLDEN_DIR = RUN_DIR / "golden"
@@ -34,6 +41,10 @@ CAPACITY_KNOBS = ("L", "max_out_spikes", "max_steps")
 OVERFLOW_FIELDS = {"L": "max_real_queue", "max_out_spikes": "n_out_spikes",
                    "max_steps": "min_steps_needed"}
 DIAG_FIELDS = ("spike_count", "max_real_queue", "n_out_spikes", "min_steps_needed")
+# 量化版:每層同一組位元寬度,輸出層不 fire
+QUANT_SPEC = dict(bits=8, f_a=10, f_V=10, round_mode="round", overflow_mode="wrap")
+# 量膜電位範圍 M 用 val 的前幾筆
+QUANT_CALIBRATION_SAMPLES = 50
 
 
 def load_run():
@@ -171,14 +182,108 @@ def compare() -> int:
     return int(bool(pred_diff.size or spike_diff.size or v_diff.size))
 
 
+def split_sample(split, i: int) -> tuple:
+    return (split.event_times[i], split.x[i], split.y[i], split.c[i], split.n_real_events[i])
+
+
+def sample_stream(layers: list, split, i: int):
+    first = layers[0]
+    return raw_events_to_stream(*split_sample(split, i), h_in=first.h_in, w_in=first.w_in)
+
+
+def build_golden_quant_params(layers: list, params, split) -> list:
+    """照 QUANT_SPEC 算每層的量化參數,M 用 split 前 QUANT_CALIBRATION_SAMPLES 筆量。"""
+    per_sample = [v_range_per_channel(layers, run_network_traced(
+                      layers, sample_stream(layers, split, i), params))
+                  for i in range(QUANT_CALIBRATION_SAMPLES)]
+    v_abs_max = v_abs_max_per_channel(merge_v_ranges(per_sample))
+    spec = LayerQuantSpec(bits=QUANT_SPEC["bits"], f_a=QUANT_SPEC["f_a"], f_V=QUANT_SPEC["f_V"],
+                          overflow_mode=QUANT_SPEC["overflow_mode"])
+    specs = [spec] * (len(layers) - 1) + [spec._replace(fires=False)]
+    return build_quantized_params(layers, params, specs, v_abs_max)
+
+
+def quant_forward_split(layers: list, decoder, quant_params: list, split) -> dict:
+    """整個 split 逐筆跑量化版 forward。回傳 numpy 陣列:v_final_int (N, n_class)、
+    preds (N,),spike_count、truncated、overflowed 各 (N, n_layers)。"""
+    rows = []
+    for i in range(split.labels.shape[0]):
+        traces = run_network_quantized_traced(layers, sample_stream(layers, split, i),
+                                              quant_params, round_mode=QUANT_SPEC["round_mode"])
+        last_result = traces[-1][0]
+        scores, _ = decoder.decode(dequantize_v_final(last_result, quant_params[-1]))
+        rows.append({
+            "v_final_int": np.asarray(last_result.v_final),
+            "preds": int(np.argmax(np.asarray(scores))),
+            "spike_count": [int(np.asarray(r.spike_mask).sum()) for r, _v, _d in traces],
+            "truncated": [bool(d.queue_truncated) or bool(d.output_truncated)
+                          for _r, _v, d in traces],
+            "overflowed": [bool(np.asarray(r.overflowed).any()) for r, _v, _d in traces],
+        })
+    return {key: np.array([row[key] for row in rows]) for key in rows[0]}
+
+
+def load_quant_run() -> tuple:
+    """回傳 (layers, decoder, quant_params, split)。容量用 save 記下的,chunk_size 改 1。"""
+    with open(GOLDEN_DIR / "report.yaml", "r", encoding="utf-8") as f:
+        report = yaml.safe_load(f)
+    layers, decoder, params, split, _batch_size = load_run()
+    layers = force_chunk_size_one(with_capacity(layers, report["golden_capacity"]))
+    return layers, decoder, build_golden_quant_params(layers, params, split), split
+
+
+def save_quant() -> None:
+    layers, decoder, quant_params, split = load_quant_run()
+    out = quant_forward_split(layers, decoder, quant_params, split)
+    labels = np.asarray(split.labels)
+    np.savez(GOLDEN_DIR / "golden_quant.npz", labels=labels, **out)
+    names = [layer.name for layer in layers]
+    report = {
+        "spec": QUANT_SPEC,
+        "calibration_samples": QUANT_CALIBRATION_SAMPLES,
+        "i_V": {name: p.i_V for name, p in zip(names, quant_params)},
+        "accuracy": accuracy(out, labels),
+        "truncated_samples": {name: int(out["truncated"][:, i].sum())
+                              for i, name in enumerate(names)},
+        "overflowed_samples": {name: int(out["overflowed"][:, i].sum())
+                               for i, name in enumerate(names)},
+    }
+    with open(GOLDEN_DIR / "report_quant.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(report, f, allow_unicode=True, sort_keys=False)
+    print(yaml.safe_dump(report, allow_unicode=True, sort_keys=False))
+
+
+def compare_quant() -> int:
+    with open(GOLDEN_DIR / "report_quant.yaml", "r", encoding="utf-8") as f:
+        report = yaml.safe_load(f)
+    golden = np.load(GOLDEN_DIR / "golden_quant.npz")
+    layers, decoder, quant_params, split = load_quant_run()
+    i_V = {layer.name: p.i_V for layer, p in zip(layers, quant_params)}
+    out = quant_forward_split(layers, decoder, quant_params, split)
+
+    print(f"accuracy {accuracy(out, golden['labels']):.4f}(黃金輸出 {report['accuracy']:.4f})")
+    print(f"i_V {i_V}(黃金輸出 {report['i_V']})")
+    n_diff = int(i_V != report["i_V"])
+    for key in ("preds", "v_final_int", "spike_count", "truncated", "overflowed"):
+        diff = out[key] != golden[key]
+        idx = np.nonzero(diff.reshape(diff.shape[0], -1).any(axis=1))[0]
+        print(f"{key} 不同:{idx.size} 筆 {idx[:20].tolist()}")
+        n_diff += idx.size
+    return int(bool(n_diff))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("save", "compare"))
+    parser.add_argument("mode", choices=("save", "compare", "save_quant", "compare_quant"))
     args = parser.parse_args()
     if args.mode == "save":
         save()
-    else:
+    elif args.mode == "compare":
         sys.exit(compare())
+    elif args.mode == "save_quant":
+        save_quant()
+    else:
+        sys.exit(compare_quant())
 
 
 if __name__ == "__main__":
