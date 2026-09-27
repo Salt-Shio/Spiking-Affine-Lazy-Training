@@ -119,15 +119,29 @@ def test_dormant_report_matches_manual_reduction():
     assert abs(got["dormant_frac"] - expect["dormant_frac"]) < TOL
 
 
-def test_dormant_report_s_value_activity_runs():
+def test_dormant_report_s_value_matches_manual_reduction():
+    """activity="s_value" 的數字 == 手動逐層 forward + sum(s_value) + dormant_score,兩個 conv 層都比。"""
     layers = _layers()
     params = _params(layers, seed=6)
     batch = synthetic_raw_batch(jax.random.PRNGKey(7), n_samples=4, max_len=18,
                                   h_in=34, w_in=34, ic=2)
+    et, x, y, c, nr = batch
+    conv1, conv2 = layers[0], layers[1]
+
+    def one(e, xx, yy, cc, rr):
+        s = raw_events_to_stream(e, xx, yy, cc, rr, conv1.h_in, conv1.w_in)
+        s2, result1, _diag = conv1.forward(params[0], s)
+        _out, result2, _diag = conv2.forward(params[1], s2)
+        return jnp.sum(result1.s_value, axis=1), jnp.sum(result2.s_value, axis=1)
+
+    per_sample = jax.vmap(one)(et, x, y, c, nr)
     report, _ = dormant_report(layers, params, batch, activity="s_value", chunk=2)
     assert set(report) == {"conv1", "conv2"}
-    for r in report.values():
-        assert 0.0 <= r["dormant_frac"] <= 1.0
+    for name, samples in zip(("conv1", "conv2"), per_sample):
+        activity = np.asarray(jnp.mean(samples, axis=0))
+        assert activity.mean() > 0.0, f"{name} 整層沒有活動量,這組資料測不到東西"
+        expect = dormant_score(activity, tau=0.1)
+        assert abs(report[name]["dormant_frac"] - expect["dormant_frac"]) < TOL
 
 
 def test_dormant_report_rejects_bad_activity():

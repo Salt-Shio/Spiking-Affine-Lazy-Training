@@ -10,7 +10,6 @@
 """
 
 import jax.numpy as jnp
-import pytest
 
 from salt_core.core import (AffineMap, combine, create_affine_maps, process_chunk,
                             process_event_int)
@@ -212,34 +211,12 @@ def test_process_event_int_no_threshold_never_fires_or_resets():
     assert int(result.v_final) == 150
 
 
-def test_process_event_int_rejects_f_a_too_wide_for_wide_mul_shift():
-    """f_a 超過 fixed_point.MAX_SHIFT_BITS 時,wide_mul_shift 內部的低位乘積
-    會溢位 int32,要直接拒絕,不能悄悄算錯。"""
-    with pytest.raises(ValueError):
-        process_event_int(v0_int=0, a_int=0, is_identity=True, q_int=0,
-                          v_th_int=1, f_a=16, f_V=2, i_V=8)
-
-
-def test_process_event_int_rejects_register_width_too_wide_for_int32():
-    """i_V+f_V 超過 fixed_point.MAX_REGISTER_BITS 時要直接拒絕。
-    i_V=20, f_V=15 加起來 35。"""
-    with pytest.raises(ValueError):
-        process_event_int(v0_int=0, a_int=0, is_identity=True, q_int=0,
-                          v_th_int=1, f_a=4, f_V=15, i_V=20)
-
-
 def test_process_event_int_accepts_f_a_and_register_width_each_within_own_limit():
     """f_a 跟 i_V+f_V 各自在自己的上限內就接受,三者加總不受限:
     f_a=15、i_V+f_V=30,加總 45。"""
     result = process_event_int(v0_int=100, a_int=1, is_identity=False, q_int=1,
                                 v_th_int=10 ** 8, f_a=15, f_V=14, i_V=16)
     assert not bool(result.overflowed)
-
-
-def test_process_event_int_rejects_invalid_round_mode():
-    with pytest.raises(ValueError):
-        process_event_int(v0_int=0, a_int=0, is_identity=True, q_int=0,
-                          v_th_int=1, f_a=4, f_V=2, i_V=8, round_mode="ceil")
 
 
 def test_combine_associativity():

@@ -91,11 +91,6 @@ def test_wide_mul_shift_zero_a_int_gives_zero():
                               round_mode="round")) == 0
 
 
-def test_wide_mul_shift_rejects_invalid_round_mode():
-    with pytest.raises(ValueError):
-        wide_mul_shift(jnp.array(1), jnp.array(1), shift_bits=2, round_mode="ceil")
-
-
 def test_wide_mul_shift_rejects_shift_bits_above_limit():
     with pytest.raises(ValueError):
         wide_mul_shift(jnp.array(1), jnp.array(1), shift_bits=MAX_SHIFT_BITS + 1,

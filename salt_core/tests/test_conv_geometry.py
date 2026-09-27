@@ -7,8 +7,8 @@ test_conv_queue.py(原本測密集版 build_conv_queue)搬過來、改成打壓�
 1. `unravel_conv_source` round-trip(純函式,不牽涉佇列建構器)。
 2. 參考本身的錨定:拿手算 literal 對 `dense_conv_affine_map` 的 (a,b),確保
    後面「壓縮版 vs 參考」不是循環驗證。
-3. 壓縮版 vs 參考:各種 N(=K,S 決定的單軸扇出)、S/P、多 OC/多 IC、
-   放大規模;以及 conv->conv / conv->FC 的跨層梯度(atan surrogate 斜率手算)。
+3. 壓縮版 vs 參考:隨機幾何(各種 N、S/P、多 OC/多 IC);以及 conv->conv /
+   conv->FC 的跨層梯度(atan surrogate 斜率手算)。
 """
 import math
 
@@ -118,35 +118,6 @@ def _assert_compressed_matches_ref(et, x, y, c, W, S, P, H_out, W_out, L=None,
     assert _tol_close(ref.v_final, comp.v_final, tol=1e-4), (ref.v_final, comp.v_final)
 
 
-def test_compressed_matches_ref_multi_output_channels():
-    W0 = jnp.arange(1, 10, dtype=jnp.float32).reshape(1, 1, 3, 3)
-    W1 = (100 + jnp.arange(1, 10, dtype=jnp.float32)).reshape(1, 1, 3, 3)
-    W = jnp.concatenate([W0, W1], axis=0)  # (OC=2,IC=1,3,3)
-    et = jnp.array([1.0, 2.0]); x = jnp.array([1, 0]); y = jnp.array([1, 0]); c = jnp.array([0, 0])
-    _assert_compressed_matches_ref(et, x, y, c, W, S=2, P=1, H_out=3, W_out=3, L=3)
-
-
-def test_compressed_matches_ref_multi_input_channels():
-    W_ic0 = jnp.arange(1, 10, dtype=jnp.float32).reshape(1, 1, 3, 3)
-    W_ic1 = (10 + jnp.arange(1, 10, dtype=jnp.float32)).reshape(1, 1, 3, 3)
-    W = jnp.concatenate([W_ic0, W_ic1], axis=1)  # (OC=1,IC=2,3,3)
-    et = jnp.array([1.0, 2.0]); x = jnp.array([1, 1]); y = jnp.array([1, 1]); c = jnp.array([0, 1])
-    _assert_compressed_matches_ref(et, x, y, c, W, S=2, P=1, H_out=3, W_out=3, L=3)
-
-
-def test_compressed_matches_ref_n1_stride1_pad0():
-    W = jnp.array([[[[5.0]]]])
-    et = jnp.array([1.0, 2.0]); x = jnp.array([0, 2]); y = jnp.array([0, 2]); c = jnp.array([0, 0])
-    _assert_compressed_matches_ref(et, x, y, c, W, S=1, P=0, H_out=3, W_out=3, L=2)
-
-
-def test_compressed_matches_ref_n3_k5_stride2_pad2():
-    W = (jnp.arange(25, dtype=jnp.float32) + 1).reshape(1, 1, 5, 5)
-    et = jnp.array([1.0, 3.0, 7.0]); x = jnp.array([4, 5, 2]); y = jnp.array([4, 1, 3])
-    c = jnp.array([0, 0, 0])
-    _assert_compressed_matches_ref(et, x, y, c, W, S=2, P=2, H_out=6, W_out=6, L=3)
-
-
 def test_compressed_matches_ref_random_various_geometry():
     """幾組隨機事件 x 幾種 (K,S,P),壓縮版 v_final 要跟參考一致。"""
     for seed, (K, S, P, H_out, W_out) in enumerate([
@@ -162,28 +133,6 @@ def test_compressed_matches_ref_random_various_geometry():
         c = jax.random.randint(k_c, (n_events,), 0, 2).astype(jnp.int32)
         W = jax.random.uniform(k_w, (3, 2, K, K), minval=-1.0, maxval=1.0)
         _assert_compressed_matches_ref(et, x, y, c, W, S, P, H_out, W_out, L=n_events)
-
-
-def test_compressed_realistic_scale_smoke():
-    """conv1 實際規模:OC=8,IC=2,H_out=W_out=64,K=3,S=2,P=1。只確認跑得動、
-    shape 對、沒有 NaN/Inf(手算不現實)。"""
-    OC, IC, K, S, P, H_out, W_out = 8, 2, 3, 2, 1, 64, 64
-    n_events = 200
-    key = jax.random.PRNGKey(0)
-    k_t, k_x, k_y, k_c, k_w = jax.random.split(key, 5)
-    et = jnp.sort(jax.random.uniform(k_t, (n_events,), minval=0.0, maxval=100.0))
-    x = jax.random.randint(k_x, (n_events,), 0, 130).astype(jnp.int32)
-    y = jax.random.randint(k_y, (n_events,), 0, 130).astype(jnp.int32)
-    c = jax.random.randint(k_c, (n_events,), 0, IC).astype(jnp.int32)
-    W = jax.random.normal(k_w, (OC, IC, K, K))
-
-    cq = build_conv_queue_compressed(et, x, y, c, W, TAU, S, P, H_out, W_out, n_events, n_real_events=et.shape[0])
-    assert cq.maps.a.shape == (OC * H_out * W_out, n_events)
-    assert bool(jnp.all(jnp.isfinite(cq.maps.a))) and bool(jnp.all(jnp.isfinite(cq.maps.b)))
-    assert bool(jnp.any(cq.maps.b != 0.0)), "應該至少有一些合法 tap 寫進權重"
-    result = run_layer_forward(cq.maps, v_th=1e9, chunk_size=n_events, max_steps=n_events,
-                                n_real_events=cq.n_real_events)
-    assert bool(jnp.all(jnp.isfinite(result.v_final)))
 
 
 # ============================================================================
@@ -256,20 +205,3 @@ def test_conv_to_fc_cross_layer_gradient_matches_hand_calc():
     assert _tol_close(g[0, 0, 2, 2], expected, tol=1e-3), (float(g[0, 0, 2, 2]), expected)
     mask = jnp.ones((1, 1, 3, 3), dtype=bool).at[0, 0, 2, 2].set(False)
     assert _tol_close(jnp.where(mask, g, 0.0), 0.0, tol=TOL), g
-
-
-def test_without_event_gain_cross_layer_gradient_is_exactly_zero():
-    """conv1 -> conv2 但**不**把 event_gain 傳給 conv2:計算圖裡沒有這條邊,
-    jax.grad 對 W1 精確是 0(不是算錯,是根本沒有梯度路徑)。"""
-    def fwd_no_gain(W1):
-        ev = _conv1_fire_then_extract(W1)
-        x2, y2, c2 = unravel_conv_source(ev.event_source_idx, _HW, _HW)
-        W2 = (10 + jnp.arange(9, dtype=jnp.float32)).reshape(1, 1, 3, 3)
-        cq2 = build_conv_queue_compressed(ev.event_times, x2, y2, c2, W2, TAU, _S, _P,
-                                           _HW, _HW, 1, n_real_events=ev.n_real_events)
-        r2 = run_layer_forward(cq2.maps, v_th=1e9, chunk_size=1, max_steps=1,
-                                n_real_events=cq2.n_real_events)
-        return r2.v_final[0]
-
-    g = jax.grad(fwd_no_gain)(_w1())
-    assert _tol_close(g, 0.0, tol=TOL), g

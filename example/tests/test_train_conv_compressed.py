@@ -1,7 +1,8 @@
 """壓縮容量旋鈕動態放大機制(`example/train_conv_compressed.py`)的測試。沿用真實
-N-MNIST 小規模資料(`_base_cfg` 內嵌的骨架:max_events=2000、train_size=16、
+N-MNIST 小規模資料(`_train_runs.base_cfg`:max_events=2000、train_size=16、
 val_size=8),不用合成資料;不碰 train_conv_compressed.py 本身,只呼叫它公開
-的函式/`train()` entrypoint。
+的函式/`train()` entrypoint。訓練寫在暫存目錄;「一開始就給夠容量」的對照組
+共用 conftest.py 的 reference_run,整套測試只訓練一次。
 
 step 4b 起,每個 conv 層有兩個會出界的容量:壓縮佇列長度 `L`、輸出 spike
 上界 `max_out_spikes`。兩者同一套機制:偵測 -> 該層 `grown_to_fit` 放大 ->
@@ -9,7 +10,7 @@ step 4b 起,每個 conv 層有兩個會出界的容量:壓縮佇列長度 `L`、
 出界直接 raise」)。放大公式:`new = ceil(max(observed, old) * grow_factor)`,
 每個旋鈕各自一個 grow_factor。
 
-**校準說明**:B/C/D 類測試要精準命中「第一個 epoch 就出界」「存過 checkpoint
+**校準說明**:B 類測試要精準命中「第一個 epoch 就出界」「存過 checkpoint
 之後才出界」「連續出界兩次」「最後一個 epoch 才出界」這些邊界,用到的
 conv2_L_init/seed 是實際跑校準量出來的(固定 seed_train=0/train_size=16/
 batch_size=4,用夠大的容量不截斷任何東西,記錄每個 (epoch,batch) 真正的
@@ -36,40 +37,31 @@ w_conv1/w_conv2/w_fc 兩次獨立訓練後 max|diff| 落在 1e-7~5e-7,loss/val_a
 整數計數(驅動出界判斷的 max_real_queue)、epoch 編號、容量欄位這些不牽涉
 浮點規約重算的,一律維持逐位元/逐值精確比對。
 """
-import contextlib
 import csv
-import io
 import math
 import os
 import re
-import shutil
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 import pytest
-import yaml
 
 from salt_core.layers import LayerDiag
-from example.models.conv_net import ConvNetCompressed, build_network
-from example.paths import EXPERIMENTS_DIR
-from example.checkpoint import Checkpointer
+from example.models.conv_net import build_network
+from example.tests._train_runs import base_cfg, run_capture
 from example.train_conv_compressed import (_build_learning_rate, _build_optimizer,
-                                            _cross_entropy_loss, train)
+                                            _cross_entropy_loss)
 from example.utils import TRAIN_DIRNAME
 
-# 這份 e2e 測試會呼叫真正的 train(),每個案例吐一個 conv_compressed_*_<時間戳>
-# 目錄。全部關進 experiments/TEST_TEMP,而且「一次只留最後一批」——模組載入
-# (= 這一輪 pytest)開頭就把上一輪的整包清掉,不再無限累積。
-_TEST_TEMP = os.path.join(EXPERIMENTS_DIR, "TEST_TEMP")
-shutil.rmtree(_TEST_TEMP, ignore_errors=True)
-os.makedirs(_TEST_TEMP, exist_ok=True)
-
-_TMP_DIR = os.path.join(_TEST_TEMP, "_configs")
-os.makedirs(_TMP_DIR, exist_ok=True)
-
 _TRAIN_RESULT_TOL = 1e-4
+
+
+@pytest.fixture(scope="module")
+def run_root(tmp_path_factory):
+    """這個檔案的訓練都寫在同一個暫存目錄。"""
+    return tmp_path_factory.mktemp("train_runs")
 
 
 def _assert_params_close(params_a, params_b, msg_prefix: str) -> None:
@@ -79,57 +71,6 @@ def _assert_params_close(params_a, params_b, msg_prefix: str) -> None:
         max_diff = float(jnp.max(jnp.abs(a - b)))
         assert max_diff <= _TRAIN_RESULT_TOL, (
             f"{msg_prefix}:層[{i}] max|Δ|={max_diff:.3e} 超過容差 {_TRAIN_RESULT_TOL:.0e}")
-
-
-def _base_cfg(run_name: str, seed: int, conv2_L_init: int, grow: float, epochs: int,
-              conv1_L_init: int = 185, conv1_max_out_init: int = 8000,
-              conv2_max_out_init: int = 35000, train_size: int = 16, val_size: int = 8) -> dict:
-    """小規模骨架(config 是 model.layers list 形式,
-    見 example/models/conv_net.py build_network),只留這份測試真正要調整的欄位當
-    參數。`grow` 一次設定全部四個容量旋鈕的放大倍率(測試從沒需要它們互不
-    相同)。`conv1_max_out_init` / `conv2_max_out_init` 預設給足(seed 1..42
-    小規模不出界),E 類測試再覆寫成小值。"""
-    def _conv(oc, L, max_out):
-        return {"type": "conv", "oc": oc, "k": 3, "s": 2, "p": 1,
-                "tau": 16.0, "v_th": 1.0, "alpha": 2.0, "chunk_size": 1,
-                "L": L, "max_out_spikes": max_out, "init_k": 8.0 if oc == 8 else 64.0,
-                "L_grow_factor": grow, "out_grow_factor": grow}
-    return {
-        "run_name": run_name,
-        "model": {
-            "decoder": "membrane_regression",
-            "input_shape": [2, 34, 34],
-            "layers": [
-                _conv(8, conv1_L_init, conv1_max_out_init),
-                _conv(16, conv2_L_init, conv2_max_out_init),
-                {"type": "fc", "name": "out", "n_out": 10, "tau": 16.0,
-                 "v_th": 1.0e9, "alpha": 2.0, "chunk_size": 512, "init_k": 5.0},
-            ],
-        },
-        "data": {
-            "max_events": 2000, "train_size": train_size, "val_size": val_size,
-            "seed_train": 0, "seed_val": 0,
-        },
-        "train": {
-            "lr": 1.0e-2, "epochs": epochs, "batch_size": 4, "seed": seed,
-        },
-    }
-
-
-def _write_yaml(cfg: dict) -> str:
-    path = os.path.join(_TMP_DIR, f"{cfg['run_name']}.yaml")
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f, allow_unicode=True)
-    return path
-
-
-def _run_capture(config_path: str):
-    """跑 `train(config_path)`,同時把訓練過程的 print(含 `[出界]` 訊息)整段
-    接下來——B/C 類測試要驗證「出界訊息真的印了幾次、內容對不對」。"""
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        result = train(config_path, exp_root=_TEST_TEMP)
-    return result, buf.getvalue()
 
 
 def _read_metrics_csv(exp_dir: str) -> list:
@@ -167,75 +108,14 @@ def _assert_grow_formula(knob: dict, grow: float) -> None:
 # A. 純函式層級
 # ============================================================================
 
-def test_checkpoint_roundtrip_preserves_all_fields():
-    """合成小尺寸 params(對齊 layer list 的 weight tuple)+opt_state,存了再讀
-    回來,逐位元比對每層權重、Adam opt_state(含 count/mu/nu)、shuffle_key、
-    epoch。"""
-    cfg = _base_cfg("roundtrip", seed=0, conv2_L_init=32, grow=1.5, epochs=1)
-    net = ConvNetCompressed(build_network(cfg["model"]))
-    params = net.init(jax.random.PRNGKey(123))
-    optimizer = optax.adam(1e-2)
-    opt_state = optimizer.init(params)
 
-    fake_grad = jax.tree_util.tree_map(lambda w: jnp.ones_like(w) * 0.01, params)
-    for _ in range(2):
-        updates, opt_state = optimizer.update(fake_grad, opt_state, params)
-        params = optax.apply_updates(params, updates)
-
-    shuffle_key = jax.random.PRNGKey(999)
-    epoch = 7
-    ckpt = Checkpointer(os.path.join(_TMP_DIR, "roundtrip_test.npz"))
-    ckpt.save(params=params, opt_state=opt_state, shuffle_key=shuffle_key, epoch=epoch)
-    assert ckpt.exists() and ckpt.last_epoch == epoch
-
-    template_params = net.init(jax.random.PRNGKey(0))
-    template_opt_state = optimizer.init(template_params)
-    loaded_params, loaded_opt_state, loaded_shuffle_key, loaded_epoch = ckpt.load(
-        params_template=template_params, opt_state_template=template_opt_state)
-
-    assert len(params) == len(loaded_params)
-    for i, (orig, loaded) in enumerate(zip(params, loaded_params)):
-        assert jnp.array_equal(orig, loaded), f"params[{i}] 讀回後不一致"
-
-    orig_leaves, _ = jax.tree_util.tree_flatten(opt_state)
-    loaded_leaves, _ = jax.tree_util.tree_flatten(loaded_opt_state)
-    assert len(orig_leaves) == len(loaded_leaves)
-    for i, (o, l) in enumerate(zip(orig_leaves, loaded_leaves)):
-        assert jnp.array_equal(jnp.asarray(o), jnp.asarray(l)), f"opt_state leaf[{i}] 不一致"
-
-    assert jnp.array_equal(shuffle_key, loaded_shuffle_key)
-    assert loaded_epoch == epoch
-
-
-def test_optax_adamw_weight_decay_pulls_params_with_zero_gradient():
-    """`train_conv_compressed.train()` 把 `optax.adam` 換成
-    `optax.adamw(lr, weight_decay=train_cfg.get("weight_decay", 0.0))`
-    (docs/math/梯度下降曲率穩定性推導.md §8.2)。這裡直接測 `optax.adamw` 本身
-    decoupled weight decay 的行為:即使梯度是 0,只要 `weight_decay>0`,update
-    仍然非 0——直接對 params 做縮放,不經過 Adam 的動量/自適應縮放。
-    `weight_decay=0`(預設,等價於原本的 `optax.adam`)時,Adam 對 0 梯度的
-    update 恆為 0,兩者要能區分開才算真的接上 decoupled 這條路,不是普通 L2。"""
-    params = {"w": jnp.array([10.0, 10.0, 10.0])}
-    zero_grad = {"w": jnp.zeros((3,))}
-
-    no_decay = optax.adamw(1e-2, weight_decay=0.0)
-    no_decay_updates, _ = no_decay.update(zero_grad, no_decay.init(params), params)
-    assert float(jnp.linalg.norm(no_decay_updates["w"])) == 0.0
-
-    with_decay = optax.adamw(1e-2, weight_decay=1.0)
-    with_decay_updates, _ = with_decay.update(zero_grad, with_decay.init(params), params)
-    assert float(jnp.linalg.norm(with_decay_updates["w"])) > 0.0
-
-
-def test_weight_decay_knob_plumbed_through_training_and_checkpoint():
-    """`train.weight_decay` 從 config 讀到、接進真正的 `train()` entrypoint,
-    含 checkpoint 存讀(`optax.adamw` 的 opt_state 形狀跟 `optax.adam` 不同,
-    多一份 decoupled decay 用不到額外 state,但整條 while 外圈的重編譯/存讀
-    路徑要能正常跑完 2 個 epoch,不出錯)。"""
-    cfg = _base_cfg("weight_decay_smoke", seed=0, conv2_L_init=2000, grow=1.5, epochs=2)
-    cfg["train"]["weight_decay"] = 1e-4
-    path = _write_yaml(cfg)
-    exp_dir, _, _, _, _, _ = train(path, exp_root=_TEST_TEMP)
+def test_optimizer_knobs_run_through_training(run_root):
+    """weight_decay、grad_clip_norm、score_cap、lr_cosine_decay 全開,從 config 接進
+    train(),跑完 2 個 epoch。opt_state 的存讀另外在 test_checkpoint.py 測。"""
+    cfg = base_cfg("optimizer_knobs_smoke", seed=0, conv2_L_init=2000, grow=1.5, epochs=2)
+    cfg["train"].update(weight_decay=1e-4, grad_clip_norm=10.0, score_cap=6.0,
+                        lr_cosine_decay=True)
+    (exp_dir, *_), _stdout = run_capture(cfg, run_root)
     rows = _read_metrics_csv(exp_dir)
     assert [int(r["epoch"]) for r in rows] == [0, 1]
 
@@ -277,18 +157,6 @@ def test_grad_clip_norm_changes_update_relative_to_unclipped():
     assert not jnp.allclose(upd_u["w"], upd_c["w"])
 
 
-def test_grad_clip_norm_knob_plumbed_through_training_and_checkpoint():
-    """`train.grad_clip_norm` 從 config 讀到、接進真正的 `train()` entrypoint,
-    整條 while 外圈的重編譯/存讀路徑要能正常跑完 2 個 epoch,不出錯(chain
-    多一段 clip transform,opt_state 的形狀也跟著多一份,要能正常存讀)。"""
-    cfg = _base_cfg("grad_clip_norm_smoke", seed=0, conv2_L_init=2000, grow=1.5, epochs=2)
-    cfg["train"]["grad_clip_norm"] = 10.0
-    path = _write_yaml(cfg)
-    exp_dir, _, _, _, _, _ = train(path, exp_root=_TEST_TEMP)
-    rows = _read_metrics_csv(exp_dir)
-    assert [int(r["epoch"]) for r in rows] == [0, 1]
-
-
 def test_score_cap_none_matches_plain_cross_entropy():
     """`score_cap=None`(預設)時,`_cross_entropy_loss` 要跟原始
     `optax.softmax_cross_entropy` 逐位元一致——這是「不設就是原樣通過」的
@@ -327,17 +195,6 @@ def test_score_cap_saturates_extreme_scores_to_a_fixed_loss():
     assert float(loss_1e6[0]) > 1e-4  # 有實質下限,不會被沖到趨近 0
 
 
-def test_score_cap_knob_plumbed_through_training_and_checkpoint():
-    """`train.score_cap` 從 config 讀到、接進真正的 `train()` entrypoint,
-    整條 while 外圈的重編譯/存讀路徑要能正常跑完 2 個 epoch,不出錯。"""
-    cfg = _base_cfg("score_cap_smoke", seed=0, conv2_L_init=2000, grow=1.5, epochs=2)
-    cfg["train"]["score_cap"] = 6.0
-    path = _write_yaml(cfg)
-    exp_dir, _, _, _, _, _ = train(path, exp_root=_TEST_TEMP)
-    rows = _read_metrics_csv(exp_dir)
-    assert [int(r["epoch"]) for r in rows] == [0, 1]
-
-
 def test_build_learning_rate_without_cosine_decay_returns_plain_float():
     """`train.lr_cosine_decay` 不填(預設)時,`_build_learning_rate` 原樣
     傳回 `train.lr` 這個純量,不包成 schedule——這是「不設就是原樣通過」的
@@ -362,24 +219,12 @@ def test_build_learning_rate_cosine_decay_starts_high_ends_low():
     assert float(schedule(total_steps - 1)) < 1e-2 * 0.01  # alpha=0,退火到接近 0
 
 
-def test_lr_cosine_decay_knob_plumbed_through_training_and_checkpoint():
-    """`train.lr_cosine_decay` 從 config 讀到、接進真正的 `train()`
-    entrypoint,整條 while 外圈的重編譯/存讀路徑要能正常跑完 2 個 epoch,
-    不出錯(schedule 存在 opt_state 的內部 step 計數要能正確存讀)。"""
-    cfg = _base_cfg("lr_cosine_smoke", seed=0, conv2_L_init=2000, grow=1.5, epochs=2)
-    cfg["train"]["lr_cosine_decay"] = True
-    path = _write_yaml(cfg)
-    exp_dir, _, _, _, _, _ = train(path, exp_root=_TEST_TEMP)
-    rows = _read_metrics_csv(exp_dir)
-    assert [int(r["epoch"]) for r in rows] == [0, 1]
-
-
 def test_grown_to_fit_bumps_only_the_overflowing_knob():
     """`ConvLayer.grown_to_fit`:出界的旋鈕按公式放大,沒出界的旋鈕跟其他欄位
     原封不動;完全不出界時回傳自己(同一個物件)。這是動態放大機制的地基——
     如果 grown_to_fit 不小心動到別的欄位,重編譯後的模型就不再等價於「一開始
     就用大容量」。"""
-    cfg = _base_cfg("grow_unit", seed=0, conv2_L_init=100, grow=1.5, epochs=1,
+    cfg = base_cfg("grow_unit", seed=0, conv2_L_init=100, grow=1.5, epochs=1,
                      conv2_max_out_init=2000)
     _, conv2, _ = build_network(cfg["model"])
 
@@ -424,12 +269,12 @@ def test_grown_to_fit_bumps_only_the_overflowing_knob():
 # B. 狀態機邊界情況
 # ============================================================================
 
-def test_conv1_L_overflow_grows_not_raises():
+def test_conv1_L_overflow_grows_not_raises(run_root):
     """故意設過小的 conv1_L_init,確認 conv1 的 L 跟其他旋鈕一樣被動態放大、
     訓練正常跑完(不再像舊版那樣直接 raise)。"""
-    cfg = _base_cfg("b_conv1_L_grow", seed=42, conv2_L_init=5000, grow=1.5, epochs=2,
+    cfg = base_cfg("b_conv1_L_grow", seed=42, conv2_L_init=5000, grow=1.5, epochs=2,
                      conv1_L_init=5)  # 真實 max_real_queue 落在 ~100+,5 保證第一個 batch 就出界
-    (exp_dir, _, _, _, _, final_cfg), stdout = _run_capture(_write_yaml(cfg))
+    (exp_dir, _, _, _, _, final_cfg), stdout = run_capture(cfg, run_root)
 
     ovs = _parse_overflows(stdout)
     assert ovs, "conv1_L_init=5 應該要觸發出界"
@@ -442,14 +287,14 @@ def test_conv1_L_overflow_grows_not_raises():
     assert [int(r["epoch"]) for r in rows] == [0, 1], "最終應正常跑完 2 個 epoch"
 
 
-def test_conv2_L_overflow_before_first_checkpoint_reinits_with_same_seed():
+def test_conv2_L_overflow_before_first_checkpoint_reinits_with_same_seed(run_root, reference_run):
     """conv2_L_init 設到必定在 epoch0 batch0 就出界(校準:seed=42 epoch0 batch0
     的 max_real_queue≈874)。出界發生在還沒套用任何梯度更新之前,退回「訓練
     最初始狀態」應該跟「一開始就用夠大的 L 直接訓練」等價(容差比對,見檔案
     開頭)。"""
     l_init = 32
-    overflow_cfg = _base_cfg("b_reinit_attempt", seed=42, conv2_L_init=l_init, grow=2.0, epochs=2)
-    (_, _, params_a, _, _, cfg_a), stdout_a = _run_capture(_write_yaml(overflow_cfg))
+    overflow_cfg = base_cfg("b_reinit_attempt", seed=42, conv2_L_init=l_init, grow=2.0, epochs=2)
+    (_, _, params_a, _, _, cfg_a), stdout_a = run_capture(overflow_cfg, run_root)
 
     ovs = _parse_overflows(stdout_a)
     assert ovs, "conv2_L_init=32 應觸發出界"
@@ -462,21 +307,20 @@ def test_conv2_L_overflow_before_first_checkpoint_reinits_with_same_seed():
                     if kk["layer"] == "conv2" and kk["knob"] == "L"][-1]
     assert cfg_a["final_capacity"]["conv2"]["L"] == last_conv2_L["new"]
 
-    reference_cfg = _base_cfg("b_reinit_reference", seed=42, conv2_L_init=5000, grow=2.0, epochs=2)
-    (_, _, params_b, _, _, _), stdout_b = _run_capture(_write_yaml(reference_cfg))
+    (_, _, params_b, _, _, _), stdout_b = reference_run
     assert not _parse_overflows(stdout_b), "reference 用 conv2_L=5000 應全程夠用"
 
     _assert_params_close(params_a, params_b, "出界重來 vs 直接用足夠大 L 訓練")
 
 
-def test_conv2_L_overflow_mid_epoch_discards_partial_epoch_updates():
+def test_conv2_L_overflow_mid_epoch_discards_partial_epoch_updates(run_root, reference_run):
     """挑一個讓「第 2 個 batch」才出界的 conv2_L_init(校準:seed=42 epoch0
     四個 batch 約 874/1050/1004/847,L=900 讓 batch0 先正常更新一次,batch1
     才出界)。驗證重來後結果仍跟「直接用夠大 L」在容差內一致——batch0 那次
     更新若沒被正確丟棄,結果會差到遠超 float32 雜訊。"""
     l_init = 900
-    overflow_cfg = _base_cfg("b_midepoch_attempt", seed=42, conv2_L_init=l_init, grow=2.0, epochs=2)
-    (_, _, params_a, _, _, cfg_a), stdout_a = _run_capture(_write_yaml(overflow_cfg))
+    overflow_cfg = base_cfg("b_midepoch_attempt", seed=42, conv2_L_init=l_init, grow=2.0, epochs=2)
+    (_, _, params_a, _, _, cfg_a), stdout_a = run_capture(overflow_cfg, run_root)
 
     ovs = _parse_overflows(stdout_a)
     assert len(ovs) == 1, f"預期剛好一次出界,實際 {len(ovs)}:{ovs}"
@@ -486,14 +330,13 @@ def test_conv2_L_overflow_mid_epoch_discards_partial_epoch_updates():
     k = next(k for k in ov["knobs"] if k["layer"] == "conv2" and k["knob"] == "L")
     _assert_grow_formula(k, 2.0)
 
-    reference_cfg = _base_cfg("b_midepoch_reference", seed=42, conv2_L_init=5000, grow=2.0, epochs=2)
-    (_, _, params_b, _, _, _), stdout_b = _run_capture(_write_yaml(reference_cfg))
+    (_, _, params_b, _, _, _), stdout_b = reference_run
     assert not _parse_overflows(stdout_b)
 
     _assert_params_close(params_a, params_b, "mid-epoch 出界重來 vs 直接用足夠大 L")
 
 
-def test_conv2_L_overflow_after_checkpoint_resumes_from_disk_not_reinit():
+def test_conv2_L_overflow_after_checkpoint_resumes_from_disk_not_reinit(run_root):
     """先讓訓練正常跑完至少 1 個 epoch(存過 checkpoint),再讓後續某 batch
     出界。校準:seed=1 約 epoch0=[933,943,1011,780]、epoch1=[921,1016,952,836]
     ——conv2_L_init=1011 讓 epoch0 剛好完整跑完,epoch1 第 2 個 batch 才出界。
@@ -501,8 +344,8 @@ def test_conv2_L_overflow_after_checkpoint_resumes_from_disk_not_reinit():
     驗證:如果「讀 checkpoint 續練」被誤植成「整個重新 init」,start_epoch 會
     錯誤變回 0,epoch0 被重複執行——metrics.csv 就會出現重複 epoch 或超行。"""
     epochs = 3
-    cfg = _base_cfg("b_resume_from_checkpoint", seed=1, conv2_L_init=1011, grow=2.0, epochs=epochs)
-    (exp_dir, _, _, _, _, final_cfg), stdout = _run_capture(_write_yaml(cfg))
+    cfg = base_cfg("b_resume_from_checkpoint", seed=1, conv2_L_init=1011, grow=2.0, epochs=epochs)
+    (exp_dir, _, _, _, _, final_cfg), stdout = run_capture(cfg, run_root)
 
     ovs = _parse_overflows(stdout)
     assert ovs, "應該至少出界一次"
@@ -525,13 +368,13 @@ def test_conv2_L_overflow_after_checkpoint_resumes_from_disk_not_reinit():
     assert int(final_ckpt["epoch"]) == epochs - 1
 
 
-def test_conv2_L_overflow_multiple_times_eventually_converges():
+def test_conv2_L_overflow_multiple_times_eventually_converges(run_root):
     """conv2_L_init 設極小(1),搭配保守放大倍率(1.01——只這個測試用)。校準:
     seed=42 epoch0 約 874/1050/1004/847——L=1 出界放大到 ceil(874*1.01)≈883
     (仍小於後面的 batch),要再度出界放大到 ceil(~1050*1.01)≈1061 才夠。
     驗證最終能正常跑完、不再出界,且過程真的出現至少兩次出界。"""
-    cfg = _base_cfg("b_multi_overflow", seed=42, conv2_L_init=1, grow=1.01, epochs=2)
-    (exp_dir, _, _, _, _, _), stdout = _run_capture(_write_yaml(cfg))
+    cfg = base_cfg("b_multi_overflow", seed=42, conv2_L_init=1, grow=1.01, epochs=2)
+    (exp_dir, _, _, _, _, _), stdout = run_capture(cfg, run_root)
 
     n_overflows = stdout.count("[出界]")
     assert n_overflows >= 2, f"L=1 配保守倍率應逼出至少兩次連續出界,實際 {n_overflows} 次"
@@ -543,13 +386,13 @@ def test_conv2_L_overflow_multiple_times_eventually_converges():
         "收斂後 conv2_max_event_queue 不該再變"
 
 
-def test_conv2_L_overflow_on_final_epoch_still_detected():
+def test_conv2_L_overflow_on_final_epoch_still_detected(run_root):
     """出界恰好發生在最後一個 epoch(seed=1,conv2_L_init=1011,epochs=2)。驗證
     不會被誤判成訓練正常結束——`overflowed` 旗標要跟 `epoch == epochs-1` 邊界
     正確交叉確認。"""
     epochs = 2
-    cfg = _base_cfg("b_final_epoch_overflow", seed=1, conv2_L_init=1011, grow=2.0, epochs=epochs)
-    (exp_dir, _, _, _, _, final_cfg), stdout = _run_capture(_write_yaml(cfg))
+    cfg = base_cfg("b_final_epoch_overflow", seed=1, conv2_L_init=1011, grow=2.0, epochs=epochs)
+    (exp_dir, _, _, _, _, final_cfg), stdout = run_capture(cfg, run_root)
 
     ovs = _parse_overflows(stdout)
     assert ovs, "最後一個 epoch 出界的訊息不該被吃掉"
@@ -561,70 +404,27 @@ def test_conv2_L_overflow_on_final_epoch_still_detected():
 
 
 # ============================================================================
-# C. 不變量測試
-# ============================================================================
-
-def test_sufficient_L_headroom_does_not_change_result():
-    """兩個都足夠大、確定不出界的 conv2_L(1100 剛好夠、2200 是兩倍),各自
-    完整跑同樣 epoch 數,比對最終 params 在容差內一致——「放大重來語義上等價
-    於一開始就用夠大的值」的核心證據,也是 build_conv_queue_compressed「L 留寬
-    不影響數值、只影響能不能塞下」在完整訓練迴圈下的再次確認。"""
-    epochs = 3
-    cfg_a = _base_cfg("c_headroom_just_enough", seed=42, conv2_L_init=1100, grow=2.0, epochs=epochs)
-    cfg_b = _base_cfg("c_headroom_double", seed=42, conv2_L_init=2200, grow=2.0, epochs=epochs)
-
-    (_, _, params_a, _, _, _), stdout_a = _run_capture(_write_yaml(cfg_a))
-    (_, _, params_b, _, _, _), stdout_b = _run_capture(_write_yaml(cfg_b))
-
-    assert not _parse_overflows(stdout_a), "conv2_L=1100 對 seed=42 小規模應全程夠用"
-    assert not _parse_overflows(stdout_b)
-
-    _assert_params_close(params_a, params_b, "conv2_L=1100 vs 2200(L 留多寬不該影響結果)")
-
-
-# ============================================================================
-# D. 輸出正確性
-# ============================================================================
-
-def test_metrics_csv_capacity_columns_reflect_growth_after_overflow():
-    """出界之後所有 row 的容量欄位要反映新值,不能停在舊值——沿用「先完整跑完
-    1 個 epoch、之後才出界」的校準(seed=1,conv2_L_init=1011)。"""
-    epochs = 3
-    cfg = _base_cfg("d_capacity_column_growth", seed=1, conv2_L_init=1011, grow=2.0, epochs=epochs)
-    (exp_dir, _, _, _, _, _), stdout = _run_capture(_write_yaml(cfg))
-
-    rows = _read_metrics_csv(exp_dir)
-    ovs = _parse_overflows(stdout)
-    assert ovs, "應該出界一次"
-    ov = ovs[0]
-    assert ov["epoch"] >= 1
-    k = next(kk for kk in ov["knobs"] if kk["layer"] == "conv2" and kk["knob"] == "L")
-    assert int(rows[0]["conv2_max_event_queue"]) == 1011, "出界前(epoch0)記錄舊值"
-    assert int(rows[ov["epoch"]]["conv2_max_event_queue"]) == k["new"], "出界那個 epoch 記錄新值"
-    assert int(rows[-1]["conv2_max_event_queue"]) == k["new"], "之後也是新值,不會又變回舊值"
-
-
-# ============================================================================
-# E. 輸出 spike 上界(max_out_spikes)的動態偵測
+# C. 輸出 spike 上界(max_out_spikes)的動態偵測
 # ============================================================================
 
 def _buf_cfg(run_name: str, **buf_overrides) -> dict:
-    """_base_cfg 的 E 類變體:conv2_L 給足(5000,隔離掉 L 出界),再把某個
-    conv 層的 max_out_spikes 覆寫成會出界的小值。buf_overrides 用
+    """base_cfg 的 C 類變體:設定跟參考訓練相同(conv2_L=5000 隔離掉 L 出界),
+    只把某個 conv 層的 max_out_spikes 覆寫成會出界的小值。buf_overrides 用
     conv1_max_out_init / conv2_max_out_init 指定。"""
-    cfg = _base_cfg(run_name, seed=42, conv2_L_init=5000, grow=1.5, epochs=2)
+    cfg = base_cfg(run_name, seed=42, conv2_L_init=5000, grow=2.0, epochs=2)
     idx = {"conv1_max_out_init": 0, "conv2_max_out_init": 1}
     for key, val in buf_overrides.items():
         cfg["model"]["layers"][idx[key]]["max_out_spikes"] = val
     return cfg
 
 
-def test_conv_output_buffer_overflow_detected_and_grown():
+def test_conv_output_buffer_overflow_grows_and_matches_generous_start(run_root, reference_run):
     """conv2_max_out 設到必定在第一個 batch 就出界。驗證:偵測觸發、印出
     `[出界]`(帶 max_out 旋鈕)、放大後正常跑完 2 個 epoch、不再出界、
-    metrics/final_cfg 反映新值、沒有 NaN。"""
-    cfg = _buf_cfg("e_buf_overflow", conv2_max_out_init=500)
-    (exp_dir, _, _, _, _, final_cfg), stdout = _run_capture(_write_yaml(cfg))
+    metrics/final_cfg 反映新值、沒有 NaN;出界發生在還沒存 checkpoint 前,
+    是乾淨的整個重來,結果要跟一開始就給夠(參考訓練)在容差內一致。"""
+    cfg = _buf_cfg("c_buf_overflow", conv2_max_out_init=500)
+    (exp_dir, _, final_params, _, _, final_cfg), stdout = run_capture(cfg, run_root)
 
     ovs = _parse_overflows(stdout)
     assert ovs, "conv2_max_out=500 應觸發出界"
@@ -632,7 +432,7 @@ def test_conv_output_buffer_overflow_detected_and_grown():
                      if k["layer"] == "conv2" and k["knob"] == "max_out"]
     assert max_out_knobs, f"應看到 conv2 max_out 被放大:{ovs}"
     for k in max_out_knobs:
-        _assert_grow_formula(k, 1.5)
+        _assert_grow_formula(k, 2.0)
     assert not [k for ov in ovs for k in ov["knobs"] if k["knob"] == "L"], \
         "conv2_L=5000 應全程夠用,這裡只測 max_out"
 
@@ -643,17 +443,6 @@ def test_conv_output_buffer_overflow_detected_and_grown():
         assert not math.isnan(float(r["train_loss"]))
     assert int(rows[-1]["conv2_max_layer_spikes"]) == final_cfg["final_capacity"]["conv2"]["max_out_spikes"]
 
-
-def test_conv_output_buffer_grow_result_matches_generous_start():
-    """max_out「小起始 -> 出界放大」跟「一開始就給夠」訓練結果在容差內一致
-    ——跟 L headroom 不變量同一個道理。出界發生在還沒存 checkpoint 前,是
-    乾淨的整個重來。"""
-    small = _buf_cfg("e_buf_small", conv2_max_out_init=500)
-    big = _buf_cfg("e_buf_big")  # max_out 沿用 _base_cfg 已足夠大的預設
-
-    (_, _, params_small, _, _, _), stdout_small = _run_capture(_write_yaml(small))
-    (_, _, params_big, _, _, _), stdout_big = _run_capture(_write_yaml(big))
-
-    assert _parse_overflows(stdout_small), "小起始值應出界"
-    assert not _parse_overflows(stdout_big), "_base_cfg 預設 max_out 對 seed=42 小規模應夠用"
-    _assert_params_close(params_small, params_big, "max_out 出界放大 vs 一開始就給夠")
+    (_, _, params_ref, _, _, _), stdout_ref = reference_run
+    assert not _parse_overflows(stdout_ref), "參考訓練的 max_out 預設值對 seed=42 小規模應夠用"
+    _assert_params_close(final_params, params_ref, "max_out 出界放大 vs 一開始就給夠")

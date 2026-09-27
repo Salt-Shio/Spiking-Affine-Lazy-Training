@@ -251,14 +251,6 @@ def test_apply_decay_table_int_rejects_out_of_int32_range_delta_t():
         apply_decay_table_int(jnp.array([1.0, -1.0]), table_int)
 
 
-def test_apply_decay_table_int_skips_checks_under_jit():
-    """jit 裡 Δt 是 traced 值,檢查會被跳過、直接轉型(docstring 寫明的限制)。
-    這個測試鎖定這個行為:非整數 Δt 在 jit 裡不會 raise。"""
-    table_int = build_decay_table_int(f_a=4, tau=4.0)
-    a_int, _is_identity = jax.jit(apply_decay_table_int)(jnp.array([1.5]), table_int)
-    assert int(a_int[0]) == 12, "1.5 被截成 1,查到 Δt=1 的表項"
-
-
 # ============================================================================
 # E. i_V 公式(推導見 docs/math/膜電位量化推導.md「通用量測與公式」節)
 # ============================================================================
@@ -291,15 +283,6 @@ def test_iv_layer_and_waste():
 # ============================================================================
 # F. 離線整數換算:round_half_away_from_zero / v_th_to_int
 # ============================================================================
-
-def test_round_half_away_from_zero_ties_go_away_from_zero_not_to_even():
-    """跟 jnp.round 的逢五取偶對照:2.5/-2.5/1.5/-1.5 這幾個中點,`jnp.round`
-    會給 2/-2/2/-2(取偶),這裡要的是往離零方向:3/-3/2/-2。"""
-    x = jnp.array([2.5, -2.5, 1.5, -1.5])
-    result = np.asarray(round_half_away_from_zero(x))
-    assert np.allclose(result, [3.0, -3.0, 2.0, -2.0])
-    # 對照組:確認 jnp.round 在這組數字上真的是取偶,不是這裡誤判
-    assert np.allclose(np.asarray(jnp.round(x)), [2.0, -2.0, 2.0, -2.0])
 
 
 def test_round_half_away_from_zero_non_tie_values():

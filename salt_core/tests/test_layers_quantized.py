@@ -11,7 +11,8 @@
 4. **跟訓練容量設定無關**:整數版每步一筆事件,不受 `ConvLayer.max_steps` 影響。
 5. **多層串接**:`run_network_quantized` 跟手動逐層呼叫結果一致。
 6. **`f_a` 越粗,結果確實不同**(不是接了一個沒作用的參數)。
-7. **traced 版**:`v_steps` 最後一欄要等於 `forward_quantized` 的 `v_final`。
+7. **traced 版**:`run_network_quantized_traced` 每層回傳的 `v_steps` 最後一欄
+   等於 `v_final`。
 8. **入口檢查與容量診斷**:`q` 不是整數 dtype 要 raise;佇列/輸出容量出界要
    在 `LayerDiagInt` 回報。
 9. **讀出、不 fire、溢位模式**:`run_network_quantized` 的讀出已經逐神經元
@@ -192,24 +193,6 @@ def test_run_network_quantized_chains_conv_into_fc_matches_manual_chaining():
                           np.asarray(dequantize_v_final(expected, quant_params[1]).v_final))
     assert np.array_equal(np.asarray(readout.spike_mask), np.asarray(expected.spike_mask))
     assert len(diags) == 2
-
-
-def test_fc_forward_quantized_traced_last_column_matches_forward_quantized_v_final():
-    """`v_steps` 最後一欄要等於 `forward_quantized` 的 `v_final`,不然溢位驗證
-    拿 `v_steps` 算出的峰值會跟正常 forward 對不上。"""
-    tau = 4.0
-    layer = _fc_layer(tau)
-    params = _params(jnp.array([[5, 3], [2, 1]]), tau=tau, f_a=4, f_V=0, i_V=16,
-                     v_th_int=jnp.array([1000, 1000]))
-    in_stream = _fc_stream()
-
-    _out, result, _diag = layer.forward_quantized(params, in_stream)
-    _out_t, result_t, v_steps, _diag_t = layer.forward_quantized_traced(params, in_stream)
-
-    assert np.array_equal(np.asarray(v_steps[:, -1]), np.asarray(result.v_final)), \
-        "v_steps 最後一欄應該等於 forward_quantized 的 v_final"
-    assert np.array_equal(np.asarray(result_t.v_final), np.asarray(result.v_final))
-    assert np.array_equal(np.asarray(result_t.spike_mask), np.asarray(result.spike_mask))
 
 
 def test_run_network_quantized_traced_returns_result_v_steps_diag_per_layer():

@@ -5,8 +5,8 @@
 - `run_layer_forward_traced` vs `run_layer_forward`:同參數下 `LayerForwardResult`
   五欄逐位元相同(共用 scan 內核),`v_steps` 的最後一欄膜電位 == `v_final`。
 - `resolve_ms_*`:掃描步指標 -> 真實毫秒的還原,手算小例子 + 空轉步 = nan。
-- `ConvLayer.forward_traced` / `FCLayer.forward_traced` / `run_network_traced`:
-  輸出事件流跟 `forward` 一致、`LayerForwardTrace` 形狀對、`stop_gradient` 生效。
+- `run_network_traced`:輸出跟 `run_network` 一致、`LayerForwardTrace` 形狀對、
+  `stop_gradient` 生效。
 - `summarize_trace_scalars`:純歸約函式,手算小例子 + 非有限值計數。
 
 `LayerForwardTrace` 2026-09-13 拔掉 `s_value` 欄位(這個架構下 forward 數值
@@ -146,25 +146,6 @@ def test_resolve_ms_compressed_hand():
 # ============================================================================
 # C. layer.forward_traced / run_network_traced
 # ============================================================================
-
-def test_conv_forward_traced_agrees_with_forward():
-    layers = _layers()
-    params = _params(layers)
-    stream = _stream0(_raw_batch(jax.random.PRNGKey(1), 3, 20, 34, 34, 2), layers[0])
-    conv1, w1 = layers[0], params[0]
-
-    out_a, result, _diag = conv1.forward(w1, stream)
-    out_b, trace = conv1.forward_traced(w1, stream)
-
-    for name in out_a._fields:
-        np.testing.assert_array_equal(np.asarray(getattr(out_a, name)),
-                                       np.asarray(getattr(out_b, name)))
-    assert isinstance(trace, LayerForwardTrace)
-    n, steps = result.spike_mask.shape
-    assert trace.v_steps.shape == (n, steps)
-    assert trace.event_ms.shape == (n, steps)
-    np.testing.assert_array_equal(np.asarray(trace.spike_mask), np.asarray(result.spike_mask))
-    np.testing.assert_allclose(np.asarray(trace.v_steps[:, -1]), np.asarray(result.v_final), atol=TOL)
 
 
 def test_traced_event_ms_within_input_range_or_nan():

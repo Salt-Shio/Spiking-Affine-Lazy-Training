@@ -1,66 +1,31 @@
-"""`viz/replay_panels.py` 的測試:小規模真實訓練(內嵌 config,開
-`weight_snapshot_every`),驗證 `ConvChannelPanel`/`FCWindowPanel` 算出來的
-`frame(t)` 形狀/值跟層的幾何、`AnimatedPanel` 介面(`viz/channel_grid.py`)
-要求的屬性都對得上。整個模組只訓練一次,測試共用同一個 `exp_dir`。
-
-被測的模組本身只依賴 `salt_core`/`viz`,不依賴 `example/`;這裡的測試依賴
-`example/` 只是為了借它的訓練/replay 機制產生真實的層幾何跟 trace 當 fixture
-用,不代表被測模組本身跟 `example/` 有關係。
+"""`viz/replay_panels.py` 的 ConvChannelPanel、FCWindowPanel 測試:用手工建的層跟
+逐步軌跡,驗證 frame(t) 的形狀、值跟層的幾何,以及 AnimatedPanel 介面
+(viz/channel_grid.py)要求的屬性都對得上。
 """
-import os
-import shutil
-
 import numpy as np
-import yaml
 
-from example.paths import EXPERIMENTS_DIR
-from example.replay_epoch import load_train_sample, load_epoch_weights, replay_sample
-from example.train_conv_compressed import train
-from example.utils import load_run_record
 from salt_core.layers import ConvLayer, FCLayer
+from salt_core.monitor import LayerForwardTrace
 from viz.replay_panels import ConvChannelPanel, FCWindowPanel
 from viz.time_resample import build_frame_grid
 
-_TEST_TEMP = os.path.join(EXPERIMENTS_DIR, "TEST_TEMP_replay_panels")
-shutil.rmtree(_TEST_TEMP, ignore_errors=True)
-os.makedirs(_TEST_TEMP, exist_ok=True)
+_CONV1 = ConvLayer(name="conv1", ic=2, h_in=8, w_in=8, oc=2, k=3, s=2, p=1, init_k=5.0)
+_FC_OUT = FCLayer(name="out", n_in=_CONV1.n_neurons, n_out=10, init_k=5.0)
 
-_CFG = {
-    "run_name": "replay_panels_smoke",
-    "model": {
-        "decoder": "membrane_regression",
-        "input_shape": [2, 34, 34],
-        "layers": [
-            {"type": "conv", "oc": 8, "k": 3, "s": 2, "p": 1, "tau": 16.0, "v_th": 1.0,
-             "alpha": 2.0, "chunk_size": 1, "L": 185, "max_out_spikes": 800, "init_k": 8.0,
-             "L_grow_factor": 1.5, "out_grow_factor": 1.5},
-            {"type": "conv", "oc": 16, "k": 3, "s": 2, "p": 1, "tau": 16.0, "v_th": 1.0,
-             "alpha": 2.0, "chunk_size": 1, "L": 32, "max_out_spikes": 600, "init_k": 64.0,
-             "L_grow_factor": 1.5, "out_grow_factor": 1.5},
-            {"type": "fc", "name": "out", "n_out": 10, "tau": 16.0, "v_th": 1.0e9,
-             "alpha": 2.0, "chunk_size": 512, "init_k": 5.0},
-        ],
-    },
-    "data": {"max_events": 2000, "train_size": 16, "val_size": 8, "seed_train": 0, "seed_val": 0},
-    "train": {"lr": 1.0e-2, "epochs": 1, "batch_size": 4, "seed": 42, "weight_snapshot_every": 1},
-}
-_CFG_PATH = os.path.join(_TEST_TEMP, "replay_panels_smoke.yaml")
-with open(_CFG_PATH, "w", encoding="utf-8") as _f:
-    yaml.safe_dump(_CFG, _f, allow_unicode=True)
 
-_EXP_DIR, _NET, _PARAMS, _TRAIN_SPLIT, _VAL_SPLIT, _RUN_RECORD = train(_CFG_PATH, exp_root=_TEST_TEMP)
-_LAYERS, _ = load_epoch_weights(_EXP_DIR, 0)
-_RUN_RECORD = load_run_record(_EXP_DIR)
-_CONV1 = next(l for l in _LAYERS if isinstance(l, ConvLayer) and l.name == "conv1")
-_FC_OUT = next(l for l in _LAYERS if isinstance(l, FCLayer))
+def _trace(n_neurons: int, seed: int) -> LayerForwardTrace:
+    """5 步的軌跡:每顆神經元在 1、3、5、8 ms 各消化一筆事件,最後一步空轉(event_ms 是 nan)。"""
+    rng = np.random.default_rng(seed)
+    event_ms = np.tile(np.array([1.0, 3.0, 5.0, 8.0, np.nan]), (n_neurons, 1))
+    v_steps = rng.normal(0.0, 1.0, size=(n_neurons, 5))
+    return LayerForwardTrace(spike_mask=v_steps > 1.0, v_steps=v_steps, event_ms=event_ms)
 
-_SAMPLE = load_train_sample(_RUN_RECORD, 0)
-_TRACES = replay_sample(_EXP_DIR, 0, *_SAMPLE)
-_CONV1_TRACE = _TRACES[_LAYERS.index(_CONV1)]
-_FC_TRACE = _TRACES[_LAYERS.index(_FC_OUT)]
+
+_CONV1_TRACE = _trace(_CONV1.n_neurons, seed=0)
+_FC_TRACE = _trace(_FC_OUT.n_neurons, seed=1)
 
 _DT_MS = 1.0
-_FRAME_MS = build_frame_grid(0.0, float(np.nanmax(np.asarray(_CONV1_TRACE.event_ms))), _DT_MS)
+_FRAME_MS = build_frame_grid(0.0, float(np.nanmax(_CONV1_TRACE.event_ms)), _DT_MS)
 
 
 def test_conv_panel_frame_shape_matches_layer_geometry():

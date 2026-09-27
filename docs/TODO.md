@@ -199,6 +199,12 @@
 - **`ConvLayer.shrink_max_out_spikes` 觀察值是 0 時會把容量縮成 0。** 某層整個
   epoch 都沒有 fire 時,候選值 `ceil(0 * out_grow_factor) = 0`,縮成
   `max_out_spikes=0`,下游 gather 直接崩潰。架構審查第 5 條做容量型別時一起修。
+- **文件說「forward 結果跟 chunk_size 無關、逐位元相同」,實際不是。** 不同
+  chunk_size 的浮點加總順序不同。實測(2026-09-27)FC 輸出層吃約 2.2 萬筆事件,
+  跟 float64 逐事件遞迴比的最大相對誤差:chunk_size=1 是 6.0e-6、8 是 2.1e-6、
+  64 是 2.3e-7、512 是 4.0e-7。純 float32 捨入,不是算錯。寫這句話的地方有
+  `監測規格.md`(3 處)、`replay_epoch.py` 的說明;`chunk_scan.py`、`layers.py`、
+  `問題紀錄.md` 也有「逐位元」字樣,還沒逐一確認。架構審查階段 8 改寫文件時一起更正。
 
 ## 開放題(往下走才需要)
 

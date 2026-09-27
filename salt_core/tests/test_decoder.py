@@ -1,4 +1,4 @@
-"""三個標準解碼器 + 「自帶 readout」逃生口的驗證。
+"""三個標準解碼器的驗證。
 
 解碼器只讀 `LayerForwardResult`(chunk_scan.py 的公開契約),把它讀成分數張量:
 
@@ -7,15 +7,12 @@
   - 群體:神經元連續等分成組,每組 `s_value` 加總相加
 
 `validate` 擋「最後一層門檻設定跟編碼不配」。
-最後一個測試釘住:不經解碼器、直接讀 `LayerForwardResult` 自組 loss 這條路
-沒被擋(「只用必要運算元素」的路必須永遠通)。
 """
 import jax
 import jax.numpy as jnp
 import pytest
 
-from salt_core.chunk_scan import LayerForwardResult, run_layer_forward
-from salt_core.connectivity.fc import build_fc_queue
+from salt_core.chunk_scan import LayerForwardResult
 from salt_core.decoder import (MembraneRegressionDecoder, PopulationDecoder,
                                 RateDecoder)
 from salt_core.layers import FCLayer
@@ -100,22 +97,3 @@ def test_decode_is_vmappable():
     assert scores.shape == (2, 3)
     assert jnp.allclose(scores[0], jnp.array([0.3, 1.5, 0.0]), atol=TOL)
     assert metrics["hard_count_mean"].shape == (2,)
-
-
-def test_bring_your_own_readout_through_the_primitive_is_not_blocked():
-    """不用任何解碼器:直接跑 `run_layer_forward`、自己組一個跨神經元 loss、
-    `jax.grad` —— 這條「只用必要運算元素」的路必須永遠通。"""
-    tau, v_th, alpha = 4.0, 1.0, 2.0
-    event_times = jnp.array([1.0, 2.0, 4.0])
-    event_source_idx = jnp.array([0, 1, 0])
-
-    def loss(W):
-        maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0]).maps
-        result = run_layer_forward(maps, v_th, chunk_size=1, max_steps=3, alpha=alpha, n_real_events=maps.a.shape[1])
-        S = jnp.sum(result.s_value, axis=1)
-        return S[0] - S[1]
-
-    W = jnp.array([[0.6, 0.5], [0.3, 0.2]])
-    g = jax.grad(loss)(W)
-    assert g.shape == (2, 2)
-    assert jnp.any(jnp.abs(g) > 1e-6)

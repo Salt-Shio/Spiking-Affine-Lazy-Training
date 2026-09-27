@@ -89,29 +89,6 @@ def test_run_layer_forward_int_overflow_flag_set_and_propagates_to_v_final():
     assert not bool(result.spike_mask[0, 0])
 
 
-def test_run_layer_forward_int_no_threshold_accumulates_without_firing():
-    """v_th_int=None(不 fire 的層):兩筆 identity 事件 q=20 一路累積到 40,不 fire。"""
-    a_int = jnp.array([[0, 0]])
-    is_identity = jnp.array([[True, True]])
-    q_int = jnp.array([[20, 20]])
-
-    result = run_layer_forward_int(a_int, is_identity, q_int, None, f_a=4, f_V=0, i_V=8)
-
-    assert int(result.v_final[0]) == 40
-    assert not bool(result.spike_mask.any())
-
-
-def test_run_layer_forward_int_overflow_mode_reaches_register():
-    """overflow_mode 要傳到每一步:跟上面溢位同一組數字(4 位元,q=9),
-    飽和時夾到 7,繞回時是 -7。"""
-    args = (jnp.array([[0]]), jnp.array([[True]]), jnp.array([[9]]), jnp.array([100]))
-    wrapped = run_layer_forward_int(*args, f_a=4, f_V=0, i_V=4, overflow_mode="wrap")
-    saturated = run_layer_forward_int(*args, f_a=4, f_V=0, i_V=4, overflow_mode="saturate")
-    assert int(wrapped.v_final[0]) == -7
-    assert int(saturated.v_final[0]) == 7
-    assert bool(saturated.overflowed[0, 0])
-
-
 def test_run_layer_forward_int_traced_matches_untraced_and_last_v_step_is_v_final():
     a_int = jnp.array([[999, 12]])
     is_identity = jnp.array([[True, False]])

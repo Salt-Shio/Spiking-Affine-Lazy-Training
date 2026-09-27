@@ -6,6 +6,7 @@ extract_output_events 串接管線,包括:
   1. 疊加兩次跨層(layer1->layer2->layer3),不是只驗證過一次
   2. 量夠大、多神經元的情況,不是只有手算得動的小例子
   3. 跨層梯度不只測過 v_final 型 loss,也測 s_value(頻率編碼加總)型 loss
+  4. 隨機資料不保證碰得到的構造案例:fire 落在 chunk 邊界、同一個 chunk 裡 fire 兩次
 
 外部原始輸入的事件時間用連續亂數 jitter 生成,這一層不會真的同分。但**層與
 層之間的輸出不是這樣**:多個下游神經元共用同一顆上游神經元的同一次 fire
@@ -225,3 +226,35 @@ def test_three_layer_random_gradient_s_value():
         data_seed=1, weight_seed=1, num_events=34, sizes=[4, 6, 5, 3])
     for chunk_size in [1, 5]:
         _check_gradient_matches_reference(weights, times, source_idx, "s_value", chunk_size)
+
+
+# ---------------------------------------------------------------------------
+# 單層構造案例:fire 落在 chunk 邊界、同一個 chunk 裡 fire 兩次
+# ---------------------------------------------------------------------------
+
+# 7 筆事件間隔 1 ms、各來自不同來源,1 顆輸出神經元,在第 2、5 筆 fire。
+# 手算(a = 0.75):0.5 -> 0.975 -> 1.03125 fire 歸零 -> 0.9 -> 0.875 -> 1.60625 fire。
+# chunk_size 2、3、4 讓 fire 落在 chunk 邊界或中間,7 讓兩次 fire 在同一個 chunk。
+_TWO_FIRE_TIMES = jnp.arange(1.0, 8.0)
+_TWO_FIRE_SOURCES = jnp.arange(7)
+_TWO_FIRE_W = jnp.array([[0.5, 0.6, 0.3, 0.9, 0.2, 0.95, 0.1]])
+
+
+def _real_fire_events(chunk_size):
+    maps = build_fc_queue(_TWO_FIRE_TIMES, _TWO_FIRE_SOURCES, _TWO_FIRE_W, TAU,
+                          n_real_events=7).maps
+    result = run_layer_forward(maps, V_TH, chunk_size=chunk_size, max_steps=7, alpha=ALPHA,
+                               n_real_events=7)
+    return sorted(int(idx) for idx, fired in zip(result.spike_event_idx[0], result.spike_mask[0])
+                  if bool(fired))
+
+
+def test_single_layer_two_fires_matches_reference_across_chunk_sizes():
+    fired, _s_seq, _v_final = _sequential_layer(_TWO_FIRE_TIMES, _TWO_FIRE_SOURCES, None,
+                                                _TWO_FIRE_W, TAU, V_TH, ALPHA)
+    assert [int(i) for i in jnp.nonzero(fired[0])[0]] == [2, 5], "參考實作應該在第 2、5 筆 fire"
+    for chunk_size in [1, 2, 3, 4, 7]:
+        assert _real_fire_events(chunk_size) == [2, 5], f"chunk_size={chunk_size} fire 位置不對"
+        for loss_type in ("v_final", "s_value"):
+            _check_gradient_matches_reference([_TWO_FIRE_W], _TWO_FIRE_TIMES, _TWO_FIRE_SOURCES,
+                                              loss_type, chunk_size)
