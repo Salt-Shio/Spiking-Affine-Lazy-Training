@@ -1,6 +1,6 @@
 """用一個跟被測系統完全獨立、逐事件跑的序列參考實作(不用 core.py 的
 associative_scan/chunk 化機制),拿中等規模(幾十筆事件、每層好幾顆神經元)
-的隨機資料當 oracle,交叉驗證真正的 build_fc_queue+run_layer_forward+
+的隨機資料當 oracle,交叉驗證真正的 FC 佇列建構+run_layer_forward+
 extract_output_events 串接管線,包括:
 
   1. 疊加兩次跨層(layer1->layer2->layer3),不是只驗證過一次
@@ -31,7 +31,7 @@ import jax
 import jax.numpy as jnp
 
 from salt_core.chunk_scan import run_layer_forward
-from salt_core.connectivity.fc import build_fc_queue
+from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.layer_chain import extract_output_events
 from salt_core.surrogate import atan_spike
 
@@ -104,7 +104,7 @@ def _sequential_multi_layer(event_times, event_source_idx, weight_matrices, tau,
 
 
 # ---------------------------------------------------------------------------
-# 真正的 pipeline:build_fc_queue + run_layer_forward + extract_output_events
+# 真正的 pipeline:FC 佇列建構 + run_layer_forward + extract_output_events
 # ---------------------------------------------------------------------------
 
 def _real_pipeline_multi_layer(event_times, event_source_idx, weight_matrices, tau, v_th,
@@ -114,8 +114,7 @@ def _real_pipeline_multi_layer(event_times, event_source_idx, weight_matrices, t
     n_real_events = event_times.shape[0]
     v_final = s_value = None
     for li, W in enumerate(weight_matrices):
-        maps = build_fc_queue(times, source_idx, W, tau, event_gain=gain,
-                               n_real_events=n_real_events).maps
+        maps = fc_float_values(build_fc_structure(times, source_idx, n_real_events), W, tau, gain)
         max_steps = maps.a.shape[1]
         spike_mask, spike_event_idx, s_spike, s_value, v_final = run_layer_forward(
             maps, v_th, chunk_size=chunk_size, max_steps=max_steps, alpha=alpha,
@@ -241,8 +240,8 @@ _TWO_FIRE_W = jnp.array([[0.5, 0.6, 0.3, 0.9, 0.2, 0.95, 0.1]])
 
 
 def _real_fire_events(chunk_size):
-    maps = build_fc_queue(_TWO_FIRE_TIMES, _TWO_FIRE_SOURCES, _TWO_FIRE_W, TAU,
-                          n_real_events=7).maps
+    maps = fc_float_values(build_fc_structure(_TWO_FIRE_TIMES, _TWO_FIRE_SOURCES, 7),
+                           _TWO_FIRE_W, TAU, None)
     result = run_layer_forward(maps, V_TH, chunk_size=chunk_size, max_steps=7, alpha=ALPHA,
                                n_real_events=7)
     return sorted(int(idx) for idx, fired in zip(result.spike_event_idx[0], result.spike_mask[0])

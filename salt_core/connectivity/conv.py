@@ -1,23 +1,14 @@
-"""Conv 層的事件佇列建構:全域事件包(座標三元組 (x,y,c) + 時間)+ 權重張量
--> 每顆神經元自己的壓縮仿射映射佇列(`build_conv_queue_compressed`)。對應推導
-見 docs/math/conv事件佇列建構推導.md + docs/math/conv事件佇列壓縮版推導.md。
-
-跟 connectivity/fc.py 的關係:fc.py 的 build_fc_queue 靠一維 event_source_idx
-直接當 W 的 column;conv 的權重要看事件座標相對輸出位置的偏移(kernel tap),
-一維 index 不夠用,事件要換成 (x,y,c) 三元組(推導文件第 0、2 節)。
-
-歷史:曾有一個「密集版」`build_conv_queue`(陣列寬度 = 全域事件數,不相關的
-格子只衰減不加權重),step 4d 移除——production 端全部改用壓縮版,密集版只
-剩測試在用,而測試改用 `salt_core/tests/_reference.py` 的透明 numpy 參考當
-對照(比密集版更獨立,連避免越界 index 的手法都不一樣)。`_axis_candidates`
-(單軸候選幾何)兩版共用,留著。
+"""Conv 層的事件佇列建構,分兩段:結構段(build_conv_structure)只看事件,
+決定每個空間位置收哪些事件、Δt、kernel 位置;數值段(conv_float_values)用權重
+算出仿射映射。推導見 docs/math/conv事件佇列建構推導.md、
+docs/math/conv事件佇列壓縮版推導.md。
 """
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
-from salt_core.core import AffineMap
+from salt_core.core import AffineMap, create_affine_maps
 
 
 def _axis_candidates(i: jax.Array, K: int, S: int, P: int, N: int,
@@ -56,30 +47,16 @@ def unravel_conv_source(event_source_idx: jax.Array, H_in: int,
     return x, y, c
 
 
-# ============================================================================
-# 壓縮版(任務 7 第二階段):每顆神經元只留自己的相關事件,不是全域事件數。
-# 對應推導見 docs/math/conv事件佇列壓縮版推導.md 全文,這裡的每個區塊都對應
-# 該文件的章節,跟上面密集版的關係、為什麼需要壓縮版,見該文件開頭。
-#
-# 段 1-3(壓縮佇列核心、run_layer_forward 呼叫端傳陣列、extract_output_events
-# 查表)已完成。event_gain 支援(段 1 當時刻意排除,因為 conv1 直接吃原始事件、
-# 沒有上游層)在段 4 補上——`ConvNetCompressed` 的 conv2 需要它,跟密集版
-# `build_conv_queue` 對稱:上一層的 s_spike 乘進權重,重新接通跨層梯度路徑。
-# ============================================================================
-
-
-class CompressedConvQueue(NamedTuple):
-    """壓縮版 build_conv_queue 的回傳型別,對應推導文件第 5.1 節列的三樣
-    東西,加上第四個欄位 `delta_t`(整數版量化查表用)。四個欄位 shape 的第一維都是
-    OC*H_out*W_out,跟密集版的 n_out_neurons 是同一個量,方便之後
-    run_layer_forward/extract_output_events(第 2、3 階段)當成密集版的直接
-    替代品接上去。
-    """
-    maps: AffineMap              # a/b shape (OC*H_out*W_out, L)
-    local_to_global_j: jax.Array  # shape (OC*H_out*W_out, L) int32,(神經元,局部欄)-> 全域事件 index
-    n_real_events: jax.Array     # shape (OC*H_out*W_out,) int32,只算真正的 tap,不含 catch-up/identity
-    delta_t: jax.Array           # shape (OC*H_out*W_out, L) float32,maps.a 就是用它算的
-                                  # (真 tap/catch-up/identity 三段規則,見 _delta_t_three_regimes)
+class ConvQueueStructure(NamedTuple):
+    """conv 佇列的結構段,只由事件決定。第一維是空間位置 oy*w_out+ox,跟 oc 無關;
+    L = max_queue_len。"""
+    local_to_global_j: jax.Array  # (n_spatial, L) int32,局部欄 -> 全域事件 index,空欄是 n_events
+    n_real_events: jax.Array      # (n_spatial,) int32,真 tap 數;可能超過 L,出界偵測用
+    delta_t: jax.Array            # (n_spatial, L) float32,真 tap / catch-up / identity 三段規則
+    tap_c: jax.Array              # (n_spatial, L) int32,每欄的 kernel 位置,已夾進合法範圍
+    tap_ky: jax.Array             # (n_spatial, L) int32
+    tap_kx: jax.Array             # (n_spatial, L) int32
+    n_input_events: jax.Array     # int32 純量,輸入的真事件數
 
 
 def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: int,
@@ -111,7 +88,7 @@ def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: in
         沒被寫到的格子填 n_events(值域外的 sentinel,呼叫端拿它去 gather
         event_times/x/y/c 時,JAX 的 clip 模式會夾到最後一個真實事件,不會
         crash/NaN——但這些位置本來就會被 n_real_per_neuron 蓋成 catch-up/
-        identity,夾到什麼值不影響最終結果,見主函式)。
+        identity,夾到什麼值不影響最終結果,見 build_conv_structure)。
       n_real_per_neuron: shape (n_out_spatial,) int32,神經元真正收到的
         合法 tap 數(不含 catch-up、不含 identity)。
 
@@ -173,7 +150,7 @@ def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: in
 
 
 def _delta_t_three_regimes(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
-                           global_last_time: jax.Array) -> tuple[jax.Array, jax.Array]:
+                           global_last_time: jax.Array) -> jax.Array:
     """壓縮版佇列每一欄的 Δt(推導文件第 4.3、4.4 節)。
 
     t_gathered: shape (n_out, L),第 (n, col) 格是 local_to_global_j[n,col]
@@ -192,8 +169,7 @@ def _delta_t_three_regimes(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
         自己最後一筆相關事件的時間
       col > n_real_per_neuron[n]   (identity):Δt 定義成 0
 
-    回傳 `(delta_t, is_real)`,shape 都是 (n_out, L):`delta_t` 是浮點;
-    `is_real` 標出真 tap 的欄位,`_affine_with_catchup` 拿它蓋掉非真 tap 的 b。
+    回傳浮點 delta_t,shape (n_out, L)。
     """
     n_out, L = t_gathered.shape
     col_idx = jnp.arange(L, dtype=jnp.int32)[None, :]
@@ -207,177 +183,81 @@ def _delta_t_three_regimes(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
     t_last_real = jnp.take_along_axis(t_gathered, last_real_col[:, None], axis=1)[:, 0]
     delta_t_catchup = global_last_time - t_last_real
 
-    delta_t = jnp.where(is_real, delta_t_real, jnp.where(is_catchup, delta_t_catchup[:, None], 0.0))
-    return delta_t, is_real
+    return jnp.where(is_real, delta_t_real, jnp.where(is_catchup, delta_t_catchup[:, None], 0.0))
 
 
-def _affine_with_catchup(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
-                          global_last_time: jax.Array, tau: float,
-                          b_real: jax.Array) -> tuple[AffineMap, jax.Array]:
-    """局部 Δt + 補位規則。對應推導文件第 3、4 節,是壓縮版跟密集版唯一的
-    數值差異來源:密集版的 a 全域算一次、所有神經元共用;壓縮版每一列要用
-    自己篩選後的子序列重算 Δt,而且補位不能直接補 identity(第 4.1、4.2
-    節已經用反例證明過,直接補 identity 會跟密集版算出不同的 v_final)。
+def build_conv_structure(event_times: jax.Array, x: jax.Array, y: jax.Array, c: jax.Array,
+                         k: int, s: int, p: int, h_out: int, w_out: int, max_queue_len: int,
+                         n_real_events: jax.Array | int) -> ConvQueueStructure:
+    """conv 佇列的結構段:每個空間位置收哪些事件、每欄的 Δt 跟 kernel 位置。
 
-    `t_gathered`/`n_real_per_neuron`/`global_last_time` 見
-    `_delta_t_three_regimes`。
-    b_real: shape (n_out, L),第 (n, col) 格是真的 tap 才有意義的權重值
-      (通常是 W[oc, c_gathered, k_y_gathered, k_x_gathered] gather 出來的),
-      非真 tap 的位置數值不重要,這個函式會用 is_real mask 蓋掉。
-
-    回傳 `(AffineMap, delta_t)`:`AffineMap` 的 a/b shape 都是 (n_out, L),
-    `a = (1-1/tau)**delta_t`(identity 欄 Δt=0,a 剛好是 1),catch-up 欄
-    b=0(純衰減);`delta_t` 是 `_delta_t_three_regimes` 算出來的浮點 Δt。
-
-    n_real_per_neuron[n]==max_queue_len(剛好收滿,見第 1 階段測試重點)時,
-    col 的值域 [0,L) 永遠不會等於 n_real_per_neuron[n](=L),自然沒有
-    catch-up/identity 格,不需要另外特判。n_real_per_neuron[n]==0(這個神經元
-    完全沒有相關事件)時,catch-up 格的 Δt 算出來的值沒有實際意義,但因為
-    b 全部是 0,電壓從頭到尾停在 0,不管 a 是多少都不影響 v_final(這是純
-    衰減不會讓電壓憑空出現的引理,單狀態仿射平行掃描推導第 4 節),不需要
-    特判成別的分支。
-    """
-    delta_t, is_real = _delta_t_three_regimes(t_gathered, n_real_per_neuron, global_last_time)
-    a = (1.0 - 1.0 / tau) ** delta_t
-    b = jnp.where(is_real, b_real, 0.0)
-    return AffineMap(a=a, b=b), delta_t
-
-
-def build_conv_queue_compressed(event_times: jax.Array, x: jax.Array, y: jax.Array,
-                                 c: jax.Array, W: jax.Array, tau: float, S: int, P: int,
-                                 H_out: int, W_out: int, max_queue_len: int,
-                                 n_real_events: jax.Array | int,
-                                 event_gain: jax.Array | None = None
-                                 ) -> CompressedConvQueue:
-    """`build_conv_queue`(密集版)的壓縮版本。參數意義跟密集版完全相同,
-    只多一個 `max_queue_len`(文件記法 $L$,見推導文件第 7 節怎麼決定這個
-    數字,這個函式不管這件事,只管給定 $L$ 之後怎麼建構佇列)。
-
-    event_gain: 跟密集版 `build_conv_queue` / `build_fc_queue` 意義完全相同——
-      上一層 chunk_scan 回傳的 s_spike,可微分增益,預設 None(等同全 1)。
-      密集版對「事件軸」整批乘;壓縮版每個 (神經元, 局部欄) 對應一個全域
-      事件 `local_to_global_j[n,col]`,用同一個 `safe_j` gather 出對應的 gain
-      再乘進 `weight_vals`。非真 tap 位置的 `weight_vals` 本來就無意義,乘完
-      照樣被 `_affine_with_catchup` 的 is_real mask 蓋成 b=0,跟密集版「沒
-      寫入的位置保持 0」是同一個保證。`ConvNetCompressed` 的 conv2 靠這個
-      參數把 conv1 自己的 s_spike 乘進來,重新接通對 conv1 權重的梯度路徑。
-
-    跟密集版的關係:第 1-4 步(候選產生:_axis_candidates、座標合法性、
-    pad 事件過濾)完全共用密集版同一套邏輯,不重新實作;差異只在密集版把
-    候選直接 scatter 進「跟全域事件數等長」的陣列,壓縮版先把候選壓成
-    「每顆神經元自己的固定長度 L」再 scatter(推導文件第 1、2 節)。
-
-    n_real_events(必填,沒有 padding 就傳事件總數)的處理(密集版第 8.1 節
-    「pad 事件偽裝成合法座標」的危險,壓縮版一樣存在,而且推導文件本身沒有
-    明講,是這裡延伸密集版既有處理方式補上的):候選合法性除了座標篩選,
-    額外要求事件本身是真的(
-    j < n_real_events),否則 pad 事件的假座標 (0,0,c=0) 會被壓縮版當成
-    真正的 tap 收進佇列,污染 n_real_events_per_neuron 跟 (a,b)。「全域
-    最後一筆事件的時間」(catch-up 用)相應改成「最後一筆真事件的時間」
-    (event_times[n_real_events-1]),不是陣列最後一格——道理跟密集版
-    `mask_pad_events` 把 pad 那段蓋成 identity 的效果一致:pad 事件不該
-    貢獻任何真實衰減。
-
-    回傳 CompressedConvQueue,四個欄位 shape 第一維都是 OC*H_out*W_out。
+    event_times, x, y, c: (n_events,) 已排序的事件時間(整數 ms)跟座標。
+    k, s, p: kernel 大小、stride、padding。h_out, w_out: 輸出面尺寸。
+    max_queue_len: 每個空間位置的佇列長度 L,放不下的事件丟掉,n_real_events 照實回報。
+    n_real_events: 前幾筆是真事件,其餘是 pad,不進任何佇列。
     """
     event_times = jnp.asarray(event_times, dtype=jnp.float32)
     x = jnp.asarray(x, dtype=jnp.int32)
     y = jnp.asarray(y, dtype=jnp.int32)
     c = jnp.asarray(c, dtype=jnp.int32)
     n_events = event_times.shape[0]
-    # 真事件數,整支函式共用一個(沒有 padding 就傳 n_events = 整條都是真事件)。
-    # is_real_event 過濾、safe_j 夾界、catch-up 的 global_last_time 都用它。
-    effective_n_events = jnp.asarray(n_real_events, dtype=jnp.int32)
+    n_input_events = jnp.asarray(n_real_events, dtype=jnp.int32)
+    n_candidates = (k - 1) // s + 1
+    n_spatial = h_out * w_out
 
-    OC, IC, K, K2 = W.shape
-    assert K == K2, f"kernel 必須是方形,拿到 shape={W.shape}"
-    N = (K - 1) // S + 1
-    n_out_spatial = H_out * W_out
+    o_y, valid_y, _ = _axis_candidates(y, k, s, p, n_candidates, h_out)  # (n_events, N)
+    o_x, valid_x, _ = _axis_candidates(x, k, s, p, n_candidates, w_out)  # (n_events, N)
+    is_real_event = jnp.arange(n_events) < n_input_events
+    valid_2d = valid_y[:, :, None] & valid_x[:, None, :] & is_real_event[:, None, None]
 
-    o_y, valid_y, _ = _axis_candidates(y, K, S, P, N, H_out)  # (n_events, N)
-    o_x, valid_x, _ = _axis_candidates(x, K, S, P, N, W_out)  # (n_events, N)
-    valid_2d = valid_y[:, :, None] & valid_x[:, None, :]        # (n_events, N, N)
-
-    # 見函式說明:候選合法性額外要求事件本身是真的,不只是座標落在感受野內
-    # ——這是密集版第 8.1 節危險在壓縮版的對應處理(None 時 effective_n_events
-    # =n_events,is_real_event 全 True,這步退化成 no-op)。
-    is_real_event = jnp.arange(n_events) < effective_n_events  # (n_events,)
-    valid_2d = valid_2d & is_real_event[:, None, None]
-
-    n_2d = o_y[:, :, None] * W_out + o_x[:, None, :]  # (n_events, N, N) 攤平空間位置 id
+    n_2d = o_y[:, :, None] * w_out + o_x[:, None, :]  # (n_events, N, N) 空間位置 id
     j_2d = jnp.broadcast_to(jnp.arange(n_events, dtype=jnp.int32)[:, None, None],
-                             (n_events, N, N))
+                            (n_events, n_candidates, n_candidates))
+    n_flat = jnp.where(valid_2d, n_2d, n_spatial).reshape(-1)
+    local_to_global_j, n_real_per_position = _compress_candidates(
+        n_flat, j_2d.reshape(-1), n_spatial, max_queue_len, n_events)
 
-    # 不合法標成保證越界的 n_out_spatial(第 7 節同一招,scatter 用 mode='drop' 丟棄)
-    n_flat = jnp.where(valid_2d, n_2d, n_out_spatial).reshape(-1)
-    j_flat = j_2d.reshape(-1)
+    # 空欄夾到最後一筆真事件,不能夾到陣列最後一格:那可能是時間極大的 pad,Δt 會溢位。
+    event_j = jnp.minimum(local_to_global_j, n_input_events - 1)
+    delta_t = _delta_t_three_regimes(event_times[event_j], n_real_per_position,
+                                    event_times[n_input_events - 1])
 
-    local_to_global_j, n_real_per_neuron_spatial = _compress_candidates(
-        n_flat, j_flat, n_out_spatial, max_queue_len, n_events)
+    oy_grid = (jnp.arange(n_spatial, dtype=jnp.int32) // w_out)[:, None]
+    ox_grid = (jnp.arange(n_spatial, dtype=jnp.int32) % w_out)[:, None]
+    # 非真 tap 的欄位 kernel 位置可能越界(負 index 會 wraparound),夾進合法範圍;這些欄位的 b 是 0。
+    tap_ky = jnp.clip(y[event_j] - oy_grid * s + p, 0, k - 1)
+    tap_kx = jnp.clip(x[event_j] - ox_grid * s + p, 0, k - 1)
+    return ConvQueueStructure(local_to_global_j=local_to_global_j,
+                              n_real_events=n_real_per_position, delta_t=delta_t,
+                              tap_c=c[event_j], tap_ky=tap_ky, tap_kx=tap_kx,
+                              n_input_events=n_input_events)
 
-    # gather 出每個 (空間神經元, 局部欄) 對應的事件座標/通道/時間。sentinel
-    # 位置(=n_events)不能放著讓 JAX 預設的 clip 模式夾到「陣列最後一格」
-    # ——有 pad 事件時,陣列最後一格可能就是 pad 事件本身(時間是超大的假
-    # 值,例如 layer_chain.py 用的 1e12),夾到那裡會讓 catch-up 算出
-    # Δt=真實時間-1e12 這種天文數字,(1-1/tau)^(巨大負數) 會 overflow 成
-    # inf,inf*v0(=0) 在 process_chunk 裡會變 NaN——即使這個位置最終會被
-    # is_real mask 蓋成 0,NaN*0 還是 NaN,污染不會被蓋掉(這是問題紀錄
-    # extract_output_events 那段筆記提過的同一類坑,只是這裡換了個地方
-    # 出現)。修法:sentinel 明確夾到「最後一筆真事件」(effective_n_events-1),
-    # 不是「陣列最後一格」,保證湊出來的時間永遠是有意義的真實時間,Δt 不會
-    # 出現這種天文數字。
-    safe_j = jnp.minimum(local_to_global_j, effective_n_events - 1)
-    x_g = x[safe_j]
-    y_g = y[safe_j]
-    c_g = c[safe_j]
-    t_g = event_times[safe_j]  # (n_out_spatial, L)
 
-    oy_grid = (jnp.arange(n_out_spatial, dtype=jnp.int32) // W_out)[:, None]
-    ox_grid = (jnp.arange(n_out_spatial, dtype=jnp.int32) % W_out)[:, None]
-    k_y_g = y_g - oy_grid * S + P
-    k_x_g = x_g - ox_grid * S + P
+def conv_float_values(structure: ConvQueueStructure, w: jax.Array, tau: float,
+                      event_gain: jax.Array | None) -> AffineMap:
+    """conv 佇列的浮點數值段:a = (1 - 1/tau) ** delta_t,b = 權重 * event_gain,非真 tap 的 b 是 0。
 
-    # 權重 gather 才需要 oc(第 1 節:篩選/排序跟 oc 無關,只有這一步要對
-    # 每個 oc 各做一次)。非真 tap 位置的 k_y_g/k_x_g 可能落在 [0,K) 之外
-    # (甚至可能是負數,JAX gather 對負數 index 是 wraparound,見問題紀錄
-    # 第五節那個教訓)。這裡 clip 進 [0,K-1] 是為了語意乾淨:讓每一格
-    # gather 出的都是「某個合法權重」,不依賴 wraparound / clip 的邊界行為
-    # (夾到哪個值不影響最終數值——這些位置的 b 反正會被 _affine_with_catchup
-    # 的 is_real mask 蓋成 0)。
-    # 注意(問題紀錄第八節,2026-09-08 特徵化):`--xla_gpu_deterministic_ops=true`
-    # 開著 + 外層 batch jax.vmap + jax.grad 時,壓縮版這條路徑的梯度會錯
-    # (rel ~0.4;forward 不受影響)。這個 clip **不是** 那個問題的修法——
-    # batch=1 不 clip 也對、batch>=2 clip 了也錯。訓練期就是不開這個 flag。
-    safe_k_y = jnp.clip(k_y_g, 0, K - 1)
-    safe_k_x = jnp.clip(k_x_g, 0, K - 1)
-    weight_vals = jax.vmap(lambda oc_w: oc_w[c_g, safe_k_y, safe_k_x])(W)  # (OC, n_out_spatial, L)
-
+    w: (oc, ic, k, k) 權重。
+    event_gain: (n_events,) 乘進權重的增益。接在上一層後面時傳上一層的 s_spike,
+        理由見 docs/問題紀錄.md。None 等於全 1。
+    回傳 AffineMap,a、b 形狀 (oc*n_spatial, L),神經元編號 = oc*n_spatial + 空間位置。
+    """
+    oc = w.shape[0]
+    n_spatial, max_queue_len = structure.delta_t.shape
+    weight_vals = jax.vmap(
+        lambda oc_w: oc_w[structure.tap_c, structure.tap_ky, structure.tap_kx])(w)  # (oc, n_spatial, L)
     if event_gain is not None:
-        # 見函式說明:每個 (神經元, 局部欄) 對應全域事件 safe_j,gather 出
-        # 對應的 gain 乘進 weight_vals(對 OC 軸廣播)。非真 tap 位置乘完照樣
-        # 被 _affine_with_catchup 的 is_real mask 蓋成 b=0。
-        gain_g = jnp.asarray(event_gain, dtype=weight_vals.dtype)[safe_j]  # (n_out_spatial, L)
-        weight_vals = weight_vals * gain_g[None, :, :]
+        event_j = jnp.minimum(structure.local_to_global_j, structure.n_input_events - 1)
+        gain = jnp.asarray(event_gain, dtype=weight_vals.dtype)[event_j]
+        weight_vals = weight_vals * gain[None, :, :]
+    is_real = jnp.arange(max_queue_len)[None, :] < structure.n_real_events[:, None]
+    b = jnp.where(is_real[None, :, :], weight_vals, 0.0).reshape(oc * n_spatial, max_queue_len)
+    maps = create_affine_maps(structure.delta_t, b, tau)
+    return AffineMap(a=tile_channels(maps.a, oc), b=maps.b)
 
-    global_last_time = event_times[effective_n_events - 1]
 
-    maps_per_oc, delta_t_per_oc = jax.vmap(
-        lambda b_oc: _affine_with_catchup(t_g, n_real_per_neuron_spatial, global_last_time,
-                                           tau, b_oc)
-    )(weight_vals)  # maps_per_oc.a/.b, delta_t_per_oc shape (OC, n_out_spatial, L)
-
-    n_out_neurons = OC * n_out_spatial
-    a_final = maps_per_oc.a.reshape(n_out_neurons, max_queue_len)
-    b_final = maps_per_oc.b.reshape(n_out_neurons, max_queue_len)
-    delta_t_final = delta_t_per_oc.reshape(n_out_neurons, max_queue_len)
-    local_to_global_j_final = jnp.broadcast_to(
-        local_to_global_j[None, :, :], (OC, n_out_spatial, max_queue_len)
-    ).reshape(n_out_neurons, max_queue_len)
-    n_real_events_final = jnp.broadcast_to(
-        n_real_per_neuron_spatial[None, :], (OC, n_out_spatial)
-    ).reshape(n_out_neurons)
-
-    return CompressedConvQueue(maps=AffineMap(a=a_final, b=b_final),
-                                local_to_global_j=local_to_global_j_final,
-                                n_real_events=n_real_events_final,
-                                delta_t=delta_t_final)
+def tile_channels(values: jax.Array, oc: int) -> jax.Array:
+    """逐空間位置的值 (n_spatial, ...) 展開成逐神經元 (oc*n_spatial, ...),每個 channel 一份。"""
+    n_spatial = values.shape[0]
+    return jnp.broadcast_to(values[None], (oc, *values.shape)).reshape(
+        oc * n_spatial, *values.shape[1:])

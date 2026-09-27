@@ -5,7 +5,7 @@ layer_chain.extract_output_events 是純 JAX 實作,回傳固定長度(n_source_
 max_steps 這個安全上限)的陣列,不是「剛好幾筆真實事件」的動態長度——前
 n_real_events 筆是真實事件(已排序),後面補 pad 事件(不影響任何下游計算,
 見 layer_chain.py 說明)。下面每個測試都用 n_real_events 切出真正有意義的
-前綴來檢查內容,同時也確認完整的固定長度陣列接回 build_fc_queue(帶
+前綴來檢查內容,同時也確認完整的固定長度陣列接回 FC 佇列建構(帶
 n_real_events)、run_layer_forward(帶 n_real_events)之後,行為跟「陣列剛好
 只有真實事件」完全一樣。
 
@@ -27,7 +27,7 @@ layer_chain.py 開頭的說明)。
 import jax.numpy as jnp
 
 from salt_core.chunk_scan import run_layer_forward
-from salt_core.connectivity.fc import build_fc_queue
+from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.layer_chain import extract_output_events
 
 TOL = 1e-4
@@ -49,7 +49,8 @@ def test_two_layer_fc_forward():
     W1 = jnp.array([[0.6, 0.5],
                     [0.3, 0.2]])
 
-    layer1_maps = build_fc_queue(layer1_event_times, layer1_event_source_idx, W1, tau, n_real_events=layer1_event_times.shape[0]).maps
+    layer1_maps = fc_float_values(build_fc_structure(layer1_event_times, layer1_event_source_idx, layer1_event_times.shape[0]),
+                                  W1, tau, None)
     n_real_events_1 = layer1_event_times.shape[0]
     spike_mask_1, spike_event_idx_1, s_spike_1, _, v_final_1 = run_layer_forward(
         layer1_maps, v_th, chunk_size=1, max_steps=n_real_events_1, n_real_events=n_real_events_1)
@@ -67,9 +68,8 @@ def test_two_layer_fc_forward():
     # --- layer2: p=1 個輸出神經元 c1,輸入是 layer1 的 b1,b2 ---
     W2 = jnp.array([[1.5, 0.4]])
 
-    layer2_maps = build_fc_queue(
-        layer2_event_times, layer2_event_source_idx, W2, tau,
-        event_gain=layer2_event_gain, n_real_events=n_real_events_2).maps
+    layer2_maps = fc_float_values(build_fc_structure(layer2_event_times, layer2_event_source_idx, n_real_events_2),
+                                  W2, tau, layer2_event_gain)
     spike_mask_2, spike_event_idx_2, _, _, v_final_2 = run_layer_forward(
         layer2_maps, v_th, chunk_size=1, max_steps=layer2_maps.a.shape[1],
         n_real_events=n_real_events_2)
@@ -109,7 +109,8 @@ def test_two_layer_fc_forward_multi_fire_interleaved():
     W1 = jnp.array([[0.5, 0.3],   # b1: w11=0.5(a1), w21=0.3(a2)
                     [0.5, 0.9]])  # b2: w12=0.5(a1), w22=0.9(a2)
 
-    layer1_maps = build_fc_queue(layer1_event_times, layer1_event_source_idx, W1, tau, n_real_events=layer1_event_times.shape[0]).maps
+    layer1_maps = fc_float_values(build_fc_structure(layer1_event_times, layer1_event_source_idx, layer1_event_times.shape[0]),
+                                  W1, tau, None)
     n_real_events_1 = layer1_event_times.shape[0]
     spike_mask_1, spike_event_idx_1, s_spike_1, _, v_final_1 = run_layer_forward(
         layer1_maps, v_th, chunk_size=1, max_steps=n_real_events_1, n_real_events=n_real_events_1)
@@ -140,9 +141,8 @@ def test_two_layer_fc_forward_multi_fire_interleaved():
     W2 = jnp.array([[0.4, 0.6],   # c1: w_c1b1=0.4, w_c1b2=0.6
                     [0.1, 0.2]])  # c2: w_c2b1=0.1, w_c2b2=0.2
 
-    layer2_maps = build_fc_queue(
-        layer2_event_times, layer2_event_source_idx, W2, tau,
-        event_gain=layer2_event_gain, n_real_events=n_real_events_2).maps
+    layer2_maps = fc_float_values(build_fc_structure(layer2_event_times, layer2_event_source_idx, n_real_events_2),
+                                  W2, tau, layer2_event_gain)
     spike_mask_2, spike_event_idx_2, _, _, v_final_2 = run_layer_forward(
         layer2_maps, v_th, chunk_size=1, max_steps=layer2_maps.a.shape[1],
         n_real_events=n_real_events_2)
@@ -159,7 +159,7 @@ def test_two_layer_fc_forward_multi_fire_interleaved():
 def test_empty_layer_output():
     """layer1 全部神經元都不 fire 的邊界情況:extract_output_events 回傳的固定
     長度陣列裡 n_real_events=0(全部都是 pad 事件),接著
-    build_fc_queue/run_layer_forward 帶 n_real_events=0 處理這個「語意上等於
+    FC 佇列建構/run_layer_forward 帶 n_real_events=0 處理這個「語意上等於
     空佇列」的陣列,也不該出錯——這是先前 review 提過、但沒實測過的邊界案例。
 
     weights 故意設得很小,兩顆神經元在三筆事件內都不可能碰到 v_th=1.0。
@@ -172,7 +172,8 @@ def test_empty_layer_output():
     W1 = jnp.array([[0.05, 0.05],
                     [0.05, 0.05]])
 
-    layer1_maps = build_fc_queue(layer1_event_times, layer1_event_source_idx, W1, tau, n_real_events=layer1_event_times.shape[0]).maps
+    layer1_maps = fc_float_values(build_fc_structure(layer1_event_times, layer1_event_source_idx, layer1_event_times.shape[0]),
+                                  W1, tau, None)
     n_real_events_1 = layer1_event_times.shape[0]
     spike_mask_1, spike_event_idx_1, s_spike_1, _, _ = run_layer_forward(
         layer1_maps, v_th, chunk_size=1, max_steps=n_real_events_1, n_real_events=n_real_events_1)
@@ -190,9 +191,8 @@ def test_empty_layer_output():
     # --- layer2 吃這個「語意上是空事件包」的固定長度陣列,不該出錯,
     #     結果應該是「什麼都沒發生」 ---
     W2 = jnp.array([[0.5, 0.5]])
-    layer2_maps = build_fc_queue(
-        layer2_event_times, layer2_event_source_idx, W2, tau,
-        event_gain=layer2_event_gain, n_real_events=n_real_events_2).maps
+    layer2_maps = fc_float_values(build_fc_structure(layer2_event_times, layer2_event_source_idx, n_real_events_2),
+                                  W2, tau, layer2_event_gain)
     assert layer2_maps.a.shape == (1, 6)
 
     spike_mask_2, _, _, _, v_final_2 = run_layer_forward(

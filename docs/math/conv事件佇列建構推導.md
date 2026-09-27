@@ -3,7 +3,7 @@
 > **現況(2026-09-08)**:本文件推導的「密集」版本——每顆輸出神經元一條
 > 長度 = 全域事件數的仿射映射陣列——對應的 `build_conv_queue` 曾實作過,
 > 後於架構翻修 step 4d **移除**,程式碼裡不再有密集版佇列建構。實際在用的是
-> **壓縮版** `salt_core/connectivity/conv.py` 的 `build_conv_queue_compressed`
+> **壓縮版** `salt_core/connectivity/conv.py` 的 `build_conv_structure` + `conv_float_values`
 > (每顆神經元只留自己感受野內的 tap,長度固定 `L`),推導見
 > `docs/math/conv事件佇列壓縮版推導.md`。
 >
@@ -18,7 +18,7 @@
 這兩份文件推導的仿射映射合成、`chunk_scan` 消化佇列的邏輯,對 conv **原封不動
 適用**,不在本文件重推。本文件只處理 FC 因為全連接被完全省略掉的一步:**怎麼
 幫每顆輸出神經元組出它自己要用的 `(a,b)` 仿射映射陣列**,對應
-`salt_core/connectivity/fc.py` 的 `build_fc_queue`。
+`salt_core/connectivity/fc.py` 的 `build_fc_structure` + `fc_float_values`。
 
 只寫數學公式、資料形狀(shape)與設計決策,不含實際程式碼,跟 FC 文件的體例
 一致。

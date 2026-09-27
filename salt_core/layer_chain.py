@@ -16,7 +16,7 @@ event_gain),外加真事件數(n_real_events)。對應 docs/math/全連接forwar
 做排序 + 補 pad + 打包,那一步不分連接方式。
 
 **為什麼要帶 s_spike 當下一層的 event_gain**(純 JAX、不跳出計算圖):下一層
-`build_fc_queue` 用 event_source_idx(離散索引)從 W 查權重,索引操作本身對
+`fc_float_values` 用 event_source_idx(離散索引)從 W 查權重,索引操作本身對
 「被索引的 W」有梯度,但不會讓上一層的權重出現在算式裡——不管上一層的權重
 是多少,查出來的都只是 W 的某個 column,這條路徑上 loss 對上一層權重的梯度
 恆為 0。修法:額外帶一個 s_spike(這一層每個 spike 事件,自己 spike 那一刻的
@@ -38,9 +38,8 @@ _PAD_TIME = 1e12
 
 
 class EventStream(NamedTuple):
-    """層與層之間的標準事件流。欄位名跟 build_fc_queue 的參數一一對齊
-    (event_times / event_source_idx / event_gain / n_real_events),下一層可以
-    直接 `build_fc_queue(**stream._asdict(), W=..., tau=...)` 展開。
+    """層與層之間的標準事件流(event_times / event_source_idx / event_gain /
+    n_real_events),下一層的佇列建構直接讀這四個欄位。
 
     **注意**:這裡的 event_times 是這一層吐出、= 下一層輸入的事件時間,跟
     `extract_output_events` 的輸入參數 event_times(這一層自己的輸入事件時間)
@@ -70,7 +69,7 @@ def _pack_stream(neuron_idx: jax.Array, global_event_idx: jax.Array,
       - event_times:排序後的輸出時間,前 n_real_events 筆真、後面補 _PAD_TIME。
       - event_source_idx:對應的來源神經元 index,前 n_real_events 筆有意義。
       - event_gain:對應的 s_spike,前 n_real_events 筆有意義。
-      - n_real_events:原封轉出。下一層要把它分別傳進 build_fc_queue 跟
+      - n_real_events:原封轉出。下一層要把它分別傳進佇列建構跟
         run_layer_forward,讓 pad 事件被強制當 identity 映射、也不被算進 s_value
         ——分別解決「數值安全」跟「梯度正確」,缺一不可。
     """
@@ -138,8 +137,8 @@ def extract_output_events_compressed(spike_mask: jax.Array, spike_event_idx: jax
     對應 docs/math/conv事件佇列壓縮版推導.md 第 5.3 節。
 
     local_to_global_j: (n_source_neurons, L) int,(神經元, 局部欄) -> 全域事件
-      index,就是 connectivity/conv.py `build_conv_queue_compressed` 回傳的
-      CompressedConvQueue.local_to_global_j,呼叫端原封傳進來。查表前把局部欄
+      index,就是 connectivity/conv.py ConvQueueStructure.local_to_global_j
+      用 tile_channels 展開到每個 channel 的結果。查表前把局部欄
       index 明確夾進 [0, L),不依賴 JAX gather 對越界 index 的預設行為。
     其餘參數同 `extract_output_events`。
     """

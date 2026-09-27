@@ -20,7 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from salt_core.chunk_scan import run_layer_forward, run_layer_forward_traced
-from salt_core.connectivity.fc import build_fc_queue
+from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.layers import (ConvLayer, FCLayer, raw_events_to_stream,
                                run_network, run_network_traced)
 from salt_core.monitor import (LayerForwardTrace, resolve_ms_compressed,
@@ -78,8 +78,7 @@ def _toy_fc_maps(n_out, n_events, seed):
     src = jnp.arange(n_events, dtype=jnp.int32) % 3
     times = jnp.sort(jax.random.uniform(k, (n_events,), minval=1.0, maxval=40.0))
     w = jax.random.uniform(jax.random.PRNGKey(seed + 1), (n_out, 3), minval=-1.0, maxval=1.0)
-    maps = build_fc_queue(times, src, w, tau=8.0,
-                          event_gain=jnp.ones((n_events,)), n_real_events=n_events).maps
+    maps = fc_float_values(build_fc_structure(times, src, n_events), w, 8.0, jnp.ones((n_events,)))
     return maps, times
 
 

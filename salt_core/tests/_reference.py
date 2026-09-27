@@ -4,11 +4,11 @@
 `(n_out_neurons, n_events)`——衰減 `a` 全域算一次;`b` 逐輸出 channel,在整個
 「事件 x 空間輸出格」上算出每個 (事件, 輸出位置) 的 kernel tap 是否合法、
 對應哪個權重,不合法的用 `jnp.where` 蓋成 0。**不用 scatter、不用 gather 的
-`mode='drop'`、不用候選壓縮**,跟 `build_conv_queue_compressed` 完全不共用機制
+`mode='drop'`、不用候選壓縮**,跟 `build_conv_structure` 完全不共用機制
 (連「怎麼避免越界 index」都不一樣:這裡是 clip + where,壓縮版是 scatter
 mode='drop')。
 
-用途:`build_conv_queue_compressed` 的等價測試拿這個當 ground truth(取代原本
+用途:conv 佇列建構(`build_conv_structure` + `conv_float_values`)的等價測試拿這個當 ground truth(取代原本
 拿密集版 `build_conv_queue` 當對照的做法——密集版已於 step 4d 移除)。
 純仿射(v_th=1e9)場景的梯度驗算用 `finite_diff_grad`(對這個參考 forward 做
 中央差分),概念上等同「用有限差分驗 autodiff」,完全繞開 XLA autodiff;

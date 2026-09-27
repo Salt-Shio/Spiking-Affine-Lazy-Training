@@ -32,9 +32,9 @@ from salt_core.chunk_scan import (LayerForwardResult, LayerForwardResultInt,
                                    run_layer_forward, run_layer_forward_int,
                                    run_layer_forward_int_traced, run_layer_forward_traced)
 from salt_core.core import spike_step_upper_bound
-from salt_core.connectivity.conv import (CompressedConvQueue, build_conv_queue_compressed,
+from salt_core.connectivity.conv import (build_conv_structure, conv_float_values, tile_channels,
                                           unravel_conv_source)
-from salt_core.connectivity.fc import FCQueue, build_fc_queue
+from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.fixed_point import OverflowMode, RoundMode
 from salt_core.layer_chain import (EventStream, extract_output_events,
                                     extract_output_events_compressed)
@@ -113,14 +113,14 @@ class LayerDiagInt(NamedTuple):
     output_truncated: jax.Array  # 這層真正吐出的 spike 數超過輸出容量
 
 
-def _run_quantized_scan(queue: CompressedConvQueue | FCQueue, params: QuantizedLayerParams,
+def _run_quantized_scan(delta_t: jax.Array, b: jax.Array, params: QuantizedLayerParams,
                         round_mode: RoundMode | str, trace: bool):
-    """Conv/FC 整數版 forward 共用的「查表 → 取權重碼 → 整數掃描」。回傳
-    `(result, v_steps)`,`v_steps` 只有 `trace=True` 時是陣列,否則 `None`。"""
-    a_int, is_identity = apply_decay_table_int(queue.delta_t, params.decay_table_int)
-    # 佇列建構把權重碼帶成 float32(AffineMap.b)。q 是整數 dtype(入口檢查過),
+    """Conv/FC 整數版 forward 共用的「查表 → 取權重碼 → 整數掃描」。delta_t、b 形狀
+    (n_neurons, 佇列長度)。回傳 (result, v_steps),v_steps 只有 trace=True 時是陣列。"""
+    a_int, is_identity = apply_decay_table_int(delta_t, params.decay_table_int)
+    # 浮點數值段把權重碼帶成 float32。q 是整數 dtype(入口檢查過),
     # |q| < 2^24 時 float32 表示是精確的,直接轉回 int32 不會改值。
-    q_int = queue.maps.b.astype(jnp.int32)
+    q_int = b.astype(jnp.int32)
     scan_args = (a_int, is_identity, q_int, params.v_th_int)
     scan_kwargs = dict(f_a=params.f_a, f_V=params.f_V, i_V=params.i_V, round_mode=round_mode,
                        overflow_mode=params.overflow_mode)
@@ -279,52 +279,54 @@ class ConvLayer:
     def _run_forward(self, w: jax.Array, in_stream: EventStream, *, trace: bool):
         """建壓縮佇列 + 跑一層 + 抽輸出流。`forward` / `forward_traced` 共用。
         `trace=False` 時 graph 跟舊 `forward` body 逐位元相同(`trace` 是 Python
-        端靜態 bool,分支在 trace 期被消掉)。回傳 `(out_stream, result, cq,
-        v_steps, pointer_steps)`;後兩個只有 `trace=True` 時是陣列,否則 `None`。"""
+        端靜態 bool,分支在 trace 期被消掉)。回傳 (out_stream, result, structure,
+        maps, v_steps, pointer_steps);後兩個只有 trace=True 時是陣列,否則 None。"""
         # 扁平來源編號 -> (x,y,c),用這層自己的輸入面尺寸。第一層吃 ravel 過的
         # 原始事件,ravel↔unravel 對合法座標((0..w_in-1, 0..h_in-1, 0..ic-1),
         # pad 也是 (0,0,0))是嚴格逆運算,不改數值。
         x, y, c = unravel_conv_source(in_stream.event_source_idx, self.h_in, self.w_in)
-        cq = build_conv_queue_compressed(
-            in_stream.event_times, x, y, c, w, self.tau,
-            self.s, self.p, self.h_out, self.w_out, self.L,
-            event_gain=in_stream.event_gain, n_real_events=in_stream.n_real_events)
+        structure = build_conv_structure(
+            in_stream.event_times, x, y, c, self.k, self.s, self.p, self.h_out, self.w_out,
+            self.L, in_stream.n_real_events)
+        maps = conv_float_values(structure, w, self.tau, in_stream.event_gain)
+        n_real_events = tile_channels(structure.n_real_events, self.oc)
         if trace:
             result, v_steps, pointer_steps = run_layer_forward_traced(
-                cq.maps, self.v_th, chunk_size=self.chunk_size, max_steps=self.max_steps,
-                alpha=self.alpha, n_real_events=cq.n_real_events)
+                maps, self.v_th, chunk_size=self.chunk_size, max_steps=self.max_steps,
+                alpha=self.alpha, n_real_events=n_real_events)
         else:
             result = run_layer_forward(
-                cq.maps, self.v_th, chunk_size=self.chunk_size, max_steps=self.max_steps,
-                alpha=self.alpha, n_real_events=cq.n_real_events)
+                maps, self.v_th, chunk_size=self.chunk_size, max_steps=self.max_steps,
+                alpha=self.alpha, n_real_events=n_real_events)
             v_steps = pointer_steps = None
         out_stream = extract_output_events_compressed(
             result.spike_mask, result.spike_event_idx, result.s_spike,
-            in_stream.event_times, cq.local_to_global_j,
+            in_stream.event_times, tile_channels(structure.local_to_global_j, self.oc),
             max_total_spikes=self.max_out_spikes)
-        return out_stream, result, cq, v_steps, pointer_steps
+        return out_stream, result, structure, maps, v_steps, pointer_steps
 
     def forward(self, w: jax.Array,
                 in_stream: EventStream) -> tuple[EventStream, LayerForwardResult, LayerDiag]:
-        out_stream, result, cq, _, _ = self._run_forward(w, in_stream, trace=False)
+        out_stream, result, structure, maps, _, _ = self._run_forward(w, in_stream, trace=False)
         spike_count = jnp.sum(result.spike_mask)
         diag = LayerDiag(
             spike_count=spike_count,
             firing_rate=spike_count / (self.n_neurons * jnp.maximum(in_stream.n_real_events, 1)),
-            needed={"L": jnp.max(cq.n_real_events),
+            needed={"L": jnp.max(structure.n_real_events),
                     "max_out_spikes": out_stream.n_real_events,
                     "max_steps": jnp.max(spike_step_upper_bound(
-                        cq.maps.b, self.v_th, self.chunk_size))})
+                        maps.b, self.v_th, self.chunk_size))})
         return out_stream, result, diag
 
     def forward_traced(self, w: jax.Array,
                        in_stream: EventStream) -> tuple[EventStream, LayerForwardTrace]:
         """跟 `forward` 一樣跑一層,但吐 `LayerForwardTrace`(逐步軌跡)取代
         `(LayerForwardResult, LayerDiag)`。給 `run_network_traced` 用。"""
-        out_stream, result, cq, v_steps, pointer_steps = self._run_forward(
+        out_stream, result, structure, _maps, v_steps, pointer_steps = self._run_forward(
             w, in_stream, trace=True)
         event_ms = resolve_ms_compressed(
-            pointer_steps, cq.local_to_global_j, cq.n_real_events, in_stream.event_times)
+            pointer_steps, tile_channels(structure.local_to_global_j, self.oc),
+            tile_channels(structure.n_real_events, self.oc), in_stream.event_times)
         trace = LayerForwardTrace(spike_mask=result.spike_mask,
                                    v_steps=v_steps, event_ms=event_ms)
         return out_stream, trace
@@ -336,16 +338,17 @@ class ConvLayer:
         是陣列,否則 `None`。"""
         _check_weight_codes(params.q)
         x, y, c = unravel_conv_source(in_stream.event_source_idx, self.h_in, self.w_in)
-        cq = build_conv_queue_compressed(
-            in_stream.event_times, x, y, c, params.q, self.tau,
-            self.s, self.p, self.h_out, self.w_out, self.L,
-            event_gain=in_stream.event_gain, n_real_events=in_stream.n_real_events)
-        result, v_steps = _run_quantized_scan(cq, params, round_mode, trace)
+        structure = build_conv_structure(
+            in_stream.event_times, x, y, c, self.k, self.s, self.p, self.h_out, self.w_out,
+            self.L, in_stream.n_real_events)
+        b = conv_float_values(structure, params.q, self.tau, in_stream.event_gain).b
+        result, v_steps = _run_quantized_scan(
+            tile_channels(structure.delta_t, self.oc), b, params, round_mode, trace)
         out_stream = extract_output_events_compressed(
             result.spike_mask, result.spike_event_idx, _constant_spike_gain(result.spike_mask),
-            in_stream.event_times, cq.local_to_global_j,
+            in_stream.event_times, tile_channels(structure.local_to_global_j, self.oc),
             max_total_spikes=self.max_out_spikes)
-        diag = LayerDiagInt(queue_truncated=jnp.max(cq.n_real_events) > self.L,
+        diag = LayerDiagInt(queue_truncated=jnp.max(structure.n_real_events) > self.L,
                             output_truncated=out_stream.n_real_events > self.max_out_spikes)
         return out_stream, result, v_steps, diag
 
@@ -457,9 +460,9 @@ class FCLayer:
         `trace=False` 時 graph 跟舊 `forward` body 逐位元相同。回傳
         `(out_stream, result, v_steps, pointer_steps)`;後兩個只有 `trace=True`
         時是陣列,否則 `None`。"""
-        maps = build_fc_queue(
-            in_stream.event_times, in_stream.event_source_idx, w, self.tau,
-            event_gain=in_stream.event_gain, n_real_events=in_stream.n_real_events).maps
+        structure = build_fc_structure(
+            in_stream.event_times, in_stream.event_source_idx, in_stream.n_real_events)
+        maps = fc_float_values(structure, w, self.tau, in_stream.event_gain)
         # 積分預算 = 上一層宣告的輸出容量(輸入流固定長度),不是自己的欄位。
         scan_steps = -(-in_stream.event_times.shape[0] // self.chunk_size)  # ceil div
         if trace:
@@ -504,10 +507,11 @@ class FCLayer:
         """跟 `ConvLayer._run_forward_quantized` 同一個組裝方式。回傳
         `(out_stream, result, v_steps, diag)`。"""
         _check_weight_codes(params.q)
-        queue = build_fc_queue(
-            in_stream.event_times, in_stream.event_source_idx, params.q, self.tau,
-            event_gain=in_stream.event_gain, n_real_events=in_stream.n_real_events)
-        result, v_steps = _run_quantized_scan(queue, params, round_mode, trace)
+        structure = build_fc_structure(
+            in_stream.event_times, in_stream.event_source_idx, in_stream.n_real_events)
+        b = fc_float_values(structure, params.q, self.tau, in_stream.event_gain).b
+        delta_t = jnp.broadcast_to(structure.delta_t[None, :], b.shape)
+        result, v_steps = _run_quantized_scan(delta_t, b, params, round_mode, trace)
         out_stream = extract_output_events(
             result.spike_mask, result.spike_event_idx, _constant_spike_gain(result.spike_mask),
             in_stream.event_times, max_total_spikes=self.n_out)

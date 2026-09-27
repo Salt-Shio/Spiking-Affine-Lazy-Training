@@ -1,4 +1,4 @@
-"""驗證 fc_queue.build_fc_queue + chunk_scan.run_layer_forward 串起來,
+"""驗證 build_fc_structure + fc_float_values + chunk_scan.run_layer_forward 串起來,
 數字對得上 docs/math/全連接forward訓練範例.md 第 3、4 節的手算例子:
 
   n=2 (a1,a2), m=2 (b1,b2), tau=4, v_th=1.0
@@ -17,7 +17,7 @@
 import jax.numpy as jnp
 
 from salt_core.chunk_scan import run_layer_forward
-from salt_core.connectivity.fc import build_fc_queue
+from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 
 TOL = 1e-4
 
@@ -36,7 +36,8 @@ def _run(chunk_size):
     W = jnp.array([[0.6, 0.5],
                    [0.3, 0.2]])
 
-    maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0]).maps
+    maps = fc_float_values(build_fc_structure(event_times, event_source_idx, event_times.shape[0]),
+                           W, tau, None)
     assert maps.a.shape == (2, 3)
 
     n_real_events = event_times.shape[0]
@@ -65,25 +66,23 @@ def test_fc_forward_chunk_size_full():
     _check(*_run(chunk_size=3))
 
 
-def test_fc_queue_delta_t_matches_hand_computation():
+def test_fc_structure_delta_t_matches_hand_computation():
     """跟上面同一組 event_times=[1,2,4]:Δt 是跟前一筆事件的差,第一筆跟 t=0
-    比,[1-0, 2-1, 4-2]=[1,1,2]。兩顆輸出神經元共用同一組,`maps.a` 就是用
-    這組 Δt 算的。"""
+    比,[1-0, 2-1, 4-2]=[1,1,2]。兩顆輸出神經元的 a 都用這組 Δt 算。"""
     event_times = jnp.array([1.0, 2.0, 4.0])
-    queue = build_fc_queue(event_times, jnp.array([0, 1, 0]), jnp.ones((2, 2)), 4.0,
-                           n_real_events=3)
-    assert queue.delta_t.shape == (2, 3)
-    assert list(queue.delta_t[0]) == [1, 1, 2]
-    assert list(queue.delta_t[1]) == [1, 1, 2], "兩顆輸出神經元的 Δt 要一樣(FC 沒有逐神經元差異)"
-    assert jnp.allclose(queue.maps.a, 0.75 ** queue.delta_t)
+    structure = build_fc_structure(event_times, jnp.array([0, 1, 0]), 3)
+    maps = fc_float_values(structure, jnp.ones((2, 2)), 4.0, None)
+    assert list(structure.delta_t) == [1, 1, 2]
+    assert maps.a.shape == (2, 3)
+    assert jnp.allclose(maps.a, 0.75 ** structure.delta_t[None, :])
 
 
-def test_fc_queue_pad_positions_are_identity_with_zero_delta_t():
+def test_fc_structure_pad_positions_are_identity_with_zero_delta_t():
     """n_real_events=2:第三筆是 pad 事件,時間是多層串接用的假時間 1e12。
     pad 位置的 Δt 要是 0(不是 1e12-2 這種天文數字)、a=1、b=0。"""
     event_times = jnp.array([1.0, 2.0, 1e12])
-    queue = build_fc_queue(event_times, jnp.array([0, 1, 0]), jnp.array([[0.5, 0.7]]), 4.0,
-                           n_real_events=2)
-    assert list(queue.delta_t[0]) == [1, 1, 0]
-    assert float(queue.maps.a[0, 2]) == 1.0
-    assert float(queue.maps.b[0, 2]) == 0.0
+    structure = build_fc_structure(event_times, jnp.array([0, 1, 0]), 2)
+    maps = fc_float_values(structure, jnp.array([[0.5, 0.7]]), 4.0, None)
+    assert list(structure.delta_t) == [1, 1, 0]
+    assert float(maps.a[0, 2]) == 1.0
+    assert float(maps.b[0, 2]) == 0.0

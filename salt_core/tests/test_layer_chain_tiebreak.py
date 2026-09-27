@@ -31,7 +31,7 @@ fire 即可):
 import jax.numpy as jnp
 
 from salt_core.chunk_scan import run_layer_forward
-from salt_core.connectivity.fc import build_fc_queue
+from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.layer_chain import extract_output_events
 
 TOL = 1e-4
@@ -52,7 +52,8 @@ def test_tiebreak_uses_spike_event_idx_not_neuron_order():
     W = jnp.array([[0.6],
                    [1.2]])
 
-    maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0]).maps
+    maps = fc_float_values(build_fc_structure(event_times, event_source_idx, event_times.shape[0]),
+                           W, tau, None)
     spike_mask, spike_event_idx, s_spike, _, _ = run_layer_forward(
         maps, v_th, chunk_size=2, max_steps=1, n_real_events=maps.a.shape[1])
 
@@ -103,7 +104,8 @@ def test_tiebreak_with_three_neurons_not_in_row_order():
                    [1.2],
                    [0.6]])
 
-    maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0]).maps
+    maps = fc_float_values(build_fc_structure(event_times, event_source_idx, event_times.shape[0]),
+                           W, tau, None)
     spike_mask, spike_event_idx, s_spike, _, _ = run_layer_forward(
         maps, v_th, chunk_size=3, max_steps=1, n_real_events=maps.a.shape[1])
 

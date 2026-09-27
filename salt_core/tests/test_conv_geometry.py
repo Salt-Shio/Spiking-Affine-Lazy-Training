@@ -1,6 +1,6 @@
 """conv 佇列建構的**幾何覆蓋** + **跨層梯度**測試,step 4d 從已刪除的
 test_conv_queue.py(原本測密集版 build_conv_queue)搬過來、改成打壓縮版
-`build_conv_queue_compressed`,對照組換成 `salt_core/tests/_reference.py` 的
+`build_conv_structure` + `conv_float_values`,對照組換成 `salt_core/tests/_reference.py` 的
 透明 numpy 參考(`dense_conv_affine_map`)。
 
 分三塊:
@@ -16,8 +16,9 @@ import jax
 import jax.numpy as jnp
 
 from salt_core.chunk_scan import run_layer_forward
-from salt_core.connectivity.conv import build_conv_queue_compressed, unravel_conv_source
-from salt_core.connectivity.fc import build_fc_queue
+from salt_core.connectivity.conv import (build_conv_structure, conv_float_values, tile_channels,
+                                          unravel_conv_source)
+from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.layer_chain import extract_output_events, extract_output_events_compressed
 from salt_core.tests._reference import dense_conv_affine_map
 
@@ -28,6 +29,16 @@ A = 0.75  # 1 - 1/tau
 
 def _tol_close(a, b, tol=TOL):
     return bool(jnp.allclose(jnp.asarray(a), jnp.asarray(b), atol=tol))
+
+
+def _compressed_queue(event_times, x, y, c, W, tau, S, P, H_out, W_out, L, gain, n_real):
+    """結構 + 浮點數值段。回傳 (maps, 逐神經元 n_real_events, 逐神經元 local_to_global_j)。"""
+    oc = W.shape[0]
+    structure = build_conv_structure(event_times, x, y, c, W.shape[2], S, P, H_out, W_out, L,
+                                     n_real)
+    return (conv_float_values(structure, W, tau, gain),
+            tile_channels(structure.n_real_events, oc),
+            tile_channels(structure.local_to_global_j, oc))
 
 
 def _run_ref(event_times, x, y, c, W, tau, S, P, H_out, W_out, v_th, max_steps,
@@ -42,10 +53,10 @@ def _run_ref(event_times, x, y, c, W, tau, S, P, H_out, W_out, v_th, max_steps,
 def _run_compressed(event_times, x, y, c, W, tau, S, P, H_out, W_out, L, v_th, max_steps,
                      gain=None, n_real=None):
     n_real = event_times.shape[0] if n_real is None else n_real
-    cq = build_conv_queue_compressed(event_times, x, y, c, W, tau, S, P, H_out, W_out, L,
-                                      event_gain=gain, n_real_events=n_real)
-    return run_layer_forward(cq.maps, v_th, chunk_size=max_steps, max_steps=max_steps,
-                              n_real_events=cq.n_real_events)
+    maps, n_real_per_neuron, _ = _compressed_queue(event_times, x, y, c, W, tau, S, P,
+                                                   H_out, W_out, L, gain, n_real)
+    return run_layer_forward(maps, v_th, chunk_size=max_steps, max_steps=max_steps,
+                              n_real_events=n_real_per_neuron)
 
 
 # ============================================================================
@@ -159,11 +170,12 @@ def _conv1_fire_then_extract(W1):
     s_spike forward 精確 1.0,觸發時間 t=1。回傳 extract_output_events_compressed
     的結果。"""
     et = jnp.array([1.0]); x = jnp.array([1]); y = jnp.array([1]); c = jnp.array([0])
-    cq = build_conv_queue_compressed(et, x, y, c, W1, TAU, _S, _P, _HW, _HW, 1, n_real_events=et.shape[0])
-    r = run_layer_forward(cq.maps, v_th=8.5, chunk_size=1, max_steps=1,
-                           n_real_events=cq.n_real_events)
+    maps, n_real_per_neuron, local_to_global_j = _compressed_queue(
+        et, x, y, c, W1, TAU, _S, _P, _HW, _HW, 1, None, et.shape[0])
+    r = run_layer_forward(maps, v_th=8.5, chunk_size=1, max_steps=1,
+                           n_real_events=n_real_per_neuron)
     return extract_output_events_compressed(r.spike_mask, r.spike_event_idx, r.s_spike, et,
-                                             cq.local_to_global_j, max_total_spikes=9)
+                                             local_to_global_j, max_total_spikes=9)
 
 
 def test_conv_to_conv_cross_layer_gradient_matches_hand_calc():
@@ -174,11 +186,11 @@ def test_conv_to_conv_cross_layer_gradient_matches_hand_calc():
         ev = _conv1_fire_then_extract(W1)
         x2, y2, c2 = unravel_conv_source(ev.event_source_idx, _HW, _HW)
         W2 = (10 + jnp.arange(9, dtype=jnp.float32)).reshape(1, 1, 3, 3)
-        cq2 = build_conv_queue_compressed(ev.event_times, x2, y2, c2, W2, TAU, _S, _P,
-                                           _HW, _HW, 1, event_gain=ev.event_gain,
-                                           n_real_events=ev.n_real_events)
-        r2 = run_layer_forward(cq2.maps, v_th=1e9, chunk_size=1, max_steps=1,
-                                n_real_events=cq2.n_real_events)
+        maps2, n_real_per_neuron2, _ = _compressed_queue(
+            ev.event_times, x2, y2, c2, W2, TAU, _S, _P, _HW, _HW, 1, ev.event_gain,
+            ev.n_real_events)
+        r2 = run_layer_forward(maps2, v_th=1e9, chunk_size=1, max_steps=1,
+                                n_real_events=n_real_per_neuron2)
         return r2.v_final[0]
 
     g = jax.grad(fwd)(_w1())
@@ -189,13 +201,13 @@ def test_conv_to_conv_cross_layer_gradient_matches_hand_calc():
 
 
 def test_conv_to_fc_cross_layer_gradient_matches_hand_calc():
-    """conv1 fire 出來的扁平 id 直接餵 build_fc_queue(不 unravel),loss = FC
+    """conv1 fire 出來的扁平 id 直接餵 FC 佇列建構(不 unravel),loss = FC
     v_final[0]。W_fc[:,0] = [3.0,-1.0] -> dL/dW1[0,0,2,2] = 3.0 * slope。"""
     def fwd(W1):
         ev = _conv1_fire_then_extract(W1)
         W_fc = jnp.zeros((2, 9), dtype=jnp.float32).at[:, 0].set(jnp.array([3.0, -1.0]))
-        maps_fc = build_fc_queue(ev.event_times, ev.event_source_idx, W_fc, TAU,
-                                  event_gain=ev.event_gain, n_real_events=ev.n_real_events).maps
+        maps_fc = fc_float_values(build_fc_structure(ev.event_times, ev.event_source_idx, ev.n_real_events),
+                                  W_fc, TAU, ev.event_gain)
         r_fc = run_layer_forward(maps_fc, v_th=1e9, chunk_size=maps_fc.a.shape[1],
                                   max_steps=maps_fc.a.shape[1], n_real_events=ev.n_real_events)
         return r_fc.v_final[0]

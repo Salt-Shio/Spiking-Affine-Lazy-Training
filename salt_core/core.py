@@ -37,9 +37,8 @@ def combine(left: AffineMap, right: AffineMap) -> AffineMap:
 
 
 def create_affine_maps(n_ms: jax.Array, w: jax.Array, tau: float) -> AffineMap:
-    """一批事件各自的仿射映射:a = (1 - 1/tau)^n_ms(離散 Euler 衰減),b = w。
-    n_ms、w 的 shape 是這批事件的數量(leading axis),逐元素套用同一個 tau,
-    回傳的 a/b 也是同樣 shape——不是單一事件的映射,是一整批。"""
+    """一批事件各自的仿射映射:a = (1 - 1/tau) ** n_ms(離散 Euler 衰減),b = w。
+    逐元素計算;回傳的 a 形狀跟 n_ms 一樣,b 跟 w 一樣。"""
     a = (1.0 - 1.0 / tau) ** jnp.asarray(n_ms, dtype=jnp.float32)
     b = jnp.asarray(w, dtype=jnp.float32)
     return AffineMap(a=a, b=b)
@@ -59,7 +58,7 @@ def mask_pad_events(maps: AffineMap,
     """把 maps 的事件軸(最後一軸)裡,超過該神經元真事件數的位置強制蓋成
     identity 映射(a=1, b=0)。
 
-    `build_fc_queue`/`build_conv_queue` 都要處理同一個問題:多層串接時,
+    FC/conv 的佇列建構都要處理同一個問題:多層串接時,
     extract_output_events 用「固定上限、後面補 pad 事件」表示不定長度的佇列,
     pad 位置的 event_times/event_gain 不管算出什麼奇怪的值,都不該讓下游
     的膜電位變化或誤觸發 spike。蓋成 identity 之後,pad 位置對 associative

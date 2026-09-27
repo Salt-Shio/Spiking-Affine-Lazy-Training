@@ -22,7 +22,7 @@ import jax
 import jax.numpy as jnp
 
 from salt_core.chunk_scan import run_layer_forward
-from salt_core.connectivity.fc import build_fc_queue
+from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 
 TOL = 1e-3
 
@@ -42,7 +42,8 @@ def assert_allclose(actual, expected, msg, tol=TOL):
 
 
 def _loss(W, event_times, event_source_idx, tau, v_th, chunk_size, alpha):
-    maps = build_fc_queue(event_times, event_source_idx, W, tau, n_real_events=event_times.shape[0]).maps
+    maps = fc_float_values(build_fc_structure(event_times, event_source_idx, event_times.shape[0]),
+                           W, tau, None)
     n_real_events = event_times.shape[0]
     _, _, _, s_value, _ = run_layer_forward(maps, v_th, chunk_size=chunk_size,
                                             max_steps=n_real_events, alpha=alpha,

@@ -28,9 +28,9 @@ class LayerForwardResult(NamedTuple):
     """
     spike_mask: jax.Array       # shape (n_out_neurons, max_steps),該步是否真的輸出一個 spike
     spike_event_idx: jax.Array  # shape (n_out_neurons, max_steps),這條佇列自己的局部
-                                 # index(0-based)——密集版佇列(build_fc_queue/
-                                 # build_conv_queue)這個 index 就是全域事件 index,可以
-                                 # 直接查 event_times;壓縮版佇列(build_conv_queue_compressed)
+                                 # index(0-based)——FC 佇列(fc_float_values)
+                                 # 這個 index 就是全域事件 index,可以
+                                 # 直接查 event_times;conv 壓縮佇列(conv_float_values)
                                  # 不是,這是「這顆神經元自己壓縮佇列裡的第幾欄」,要先查
                                  # local_to_global_j(見 connectivity/conv.py)才是全域事件
                                  # index,見 layer_chain.py extract_output_events 的說明
@@ -54,8 +54,8 @@ def run_layer_forward(maps: AffineMap, v_th: float, chunk_size: int, max_steps: 
                        n_real_events: jax.Array | int,
                        alpha: float = 2.0) -> LayerForwardResult:
     """消化 maps(shape (n_out_neurons, L))整條佇列——`L`(`maps.a.shape[1]`)
-    密集版(build_fc_queue/build_conv_queue)是全域事件數,壓縮版
-    (build_conv_queue_compressed)是每顆神經元自己的壓縮佇列長度
+    FC 佇列(fc_float_values)是全域事件數,conv 壓縮佇列
+    (conv_float_values)是每顆神經元自己的壓縮佇列長度
     (max_queue_len),兩者對這個函式來說是同一件事:就是這條佇列有幾欄。
 
     max_steps 要保證涵蓋最壞情況(每筆事件都 spike,一次只能消化一筆):每一步
@@ -228,8 +228,8 @@ def run_layer_forward_int(a_int: jax.Array, is_identity: jax.Array, q_int: jax.A
     `quantize.apply_decay_table_int` 查好表、準備好權重整數碼(這個函式只跑
     遞迴)。**每一欄都照實套用**,不看真事件數:佇列裡不是真事件的位置,
     佇列建構那一步就要做成 identity(Δt=0、權重 0),conv 的 catch-up 欄則是
-    真的要衰減(見 `connectivity.conv.build_conv_queue_compressed`、
-    `connectivity.fc.build_fc_queue`)。
+    真的要衰減(見 `connectivity.conv.build_conv_structure`、
+    `connectivity.fc.build_fc_structure`)。
 
     `v_th_int`:純量或 shape `(n_out_neurons,)`;`None` 代表這層不 fire。
     `f_a`/`f_V`/`i_V`/`round_mode`/`overflow_mode` 整層共用,原樣交給
