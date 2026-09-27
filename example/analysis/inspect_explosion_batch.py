@@ -12,7 +12,6 @@ loss/spike 數離群的樣本;再重建該 epoch 實際的 batch 切法(PRNG spl
 """
 import argparse
 import csv
-import dataclasses
 import os
 
 import jax
@@ -21,11 +20,12 @@ import numpy as np
 import optax
 
 from data.src.nmnist import NMNISTDataset
+from example.metrics_log import KNOB_COLUMNS
 from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
 from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, load_params_npz,
                            load_run_record, weight_snapshot_path)
-from salt_core.layers import ConvLayer
+from salt_core.capacity import Capacity
 
 
 def _rebuild_layers_at_epoch(run_record: dict, exp_dir: str, epoch: int) -> list:
@@ -35,23 +35,16 @@ def _rebuild_layers_at_epoch(run_record: dict, exp_dir: str, epoch: int) -> list
     `shrink_max_out_spikes`,見 docs/問題紀錄.md §十五 踩過的坑)——要重建
     「某個中途 epoch 當下」的權重,必須用那個 epoch **當下**的容量,不能用
     run 結束時的容量(可能已經比當下小,會把還沒縮小前的真實輸出/掃描步數
-    截斷)。這裡改成直接讀 `metrics.csv` 裡對應 epoch 那一列的
-    `{層名}_max_event_queue`/`_max_layer_spikes`/`_max_steps`。"""
+    截斷)。這裡改成直接讀 `metrics.csv` 裡對應 epoch 那一列的容量欄位。"""
     layers = build_network(run_record["config"]["model"])
     metrics_path = os.path.join(exp_dir, TRAIN_DIRNAME, "metrics.csv")
     with open(metrics_path, newline="", encoding="utf-8") as f:
         rows = {int(row["epoch"]): row for row in csv.DictReader(f)}
     row = rows[epoch]
-    rebuilt = []
-    for layer in layers:
-        if isinstance(layer, ConvLayer):
-            layer = dataclasses.replace(
-                layer,
-                L=int(row[f"{layer.name}_max_event_queue"]),
-                max_out_spikes=int(row[f"{layer.name}_max_layer_spikes"]),
-                max_steps=int(row[f"{layer.name}_max_steps"]))
-        rebuilt.append(layer)
-    return rebuilt
+    return [layer if layer.capacity is None else layer.with_capacity(Capacity(**{
+                knob: int(row[f"{layer.name}_{KNOB_COLUMNS[knob].capacity}"])
+                for knob in layer.capacity}))
+            for layer in layers]
 
 
 def _load_layers_and_params(exp_dir: str, snapshot_epoch: int):
@@ -84,7 +77,7 @@ def _epoch_permutation(seed: int, n_train: int, target_epoch: int) -> np.ndarray
 def per_sample_forward(run_record: dict, layers: list, params: tuple, split,
                        batch_size: int = 20):
     """對整個 train split 分批 forward(分批純粹省記憶體,跟訓練 batch_size
-    無關),回傳每筆樣本的 loss、預測類別、每層 n_out_spikes(shape 皆
+    無關),回傳每筆樣本的 loss、預測類別、每層 spike 數(shape 皆
     `(n_samples,)`/`{層名: (n_samples,)}`)。"""
     net = ConvNetCompressed(layers)
     decoder = build_decoder(run_record["config"]["model"], layers)
@@ -107,7 +100,7 @@ def per_sample_forward(run_record: dict, layers: list, params: tuple, split,
         all_loss.append(np.asarray(loss))
         all_pred.append(np.asarray(jnp.argmax(scores, axis=1)))
         for layer, d in zip(layers, diags):
-            all_spikes[layer.name].append(np.asarray(d.n_out_spikes))
+            all_spikes[layer.name].append(np.asarray(d.spike_count))
 
     loss = np.concatenate(all_loss)
     pred = np.concatenate(all_pred)

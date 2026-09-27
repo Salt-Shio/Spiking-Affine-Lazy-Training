@@ -26,7 +26,8 @@ import optax
 from data.src.nmnist import NMNISTDataset
 from salt_core.connectivity.conv import _axis_candidates, unravel_conv_source
 from salt_core.layer_chain import EventStream
-from salt_core.layers import grown_to_fit_batch, max_over_batch, raw_events_to_stream
+from salt_core.capacity import reduce_over_batch
+from salt_core.layers import grown_to_fit_batch, raw_events_to_stream
 from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
 from example.paths import DATASET_ROOT, resolve_config
 from example.train_conv_compressed import load_config
@@ -209,7 +210,7 @@ def _fit_layer(layer, w, stream_batch, chunk: int):
     while True:
         out, diag = _sub_batched(lambda s: _out_and_diag(layer.forward(w, s)),
                                  stream_batch, chunk)
-        grown = layer.grown_to_fit(max_over_batch(diag))
+        grown = layer.grown_to_fit(reduce_over_batch(diag))
         if grown is layer:
             return layer, out
         layer = grown

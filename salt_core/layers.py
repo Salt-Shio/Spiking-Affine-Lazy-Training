@@ -27,6 +27,7 @@ from typing import NamedTuple, Protocol
 import jax
 import jax.numpy as jnp
 
+from salt_core.capacity import Capacity, LayerDiag, reduce_over_batch
 from salt_core.chunk_scan import (LayerForwardResult, LayerForwardResultInt,
                                    run_layer_forward, run_layer_forward_int,
                                    run_layer_forward_int_traced, run_layer_forward_traced)
@@ -51,37 +52,13 @@ def uniform_init(key: jax.Array, shape: tuple, fan_in: int, init_k: float) -> ja
     return jax.random.uniform(key, shape, minval=-limit, maxval=limit)
 
 
-class LayerDiag(NamedTuple):
-    """每一層跑完一次 forward 都吐同樣這一份固定紀錄(取代原本「事後往
-    diagnostics dict 塞欄位」的做法)。全部是純量。
-
-    - `spike_count` / `firing_rate`:輕量哨兵指標,`spike_count /
-      (n_neurons * max(n_real_in, 1))`——**不是**找 k 用的感受野正規化版本
-      (那個要多算一次感受野幾何,見 connectivity/conv.py)。
-    - `max_real_queue`:這層每顆神經元「真正需要的壓縮佇列長度」的最大值
-      (`build_conv_queue_compressed` 算出的 `n_real_events`,沒被截到 L)。
-      **L 出界偵測訊號**。FC 層沒有壓縮佇列,固定 0。
-    - `n_out_spikes`:這層真正吐幾筆 spike(完整 spike_mask 的 sum,沒被
-      `max_out_spikes` 截斷)。**輸出上界出界偵測訊號**。
-    - `min_steps_needed`:用當下權重算出的掃描步數上界(見 `core.py` 的
-      `spike_step_upper_bound`,推導見 docs/math/掃描步數上界推導.md),對這層
-      所有神經元取 `max`。**`max_steps` 出界偵測訊號**:超過目前
-      `ConvLayer.max_steps` 就代表這個 batch 用當下權重算出來的上界已經不夠
-      安全,要照 `L`/`max_out_spikes` 一樣的方式放大。
-    """
-    spike_count: jax.Array
-    firing_rate: jax.Array
-    max_real_queue: jax.Array
-    n_out_spikes: jax.Array
-    min_steps_needed: jax.Array
-
-
 class Layer(Protocol):
     """一個 layer 的對外約定(純文件用途,`run_network` 靠 duck typing)。
     `run_network` 只需要底下這幾樣,不管是 conv 還是 FC。"""
     name: str
     input_shape: tuple    # 吃空間輸入時是 (channel, 高, 寬),吃攤平輸入時是 (n,)
     output_shape: tuple   # 同上,這層輸出的形狀
+    capacity: Capacity | None  # 容量旋鈕;沒有容量的層是 None。有容量的層另外提供 with_capacity
 
     def init_weight(self, key: jax.Array) -> jax.Array:
         """這一層的權重張量(形狀 / fan_in / init_k 都是層自己的知識)。"""
@@ -122,8 +99,8 @@ class Layer(Protocol):
 
     def shrink_max_out_spikes(self, observed: int) -> "Layer":
         """跟 `shrink_max_steps` 同一套規則,縮的旋鈕換成 `max_out_spikes`,
-        `observed` 是這個 epoch 裡所有真實 batch 觀察到的 `LayerDiag.
-        n_out_spikes` 最大值(真實觀察值,不是理論上界)。沒有可縮欄位的層
+        `observed` 是這個 epoch 裡所有真實 batch 觀察到的
+        `LayerDiag.needed["max_out_spikes"]` 最大值(真實觀察值,不是理論上界)。沒有可縮欄位的層
         (例如 FC)原樣傳回自己。"""
         ...
 
@@ -254,7 +231,7 @@ class ConvLayer:
     # 現在 max_out_spikes 的這個比例以下才值得縮。長大/縮小共用同一個
     # out_grow_factor 公式(ceil(觀察值 * factor)),真實需求沒變時兩次算出來的
     # 目標值相等,天然防震盪,道理跟 max_steps_grow_factor 一樣。跟 max_steps
-    # 縮小的差別:這裡吃的是真實觀察值 n_out_spikes,不是任何理論上界(見
+    # 縮小的差別:這裡吃的是真實觀察值 needed["max_out_spikes"],不是任何理論上界(見
     # docs/問題紀錄.md 第十四節,為什麼 max_out_spikes 不能用 m*)。
     out_shrink_threshold: float = 0.5
     # 跟 L 脫鉤的掃描步數上界(見 docs/math/掃描步數上界推導.md)。`None`
@@ -307,6 +284,14 @@ class ConvLayer:
     @property
     def weight_shape(self) -> tuple:
         return (self.oc, self.ic, self.k, self.k)
+
+    @property
+    def capacity(self) -> Capacity:
+        return Capacity(L=self.L, max_out_spikes=self.max_out_spikes, max_steps=self.max_steps)
+
+    def with_capacity(self, capacity: Capacity) -> "ConvLayer":
+        """換成 capacity 的容量值,其他欄位不變。"""
+        return replace(self, **capacity)
 
     def init_weight(self, key: jax.Array) -> jax.Array:
         return uniform_init(key, self.weight_shape, self.fan_in, self.init_k)
@@ -366,10 +351,10 @@ class ConvLayer:
         diag = LayerDiag(
             spike_count=spike_count,
             firing_rate=spike_count / (self.n_neurons * jnp.maximum(in_stream.n_real_events, 1)),
-            max_real_queue=jnp.max(cq.n_real_events),
-            n_out_spikes=out_stream.n_real_events,
-            min_steps_needed=jnp.max(spike_step_upper_bound(
-                cq.maps.b, self.v_th, self.chunk_size)))
+            needed={"L": jnp.max(cq.n_real_events),
+                    "max_out_spikes": out_stream.n_real_events,
+                    "max_steps": jnp.max(spike_step_upper_bound(
+                        cq.maps.b, self.v_th, self.chunk_size))})
         return out_stream, result, diag
 
     def forward_traced(self, w: jax.Array,
@@ -438,23 +423,24 @@ class ConvLayer:
         return self._run_forward_quantized(params, in_stream, round_mode=round_mode, trace=True)
 
     def grown_to_fit(self, diag: LayerDiag) -> "ConvLayer":
-        new_L = (_grow(diag.max_real_queue, self.L, self.L_grow_factor) # 這裡算完必定 >= self.L
-                 if int(diag.max_real_queue) > self.L else self.L)
-        new_out_spikes = (_grow(diag.n_out_spikes, self.max_out_spikes, self.out_grow_factor)
-                   if int(diag.n_out_spikes) > self.max_out_spikes else self.max_out_spikes)
-        # max_steps 的安全網:diag.min_steps_needed 是用「這個 batch 的實際權重」
+        needed = diag.needed
+        new_L = (_grow(needed["L"], self.L, self.L_grow_factor) # 這裡算完必定 >= self.L
+                 if int(needed["L"]) > self.L else self.L)
+        new_out_spikes = (_grow(needed["max_out_spikes"], self.max_out_spikes, self.out_grow_factor)
+                   if int(needed["max_out_spikes"]) > self.max_out_spikes else self.max_out_spikes)
+        # max_steps 的安全網:needed["max_steps"] 是用「這個 batch 的實際權重」
         # 算出來、保證夠用的步數上界(見 docs/math/掃描步數上界推導.md),超過
-        # 現在的 max_steps 就補到 ceil(min_steps_needed * max_steps_grow_factor)
+        # 現在的 max_steps 就補到 ceil(needed["max_steps"] * max_steps_grow_factor)
         # ——留跟 L/max_out_spikes 同樣精神的餘裕,也讓長大跟縮小(見
         # shrink_max_steps)用同一個公式,兩者目標值才可能相等而不互相震盪。
-        # 但 L 這次如果也跟著長大,這批的 min_steps_needed 是在「舊、不夠大」
+        # 但 L 這次如果也跟著長大,這批的 needed["max_steps"] 是在「舊、不夠大」
         # 的佇列上算出來的,沒看到長大後才會出現的額外真實事件,不能信——退回
         # 全保守值(= 新 L),下一批或下次 epoch 重估再用長大後的真實佇列重新
         # 估出更緊的值。
         if new_L != self.L: # 目前 new_L 嚴格 > self.L
             new_max_steps = new_L
-        elif int(diag.min_steps_needed) > self.max_steps:
-            new_max_steps = _grow(diag.min_steps_needed, 0, self.max_steps_grow_factor)
+        elif int(needed["max_steps"]) > self.max_steps:
+            new_max_steps = _grow(needed["max_steps"], 0, self.max_steps_grow_factor)
         else:
             new_max_steps = self.max_steps
         if new_L == self.L and new_out_spikes == self.max_out_spikes and new_max_steps == self.max_steps:
@@ -469,7 +455,7 @@ class ConvLayer:
         **成功跑完的 epoch** 之後呼叫(見 docs/規格書.md「conv 層 max_steps」)。
         跟 `grown_to_fit` 是兩條獨立的路:這裡只縮不長。
 
-        `observed`:這個 epoch 裡,所有真實 batch 的 `LayerDiag.min_steps_needed`
+        `observed`:這個 epoch 裡,所有真實 batch 的 `LayerDiag.needed["max_steps"]`
         取過的最大值——不是探測批,是這個 epoch 真正跑過的訓練資料。
 
         候選值用跟 `grown_to_fit` **同一個公式**算(`ceil(observed *
@@ -486,11 +472,11 @@ class ConvLayer:
     def shrink_max_out_spikes(self, observed: int) -> "ConvLayer":
         """`max_out_spikes` 的選擇性縮小路徑,規則跟 `shrink_max_steps` 逐項對應
         (見 docs/規格書.md「conv 層 max_steps」)。跟 `max_steps` 唯一的差別:
-        這裡吃的是真實觀察值(`LayerDiag.n_out_spikes`),不是任何理論上界——
+        這裡吃的是真實觀察值(`LayerDiag.needed["max_out_spikes"]`),不是任何理論上界——
         `max_out_spikes` 出界是「真實資料裝不下」的被動事實,不像 `max_steps`
         非得靠證明過的上界不可(見 docs/問題紀錄.md 第十四節)。
 
-        `observed`:這個 epoch 裡,所有真實 batch 的 `LayerDiag.n_out_spikes`
+        `observed`:這個 epoch 裡,所有真實 batch 的 `LayerDiag.needed["max_out_spikes"]`
         取過的最大值——不是探測批,是這個 epoch 真正跑過的訓練資料。
 
         候選值用跟 `grown_to_fit` 同一個公式算(`ceil(observed *
@@ -546,6 +532,11 @@ class FCLayer:
     def weight_shape(self) -> tuple:
         return (self.n_out, self.n_in)
 
+    @property
+    def capacity(self) -> None:
+        # 積分步數從輸入流長度現算,輸出上限固定是 n_out,沒有可調的容量旋鈕。
+        return None
+
     def init_weight(self, key: jax.Array) -> jax.Array:
         return uniform_init(key, self.weight_shape, self.fan_in, self.init_k)
 
@@ -586,15 +577,12 @@ class FCLayer:
 
     def forward(self, w: jax.Array,
                 in_stream: EventStream) -> tuple[EventStream, LayerForwardResult, LayerDiag]:
-        out_stream, result, maps, _, _ = self._run_forward(w, in_stream, trace=False)
+        out_stream, result, _maps, _, _ = self._run_forward(w, in_stream, trace=False)
         spike_count = jnp.sum(result.spike_mask)
         diag = LayerDiag(
             spike_count=spike_count,
             firing_rate=spike_count / (self.n_neurons * jnp.maximum(in_stream.n_real_events, 1)),
-            max_real_queue=jnp.zeros((), dtype=jnp.int32),
-            n_out_spikes=out_stream.n_real_events,
-            min_steps_needed=jnp.max(spike_step_upper_bound(
-                maps.b, self.v_th, self.chunk_size)))
+            needed={})
         return out_stream, result, diag
 
     def forward_traced(self, w: jax.Array,
@@ -678,14 +666,6 @@ def check_layer_connections(layers) -> None:
         raise ValueError(f"{prev.name} 的輸出 {out_shape} 接不上 {nxt.name} 的輸入 {in_shape}")
 
 
-def max_over_batch(diag: LayerDiag) -> LayerDiag:
-    """一個 batch 的逐筆 LayerDiag(每個欄位 shape (B,))每個欄位取最大值。
-
-    給容量判斷用:只要有一筆超過容量,這個 batch 就放不下。
-    """
-    return LayerDiag(*(jnp.max(field) for field in diag))
-
-
 def grown_to_fit_batch(layers: list, batch_diags: list) -> list:
     """一列層放不放得下一個 batch;放不下的層換成放大過的版本。
 
@@ -693,7 +673,7 @@ def grown_to_fit_batch(layers: list, batch_diags: list) -> list:
     每層看 batch 裡最需要容量的那一筆,放大公式是各層的 grown_to_fit。
     全部放得下時回傳傳進來的同一個 list 物件。
     """
-    grown = [layer.grown_to_fit(max_over_batch(diag))
+    grown = [layer.grown_to_fit(reduce_over_batch(diag))
              for layer, diag in zip(layers, batch_diags)]
     if all(new is old for new, old in zip(grown, layers)):
         return layers

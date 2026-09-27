@@ -9,10 +9,22 @@
 `train()`)、`val_accuracy` 怎麼算(`train()` 算好傳進來)。
 """
 import csv
+from typing import NamedTuple
 
 import numpy as np
 
-from salt_core.layers import ConvLayer
+
+class KnobColumns(NamedTuple):
+    """一個容量旋鈕在 metrics.csv 的兩個欄名(前面接層名)跟進度輸出的標籤。"""
+    capacity: str
+    needed: str
+    label: str
+
+
+# 欄名沿用舊 run 的命名,舊的 metrics.csv 才能用同一套程式讀。
+KNOB_COLUMNS = {"L": KnobColumns("max_event_queue", "obs_event_queue", "佇列"),
+                "max_out_spikes": KnobColumns("max_layer_spikes", "obs_layer_spikes", "輸出spike"),
+                "max_steps": KnobColumns("max_steps", "obs_steps", "掃描步數")}
 
 
 def _ratio(obs: int, cap: int) -> str:
@@ -23,15 +35,15 @@ def _ratio(obs: int, cap: int) -> str:
 class MetricsLog:
     """一次訓練 run 的逐 epoch 指標。
 
-    `layer_names` / `conv_names` 在建構時固定(動態放大重建 layer list 不改層名、
-    不改順序),之後每個 batch / epoch 把「當前的 layers」傳進來取 `.L` /
-    `.max_out_spikes` 之類的即時值。
+    `layer_names` / `dormant_names` 在建構時固定(動態放大重建 layer list 不改層名、
+    不改順序),之後每個 batch / epoch 把「當前的 layers」傳進來取容量的即時值。
+    dormant_names:有 dormant 欄位的層。
     """
 
-    def __init__(self, layer_names: list, conv_names: list, total_epochs: int,
+    def __init__(self, layer_names: list, dormant_names: list, total_epochs: int,
                  progress_every: int | None = None):
         self._layer_names = list(layer_names)
-        self._conv_names = list(conv_names)
+        self._dormant_names = list(dormant_names)
         self._total_epochs = total_epochs
         self._progress_every = progress_every or max(1, total_epochs // 20)
         self._rows: list[dict] = []
@@ -42,7 +54,7 @@ class MetricsLog:
         self._firing = {n: [] for n in self._layer_names}
         self._grad = {n: [] for n in self._layer_names}
         self._dec: dict[str, list] = {}
-        self._obs = {n: {"queue": 0, "out": 0, "steps": 0} for n in self._conv_names}
+        self._needed: dict[str, dict[str, int]] = {}  # 層名 -> 旋鈕 -> 這個 epoch 的最大需求
 
     def record_batch(self, *, loss, layers: list, reduced_diags: list,
                      grad_norms: dict, decoder_metrics: dict) -> None:
@@ -54,11 +66,9 @@ class MetricsLog:
             self._dec.setdefault(k, []).append(float(v))
         for layer, d in zip(layers, reduced_diags):
             self._firing[layer.name].append(float(d.firing_rate))
-            if layer.name in self._obs:
-                o = self._obs[layer.name]
-                o["queue"] = max(o["queue"], int(d.max_real_queue))
-                o["out"] = max(o["out"], int(d.n_out_spikes))
-                o["steps"] = max(o["steps"], int(d.min_steps_needed))
+            layer_needed = self._needed.setdefault(layer.name, {})
+            for knob, value in d.needed.items():
+                layer_needed[knob] = max(layer_needed.get(knob, 0), int(value))
         for name, g in grad_norms.items():
             self._grad[name].append(float(g))
 
@@ -77,20 +87,18 @@ class MetricsLog:
         row = {"epoch": epoch, "train_loss": float(np.mean(self._losses)),
                "val_accuracy": val_accuracy, "val_capacity_regrows": val_capacity_regrows}
         for layer in layers:
-            if not isinstance(layer, ConvLayer):
+            if layer.capacity is None:
                 continue
-            row[f"{layer.name}_max_event_queue"] = layer.L
-            row[f"{layer.name}_max_layer_spikes"] = layer.max_out_spikes
-            row[f"{layer.name}_max_steps"] = layer.max_steps
-            row[f"{layer.name}_obs_event_queue"] = self._obs[layer.name]["queue"]
-            row[f"{layer.name}_obs_layer_spikes"] = self._obs[layer.name]["out"]
-            row[f"{layer.name}_obs_steps"] = self._obs[layer.name]["steps"]
+            for knob, value in layer.capacity.items():
+                row[f"{layer.name}_{KNOB_COLUMNS[knob].capacity}"] = value
+            for knob in layer.capacity:
+                row[f"{layer.name}_{KNOB_COLUMNS[knob].needed}"] = self._needed_of(layer.name, knob)
         for name in self._layer_names:
             row[f"{name}_firing_rate"] = float(np.mean(self._firing[name]))
         for name in self._layer_names:
             row[f"{name}_grad_norm"] = float(np.mean(self._grad[name]))
         d = dormant or {}
-        for name in self._conv_names:
+        for name in self._dormant_names:
             row[f"{name}_dormant_frac"] = float(d.get(name, {}).get("dormant_frac", float("nan")))
         row["dormant_capacity_regrows"] = dormant_capacity_regrows
         for k, vals in self._dec.items():
@@ -108,20 +116,28 @@ class MetricsLog:
               f"val_acc={row['val_accuracy']:.4f}"
               f"{(' ' + dec_str) if dec_str else ''}")
         for l in layers:
-            if isinstance(l, ConvLayer):
-                o = self._obs[l.name]
-                dorm = row.get(f"{l.name}_dormant_frac", float("nan"))
-                dorm_str = f"  dorm={dorm:.3f}" if dorm == dorm else ""
-                print(f"  {l.name:<6} 佇列 {_ratio(o['queue'], l.L)}  "
-                      f"輸出spike {_ratio(o['out'], l.max_out_spikes)}  "
-                      f"掃描步數 {_ratio(o['steps'], l.max_steps)}  "
-                      f"fr={row[f'{l.name}_firing_rate']:.4f}{dorm_str}")
-            else:
+            if l.capacity is None:
                 print(f"  {l.name:<6} fr={row[f'{l.name}_firing_rate']:.4f}")
+                continue
+            usage = "  ".join(
+                f"{KNOB_COLUMNS[knob].label} {_ratio(self._needed_of(l.name, knob), value)}"
+                for knob, value in l.capacity.items())
+            dorm = row.get(f"{l.name}_dormant_frac", float("nan"))
+            dorm_str = f"  dorm={dorm:.3f}" if dorm == dorm else ""
+            print(f"  {l.name:<6} {usage}  fr={row[f'{l.name}_firing_rate']:.4f}{dorm_str}")
+
+    def _needed_of(self, layer_name: str, knob: str) -> int:
+        """這個 epoch 這層這個旋鈕的最大需求;沒有成功的 batch 時是 0。"""
+        return self._needed.get(layer_name, {}).get(knob, 0)
 
     @property
     def rows(self) -> list:
         return self._rows
+
+    def last_needed(self, layer) -> dict[str, int]:
+        """最後一個 epoch 這層每個容量旋鈕的最大需求。"""
+        last = self._rows[-1]
+        return {knob: last[f"{layer.name}_{KNOB_COLUMNS[knob].needed}"] for knob in layer.capacity}
 
     def write_csv(self, path: str) -> None:
         if not self._rows:
@@ -133,20 +149,14 @@ class MetricsLog:
 
     def print_summary(self, layers: list) -> None:
         """訓練結束的逐層容量 + 最後一個 epoch 的真實用量比例。"""
-        for layer in layers:
-            if not isinstance(layer, ConvLayer):
-                continue
-            print(f"  {layer.name} 最終容量:L={layer.L} max_out_spikes={layer.max_out_spikes} "
-                  f"max_steps={layer.max_steps}")
+        capacity_layers = [layer for layer in layers if layer.capacity is not None]
+        for layer in capacity_layers:
+            values = " ".join(f"{knob}={value}" for knob, value in layer.capacity.items())
+            print(f"  {layer.name} 最終容量:{values}")
         if not self._rows:
             return
-        last = self._rows[-1]
-        for layer in layers:
-            if not isinstance(layer, ConvLayer):
-                continue
-            oq = last[f"{layer.name}_obs_event_queue"]
-            oo = last[f"{layer.name}_obs_layer_spikes"]
-            os_ = last[f"{layer.name}_obs_steps"]
-            print(f"    {layer.name} 最後一個 epoch 用量:佇列 {_ratio(oq, layer.L)}、"
-                  f"輸出 spike {_ratio(oo, layer.max_out_spikes)}、"
-                  f"掃描步數 {_ratio(os_, layer.max_steps)}")
+        for layer in capacity_layers:
+            needed = self.last_needed(layer)
+            usage = "、".join(f"{KNOB_COLUMNS[knob].label} {_ratio(needed[knob], value)}"
+                             for knob, value in layer.capacity.items())
+            print(f"    {layer.name} 最後一個 epoch 用量:{usage}")

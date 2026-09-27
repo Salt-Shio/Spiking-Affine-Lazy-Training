@@ -17,10 +17,10 @@
   epoch,用這個 epoch 裡所有真實 batch 觀察到的最大值決定要不要縮,比現有值
   小就縮、重編譯續跑。這條路跟出界不一樣,不需要退 checkpoint(用的是已經
   確定沒問題的當下權重),但重編譯這件事借用同一條 while 外圈。`max_steps`
-  用的觀察值是 `LayerDiag.min_steps_needed`(理論上界,數學推導見
+  用的觀察值是 `LayerDiag.needed["max_steps"]`(理論上界,數學推導見
   docs/math/掃描步數上界推導.md,因為 `max_steps` 沒有天然的經驗值可用——設
   太小是掃描提早停止、靜默算錯,不像 `L`/`max_out_spikes` 是真實資料裝不下
-  的被動事實);`max_out_spikes` 用的是 `LayerDiag.n_out_spikes`(真實觀察值,
+  的被動事實);`max_out_spikes` 用的是 `LayerDiag.needed["max_out_spikes"]`(真實觀察值,
   跟長大訊號同一個量,理由見 docs/問題紀錄.md 第十四節——曾經嘗試過讓
   `max_out_spikes` 也用理論上界,實測太鬆、已撤回)。長大/縮小的目標值都用
   同一個公式算(`ceil(觀察值 * factor)`,`max_steps` 用
@@ -49,6 +49,7 @@ import optax
 import yaml
 
 from data.src.nmnist import NMNISTDataset
+from salt_core.capacity import reduce_over_batch
 from salt_core.layers import ConvLayer
 from example.checkpoint import Checkpointer
 from salt_core.dormant import dormant_report
@@ -137,17 +138,7 @@ def make_train_step(net, optimizer, decoder, score_cap: float | None = None):
         scores, dec_metrics = jax.vmap(decoder.decode)(result)
         per_sample_loss = _cross_entropy_loss(scores, batch_labels_onehot, score_cap)
         loss = jnp.mean(per_sample_loss)
-        # 每層一份「批次縮減後的 LayerDiag」:firing_rate / spike_count 取批次
-        # **平均**(給 metrics.csv 當哨兵指標),max_real_queue / n_out_spikes /
-        # min_steps_needed 取批次**最大**(出界偵測:只要批次裡任何一筆樣本、
-        # 任何一顆神經元超過目前容量就算出界,不能被其他樣本的小值平均掉)。
-        # grown_to_fit 只看後三個欄位,logging 只看前兩個。
-        reduced = [d._replace(
-            spike_count=jnp.mean(d.spike_count),
-            firing_rate=jnp.mean(d.firing_rate),
-            max_real_queue=jnp.max(d.max_real_queue),
-            n_out_spikes=jnp.max(d.n_out_spikes),
-            min_steps_needed=jnp.max(d.min_steps_needed)) for d in diagnostics]
+        reduced = [reduce_over_batch(d) for d in diagnostics]
         reduced_metrics = {k: jnp.mean(v) for k, v in dec_metrics.items()}
         return loss, (reduced, reduced_metrics)
 
@@ -174,19 +165,19 @@ def _grow_layers(layers: list, reduced_diags: list) -> list:
     return [layer.grown_to_fit(diag) for layer, diag in zip(layers, reduced_diags)]
 
 
-def _shrink_layers(layers: list, epoch_min_steps_needed: dict,
-                    epoch_n_out_spikes: dict) -> list:
-    """對每一層問一次 `shrink_max_steps` + `shrink_max_out_spikes`,回傳新的
-    layer list(沒縮的層原封不動,是同一個物件)。`epoch_min_steps_needed`/
-    `epoch_n_out_spikes`:層名 -> 這個**成功跑完的 epoch**裡,所有真實 batch
-    的 `LayerDiag.min_steps_needed`/`n_out_spikes` 觀察最大值——不是探測批,
+def _shrink_layers(layers: list, epoch_needed: dict) -> list:
+    """有容量的層各問一次 `shrink_max_steps` + `shrink_max_out_spikes`,回傳新的
+    layer list(沒縮的層原封不動,是同一個物件)。`epoch_needed`:層名 -> 旋鈕 ->
+    這個**成功跑完的 epoch**裡,所有真實 batch 的需求最大值——不是探測批,
     是這個 epoch 真正跑過的訓練資料(見 docs/規格書.md「conv 層 max_steps」,
     `max_out_spikes` 比照辦理)。"""
     result = []
     for layer in layers:
-        shrunk = layer.shrink_max_steps(epoch_min_steps_needed[layer.name])
-        shrunk = shrunk.shrink_max_out_spikes(epoch_n_out_spikes[layer.name])
-        result.append(shrunk)
+        if layer.capacity is not None:
+            needed = epoch_needed[layer.name]
+            layer = layer.shrink_max_steps(needed["max_steps"])
+            layer = layer.shrink_max_out_spikes(needed["max_out_spikes"])
+        result.append(layer)
     return result
 
 
@@ -237,9 +228,8 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
     `overflowed=False`,`final_params` 是最後一個 epoch 的權重。
 
     **也不知道「縮小」這回事,但只在 epoch 成功跑完之後才問**:每個 epoch
-    的 batch 迴圈裡,順便累積這個 epoch 所有真實 batch 的 `LayerDiag.
-    min_steps_needed`/`n_out_spikes` 觀察最大值(`epoch_min_steps_needed`/
-    `epoch_n_out_spikes`)。**epoch 成功跑完**(checkpoint 存完)之後,
+    的 batch 迴圈裡,順便累積這個 epoch 所有真實 batch 的 `LayerDiag.needed`
+    最大值(`epoch_needed`)。**epoch 成功跑完**(checkpoint 存完)之後,
     `max_steps_reestimate_every > 0` 且這個 epoch number 命中頻率時,拿這兩份
     累積值問 `_shrink_layers`(見 docs/規格書.md「conv 層 max_steps」,
     `max_out_spikes` 比照辦理)——不是探測批,是這個 epoch 真正跑過的訓練
@@ -258,8 +248,8 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
         shuffle_key, subkey = jax.random.split(shuffle_key)
         perm = jax.random.permutation(subkey, n_train)
         metrics_log.start_epoch()
-        epoch_min_steps_needed = {layer.name: 0 for layer in layers}
-        epoch_n_out_spikes = {layer.name: 0 for layer in layers}
+        epoch_needed = {layer.name: dict.fromkeys(layer.capacity, 0)
+                        for layer in layers if layer.capacity is not None}
 
         for b in range(n_batches):
             idx = perm[b * batch_size:(b + 1) * batch_size]
@@ -282,10 +272,9 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
 
             params, opt_state = new_params, new_opt_state
             for layer, d in zip(layers, reduced_diags):
-                epoch_min_steps_needed[layer.name] = max(
-                    epoch_min_steps_needed[layer.name], int(d.min_steps_needed))
-                epoch_n_out_spikes[layer.name] = max(
-                    epoch_n_out_spikes[layer.name], int(d.n_out_spikes))
+                for knob, value in d.needed.items():
+                    epoch_needed[layer.name][knob] = max(epoch_needed[layer.name][knob],
+                                                         int(value))
             metrics_log.record_batch(loss=loss, layers=layers,
                                       reduced_diags=reduced_diags,
                                       grad_norms=grad_norms,
@@ -314,7 +303,7 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
         # 縮小檢查:只在這個 epoch 真正成功跑完、checkpoint 也存完之後才問,
         # 用的是這個 epoch 累積的真實觀察值,不是探測批。
         if max_steps_reestimate_every > 0 and epoch % max_steps_reestimate_every == 0:
-            shrunk = _shrink_layers(layers, epoch_min_steps_needed, epoch_n_out_spikes)
+            shrunk = _shrink_layers(layers, epoch_needed)
             if shrunk != layers:
                 print(f"[縮小] epoch={epoch}:")
                 for line in _describe_shrink(layers, shrunk):
@@ -363,7 +352,8 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
     layers = build_network(model_cfg)
 
     layer_names = [layer.name for layer in layers]
-    conv_names = [layer.name for layer in layers if isinstance(layer, ConvLayer)]
+    # dormant 統計只算 conv 隱藏層(salt_core.dormant 的挑層規則)
+    dormant_names = [layer.name for layer in layers if isinstance(layer, ConvLayer)]
 
     # 輸出編碼:把最後一層的 LayerForwardResult 讀成分數。跟最後一層的門檻
     # 設定配套(膜電位回歸要 v_th 超大、頻率/群體要正常門檻),validate 擋
@@ -394,7 +384,7 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
     # 沒存過就出界 -> 退回訓練最初始狀態(同一顆 seed 重新 init)。
     checkpointer = Checkpointer(os.path.join(exp_dir, TRAIN_DIRNAME, "checkpoint.npz"))
 
-    metrics_log = MetricsLog(layer_names, conv_names, total_epochs=train_cfg["epochs"])
+    metrics_log = MetricsLog(layer_names, dormant_names, total_epochs=train_cfg["epochs"])
 
     # while 外圈 = 自動長大控制系統:setup params(fresh / checkpoint)→ 跑
     # run_epochs → 沒出界就結束、出界就換成放大後的 layers 重編譯再繞。
@@ -440,7 +430,6 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
         layers = outcome.grown_layers
 
     best_params, best_val_accuracy, best_epoch = best
-    rows = metrics_log.rows
     # 一份 write-once 的 run 紀錄:輸入 config 快照 + commit + 最終容量 + 最佳
     # 指標。輸入(raw_cfg)不被改;結果不塞回它。
     run_record = {
@@ -449,14 +438,11 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
         "xla_flags": os.environ.get("XLA_FLAGS", ""),
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
         "best": {"val_accuracy": best_val_accuracy, "epoch": best_epoch},
-        "final_capacity": {
-            layer.name: {"L": layer.L, "max_out_spikes": layer.max_out_spikes,
-                        "max_steps": layer.max_steps}
-            for layer in layers if isinstance(layer, ConvLayer)},
-        "last_epoch_obs": ({
-            name: {"queue": rows[-1][f"{name}_obs_event_queue"],
-                   "out": rows[-1][f"{name}_obs_layer_spikes"]}
-            for name in conv_names} if rows else {}),
+        "final_capacity": {layer.name: dict(layer.capacity)
+                           for layer in layers if layer.capacity is not None},
+        "last_epoch_obs": ({layer.name: metrics_log.last_needed(layer)
+                            for layer in layers if layer.capacity is not None}
+                           if metrics_log.rows else {}),
     }
     metrics_log.write_csv(os.path.join(exp_dir, TRAIN_DIRNAME, "metrics.csv"))
     _write_experiment(run_record, params, best_params, exp_dir, layers)

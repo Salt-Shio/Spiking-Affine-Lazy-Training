@@ -12,7 +12,6 @@ save_quant / compare_quant:量化版 forward,規格固定為 QUANT_SPEC,容量�
     golden_quant.npz、report_quant.yaml
 """
 import argparse
-import dataclasses
 import os
 import sys
 
@@ -27,7 +26,8 @@ from example.models.conv_net import ConvNetCompressed, build_decoder
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
 from example.replay_epoch import force_chunk_size_one
 from example.utils import load_run_params, load_run_record, rebuild_layers
-from salt_core.layers import (LayerDiag, dequantize_v_final, raw_events_to_stream,
+from salt_core.capacity import Capacity, LayerDiag
+from salt_core.layers import (dequantize_v_final, raw_events_to_stream,
                               run_network_quantized_traced, run_network_traced)
 from salt_core.quant.calibrate import merge_v_ranges, v_abs_max_per_channel, v_range_per_channel
 from salt_core.quant.convert import LayerQuantSpec, build_quantized_params
@@ -36,11 +36,6 @@ RUN_DIR = EXPERIMENTS_DIR / "conv_compressed_compressed_scale_10k_20260919_05044
 GOLDEN_DIR = RUN_DIR / "golden"
 # 跟 e2e 訓練測試同一個容差
 V_FINAL_ATOL = 1e-4
-CAPACITY_KNOBS = ("L", "max_out_spikes", "max_steps")
-# 容量旋鈕 -> 出界時超過它的診斷欄位
-OVERFLOW_FIELDS = {"L": "max_real_queue", "max_out_spikes": "n_out_spikes",
-                   "max_steps": "min_steps_needed"}
-DIAG_FIELDS = ("spike_count", "max_real_queue", "n_out_spikes", "min_steps_needed")
 # 量化版:每層同一組位元寬度,輸出層不 fire
 QUANT_SPEC = dict(bits=8, f_a=10, f_V=10, round_mode="round", overflow_mode="wrap")
 # 量膜電位範圍 M 用 val 的前幾筆
@@ -63,19 +58,18 @@ def load_run():
 
 
 def capacity_of(layers: list) -> dict:
-    """層名 -> 三個容量旋鈕的值。沒有容量旋鈕的層(FC)不列。"""
-    return {layer.name: {knob: int(getattr(layer, knob)) for knob in CAPACITY_KNOBS}
-            for layer in layers if all(hasattr(layer, knob) for knob in CAPACITY_KNOBS)}
+    """層名 -> 旋鈕 -> 容量值。沒有容量的層不列。"""
+    return {layer.name: dict(layer.capacity) for layer in layers if layer.capacity is not None}
 
 
 def with_capacity(layers: list, capacity: dict) -> list:
-    return [dataclasses.replace(layer, **capacity[layer.name]) if layer.name in capacity
+    return [layer.with_capacity(Capacity(**capacity[layer.name])) if layer.name in capacity
             else layer for layer in layers]
 
 
 def forward_split(layers, decoder, params, split, batch_size: int) -> dict:
-    """整個 split 分批跑 forward。回傳 numpy 陣列:
-    v_final (N, n_class)、preds (N,),以及 DIAG_FIELDS 每個 (N, n_layers)。
+    """整個 split 分批跑 forward。回傳:v_final (N, n_class)、preds (N,)、
+    spike_count (N, n_layers)、needed {層名: {旋鈕: (N,)}}。
     """
     net = ConvNetCompressed(layers)
 
@@ -93,22 +87,24 @@ def forward_split(layers, decoder, params, split, batch_size: int) -> dict:
                                   split.y[start:end], split.c[start:end],
                                   split.n_real_events[start:end])
         parts.append((np.asarray(scores),
-                      {f: np.stack([np.asarray(getattr(d, f)) for d in diags], axis=1)
-                       for f in DIAG_FIELDS}))
+                      np.stack([np.asarray(d.spike_count) for d in diags], axis=1),
+                      [jax.tree_util.tree_map(np.asarray, d.needed) for d in diags]))
     v_final = np.concatenate([p[0] for p in parts])
-    out = {"v_final": v_final, "preds": np.argmax(v_final, axis=1)}
-    for f in DIAG_FIELDS:
-        out[f] = np.concatenate([p[1][f] for p in parts])
-    return out
+    return {"v_final": v_final, "preds": np.argmax(v_final, axis=1),
+            "spike_count": np.concatenate([p[1] for p in parts]),
+            "needed": {layer.name: {knob: np.concatenate([p[2][i][knob] for p in parts])
+                                    for knob in parts[0][2][i]}
+                       for i, layer in enumerate(layers)}}
 
 
 def overflow_report(layers: list, out: dict) -> dict:
     """層名 -> 旋鈕 -> 出界的樣本 index list。沒有出界的旋鈕不列。"""
     report = {}
-    for i, layer in enumerate(layers):
-        for knob, limit in capacity_of([layer]).get(layer.name, {}).items():
-            needed = out[OVERFLOW_FIELDS[knob]][:, i]
-            idx = np.nonzero(needed > limit)[0]
+    for layer in layers:
+        if layer.capacity is None:
+            continue
+        for knob, limit in layer.capacity.items():
+            idx = np.nonzero(out["needed"][layer.name][knob] > limit)[0]
             if idx.size:
                 report.setdefault(layer.name, {})[knob] = idx.tolist()
     return report
@@ -117,10 +113,9 @@ def overflow_report(layers: list, out: dict) -> dict:
 def grown_layers(layers: list, out: dict) -> list:
     """照訓練的放大公式,用整個 split 的最大需求放大每一層。"""
     grown = []
-    for i, layer in enumerate(layers):
-        diag = LayerDiag(spike_count=0, firing_rate=0.0,
-                         **{f: int(out[f][:, i].max()) for f in OVERFLOW_FIELDS.values()})
-        grown.append(layer.grown_to_fit(diag))
+    for layer in layers:
+        needed = {knob: int(v.max()) for knob, v in out["needed"][layer.name].items()}
+        grown.append(layer.grown_to_fit(LayerDiag(spike_count=0, firing_rate=0.0, needed=needed)))
     return grown
 
 
@@ -153,7 +148,9 @@ def save() -> None:
         "golden_accuracy": accuracy(golden_out, labels),
         "pred_changed_samples": changed.tolist(),
         "golden_max_needed": {
-            layer.name: {f: int(golden_out[f][:, i].max()) for f in DIAG_FIELDS}
+            layer.name: {"spike_count": int(golden_out["spike_count"][:, i].max()),
+                         **{knob: int(v.max())
+                            for knob, v in golden_out["needed"][layer.name].items()}}
             for i, layer in enumerate(layers)},
     }
     with open(GOLDEN_DIR / "report.yaml", "w", encoding="utf-8") as f:

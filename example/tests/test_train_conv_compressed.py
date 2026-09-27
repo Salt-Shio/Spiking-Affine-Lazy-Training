@@ -14,9 +14,9 @@ step 4b 起,每個 conv 層有兩個會出界的容量:壓縮佇列長度 `L`、
 之後才出界」「連續出界兩次」「最後一個 epoch 才出界」這些邊界,用到的
 conv2_L_init/seed 是實際跑校準量出來的(固定 seed_train=0/train_size=16/
 batch_size=4,用夠大的容量不截斷任何東西,記錄每個 (epoch,batch) 真正的
-max_real_queue):
+佇列需求 needed["L"]):
 
-- seed=42:epoch0 四個 batch 的 conv2 max_real_queue 約 874/1050/1004/847,
+- seed=42:epoch0 四個 batch 的 conv2 佇列需求約 874/1050/1004/847,
   epoch0-3 全域最大約 1050,最大值出現在早期——這個 seed 沒有「晚期 epoch
   超過早期」的自然案例。
 - seed=1:epoch0≈[933,943,1011,780]、epoch1≈[921,1016,952,836]——epoch1 的
@@ -34,7 +34,7 @@ conv2_L_init/seed 挑成能穩定觸發目標邊界(留了 margin),但「放大�
 獨立的 `jax.jit` 編譯」,結果就有 float32 機器精度等級的雜訊(實測
 w_conv1/w_conv2/w_fc 兩次獨立訓練後 max|diff| 落在 1e-7~5e-7,loss/val_acc
 到小數點後 4 位一致)。沿用 `atol=1e-4`。反過來,checkpoint 存讀 round-trip、
-整數計數(驅動出界判斷的 max_real_queue)、epoch 編號、容量欄位這些不牽涉
+整數計數(驅動出界判斷的佇列需求)、epoch 編號、容量欄位這些不牽涉
 浮點規約重算的,一律維持逐位元/逐值精確比對。
 """
 import csv
@@ -48,7 +48,7 @@ import numpy as np
 import optax
 import pytest
 
-from salt_core.layers import LayerDiag
+from salt_core.capacity import LayerDiag
 from example.models.conv_net import build_network
 from example.tests._train_runs import base_cfg, run_capture
 from example.train_conv_compressed import (_build_learning_rate, _build_optimizer,
@@ -79,7 +79,7 @@ def _read_metrics_csv(exp_dir: str) -> list:
 
 
 _OVERFLOW_BLOCK_RE = re.compile(r"\[出界\] epoch=(\d+) batch=(\d+): (.+)\n((?:  .+\n?)*)")
-_KNOB_RE = re.compile(r"  (conv\d) (L|max_out|max_steps) (\d+)->(\d+)\(觀察 (\d+)\)")
+_KNOB_RE = re.compile(r"  (conv\d) (L|max_out_spikes|max_steps) (\d+)->(\d+)\(觀察 (\d+)\)")
 
 
 def _parse_overflows(stdout: str) -> list[dict]:
@@ -219,6 +219,13 @@ def test_build_learning_rate_cosine_decay_starts_high_ends_low():
     assert float(schedule(total_steps - 1)) < 1e-2 * 0.01  # alpha=0,退火到接近 0
 
 
+def _needed_diag(*, queue: int, out_spikes: int, steps: int) -> LayerDiag:
+    """一個 conv 層的單筆診斷,只填容量需求。"""
+    return LayerDiag(spike_count=jnp.array(0), firing_rate=jnp.array(0.0),
+                     needed={"L": jnp.array(queue), "max_out_spikes": jnp.array(out_spikes),
+                             "max_steps": jnp.array(steps)})
+
+
 def test_grown_to_fit_bumps_only_the_overflowing_knob():
     """`ConvLayer.grown_to_fit`:出界的旋鈕按公式放大,沒出界的旋鈕跟其他欄位
     原封不動;完全不出界時回傳自己(同一個物件)。這是動態放大機制的地基——
@@ -228,36 +235,29 @@ def test_grown_to_fit_bumps_only_the_overflowing_knob():
                      conv2_max_out_init=2000)
     _, conv2, _ = build_network(cfg["model"])
 
-    same = conv2.grown_to_fit(LayerDiag(spike_count=jnp.array(0), firing_rate=jnp.array(0.0),
-                                         max_real_queue=jnp.array(50), n_out_spikes=jnp.array(10),
-                                         min_steps_needed=jnp.array(conv2.max_steps)))
+    same = conv2.grown_to_fit(_needed_diag(queue=50, out_spikes=10, steps=conv2.max_steps))
     assert same is conv2, "沒出界應回傳自己"
 
     # 只有 L 出界:max_steps 沒有獨立超標,但 L 長大之後,這批用「舊、不夠大」
-    # 的佇列算出的 min_steps_needed 已經不可信,安全網要求 max_steps 直接
-    # 補到新 L(不是保留舊值,也不是信這批的 min_steps_needed)。
-    grown = conv2.grown_to_fit(LayerDiag(spike_count=jnp.array(0), firing_rate=jnp.array(0.0),
-                                          max_real_queue=jnp.array(777), n_out_spikes=jnp.array(10),
-                                          min_steps_needed=jnp.array(0)))
+    # 的佇列算出的 max_steps 需求已經不可信,安全網要求 max_steps 直接
+    # 補到新 L(不是保留舊值,也不是信這批的 max_steps 需求)。
+    grown = conv2.grown_to_fit(_needed_diag(queue=777, out_spikes=10, steps=0))
     assert grown is not conv2
     assert grown.L == int(math.ceil(max(777, 100) * 1.5)) == 1166
     assert grown.max_out_spikes == conv2.max_out_spikes, "max_out 沒出界不該動"
     assert grown.max_steps == grown.L, "L 出界長大時,max_steps 安全網要補到新 L"
 
     # 只有 max_steps 自己的診斷出界(L / max_out 都沒事):max_steps 補到
-    # ceil(min_steps_needed * max_steps_grow_factor)(跟 L/max_out 同一種留
+    # ceil(max_steps 需求 * max_steps_grow_factor)(跟 L/max_out 同一種留
     # 餘裕公式,不是精確值——見 shrink_max_steps 的防震盪設計),L / max_out
     # 原封不動。
-    min_steps_needed = conv2.max_steps + 7
-    grown_steps = conv2.grown_to_fit(LayerDiag(
-        spike_count=jnp.array(0), firing_rate=jnp.array(0.0),
-        max_real_queue=jnp.array(50), n_out_spikes=jnp.array(10),
-        min_steps_needed=jnp.array(min_steps_needed)))
+    steps_needed = conv2.max_steps + 7
+    grown_steps = conv2.grown_to_fit(_needed_diag(queue=50, out_spikes=10, steps=steps_needed))
     assert grown_steps is not conv2
     assert grown_steps.L == conv2.L, "L 沒出界不該動"
     assert grown_steps.max_out_spikes == conv2.max_out_spikes, "max_out 沒出界不該動"
     assert grown_steps.max_steps == int(
-        math.ceil(min_steps_needed * conv2.max_steps_grow_factor))
+        math.ceil(steps_needed * conv2.max_steps_grow_factor))
 
     for f in ("name", "ic", "oc", "h_out", "w_out", "k", "s", "p", "tau", "v_th",
               "alpha", "chunk_size", "init_k", "L_grow_factor", "out_grow_factor",
@@ -273,7 +273,7 @@ def test_conv1_L_overflow_grows_not_raises(run_root):
     """故意設過小的 conv1_L_init,確認 conv1 的 L 跟其他旋鈕一樣被動態放大、
     訓練正常跑完(不再像舊版那樣直接 raise)。"""
     cfg = base_cfg("b_conv1_L_grow", seed=42, conv2_L_init=5000, grow=1.5, epochs=2,
-                     conv1_L_init=5)  # 真實 max_real_queue 落在 ~100+,5 保證第一個 batch 就出界
+                     conv1_L_init=5)  # 真實佇列需求落在 ~100+,5 保證第一個 batch 就出界
     (exp_dir, _, _, _, _, final_cfg), stdout = run_capture(cfg, run_root)
 
     ovs = _parse_overflows(stdout)
@@ -289,7 +289,7 @@ def test_conv1_L_overflow_grows_not_raises(run_root):
 
 def test_conv2_L_overflow_before_first_checkpoint_reinits_with_same_seed(run_root, reference_run):
     """conv2_L_init 設到必定在 epoch0 batch0 就出界(校準:seed=42 epoch0 batch0
-    的 max_real_queue≈874)。出界發生在還沒套用任何梯度更新之前,退回「訓練
+    的佇列需求≈874)。出界發生在還沒套用任何梯度更新之前,退回「訓練
     最初始狀態」應該跟「一開始就用夠大的 L 直接訓練」等價(容差比對,見檔案
     開頭)。"""
     l_init = 32
@@ -429,7 +429,7 @@ def test_conv_output_buffer_overflow_grows_and_matches_generous_start(run_root, 
     ovs = _parse_overflows(stdout)
     assert ovs, "conv2_max_out=500 應觸發出界"
     max_out_knobs = [k for ov in ovs for k in ov["knobs"]
-                     if k["layer"] == "conv2" and k["knob"] == "max_out"]
+                     if k["layer"] == "conv2" and k["knob"] == "max_out_spikes"]
     assert max_out_knobs, f"應看到 conv2 max_out 被放大:{ovs}"
     for k in max_out_knobs:
         _assert_grow_formula(k, 2.0)

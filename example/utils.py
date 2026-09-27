@@ -25,7 +25,6 @@
 (`eval_test.py`/`plot_eval.py`/測試)都從這裡拿名字,不是各自重複寫字串
 常數,才不會兩邊漂移。
 """
-import dataclasses
 import os
 import subprocess
 
@@ -35,7 +34,8 @@ import numpy as np
 import optax
 import yaml
 
-from salt_core.layers import ConvLayer, grown_to_fit_batch, max_over_batch
+from salt_core.capacity import Capacity, reduce_over_batch
+from salt_core.layers import grown_to_fit_batch
 
 from example.models.conv_net import ConvNetCompressed, build_network
 
@@ -102,22 +102,14 @@ def load_run_record(exp_dir: str) -> dict:
 
 
 def rebuild_layers(run_record: dict) -> list:
-    """從 `run.yaml` 重建 layer list:形狀吃 config 快照,壓縮容量吃訓練結束的
-    最終值(`final_capacity`:`L`/`max_out_spikes`/`max_steps` 三個旋鈕都要還原,
-    訓練寫出時三個就是一起存的,見 `train_conv_compressed.py` 的
-    `final_capacity`)。init_k 不用套——重建出來的 layers 只用來讀取幾何/
+    """從 `run.yaml` 重建 layer list:形狀吃 config 快照,有容量的層換成訓練結束時的
+    容量(`final_capacity`)。init_k 不用套——重建出來的 layers 只用來讀取幾何/
     評估權重,不重新初始化。"""
     layers = build_network(run_record["config"]["model"])
     final_capacity = run_record.get("final_capacity", {})
-    rebuilt = []
-    for layer in layers:
-        cap = final_capacity.get(layer.name)
-        if cap is not None and isinstance(layer, ConvLayer):
-            layer = dataclasses.replace(
-                layer, L=int(cap["L"]), max_out_spikes=int(cap["max_out_spikes"]),
-                max_steps=int(cap["max_steps"]))
-        rebuilt.append(layer)
-    return rebuilt
+    return [layer.with_capacity(Capacity(**final_capacity[layer.name]))
+            if layer.capacity is not None and layer.name in final_capacity else layer
+            for layer in layers]
 
 
 def load_run_params(exp_dir: str, layers: list, which_params: str) -> tuple:
@@ -129,21 +121,18 @@ def load_run_params(exp_dir: str, layers: list, which_params: str) -> tuple:
 def describe_growth(old_layers: list, new_layers: list, reduced_diags: list) -> list[str]:
     """哪些層的哪些容量旋鈕從多少放大到多少,一個旋鈕一行。
 
-    reduced_diags: 對齊層的 LayerDiag,欄位是這個 batch 的最大值。
+    reduced_diags: 對齊層的 LayerDiag,needed 是這個 batch 的最大值。
     格式:conv2 L 32->2100(觀察 1401)。
     """
     lines = []
     for old, new, d in zip(old_layers, new_layers, reduced_diags):
-        if old is new or not isinstance(old, ConvLayer):
+        if old is new or old.capacity is None:
             continue
-        if new.L != old.L:
-            lines.append(f"{old.name} L {old.L}->{new.L}(觀察 {int(d.max_real_queue)})")
-        if new.max_out_spikes != old.max_out_spikes:
-            lines.append(f"{old.name} max_out {old.max_out_spikes}->{new.max_out_spikes}"
-                          f"(觀察 {int(d.n_out_spikes)})")
-        if new.max_steps != old.max_steps:
-            lines.append(f"{old.name} max_steps {old.max_steps}->{new.max_steps}"
-                          f"(觀察 {int(d.min_steps_needed)})")
+        for knob, old_value in old.capacity.items():
+            new_value = new.capacity[knob]
+            if new_value != old_value:
+                lines.append(f"{old.name} {knob} {old_value}->{new_value}"
+                             f"(觀察 {int(d.needed[knob])})")
     return lines
 
 
@@ -182,7 +171,7 @@ def make_evaluate(net, decoder, eval_batch_size: int):
             grown = grown_to_fit_batch(layers, diags)
             while grown is not layers:
                 print(f"[評估出界] batch={start // eval_batch_size}: 放大評估容量重算")
-                reduced = [max_over_batch(d) for d in diags]
+                reduced = [reduce_over_batch(d) for d in diags]
                 for line in describe_growth(layers, grown, reduced):
                     print(f"  {line}")
                 layers = grown
