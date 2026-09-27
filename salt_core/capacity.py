@@ -1,5 +1,7 @@
-"""容量:層的容量旋鈕、每層 forward 的診斷、跨 batch 合併、放不放得下。"""
+"""容量:層的容量旋鈕、每層 forward 的診斷、跨 batch 合併、放不放得下、放大縮小公式。"""
+import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import NamedTuple
 
 import jax
@@ -57,3 +59,102 @@ class Capacity(Mapping):
         """每個旋鈕都放得下 diag.needed。diag 是一個 batch 的逐筆診斷時,回傳每筆一個值。"""
         return jnp.all(jnp.stack([diag.needed[knob] <= value
                                   for knob, value in self._knobs.items()]), axis=0)
+
+
+def _grow(observed: int, factor: float) -> int:
+    """放大公式:觀察值上浮 factor 倍留餘裕。"""
+    return int(math.ceil(int(observed) * factor))
+
+
+@dataclass(frozen=True)
+class GrowthPolicy:
+    """一層容量的放大縮小公式。倍率跟門檻的理由見 docs/規格書.md「conv 層 max_steps」。
+
+    放大、縮小共用同一個倍率:需求沒變時兩邊算出的目標值相等,不會來回震盪。
+    縮小門檻:候選值要掉到現值乘這個比例以下才縮,值得付一次重編譯。
+    """
+    L_grow_factor: float = 1.5
+    out_grow_factor: float = 1.5
+    max_steps_grow_factor: float = 1.5
+    out_shrink_threshold: float = 0.5
+    max_steps_shrink_threshold: float = 0.5
+
+    def _grow_factor(self, knob: str) -> float:
+        return {"L": self.L_grow_factor, "max_out_spikes": self.out_grow_factor,
+                "max_steps": self.max_steps_grow_factor}[knob]
+
+    def _shrink_threshold(self, knob: str) -> float | None:
+        return {"max_out_spikes": self.out_shrink_threshold,
+                "max_steps": self.max_steps_shrink_threshold}.get(knob)
+
+    def grown(self, capacity: Capacity, needed: dict) -> Capacity:
+        """needed 超過容量的旋鈕放大到 ceil(needed * 倍率),其他不變。
+
+        needed: 旋鈕名 -> 需求量(純量)。
+        L 放大時 max_steps 直接設成新的 L:這批的 max_steps 需求是在裝不下的佇列上算的,
+        不可信;L 步一定夠,因為每一步至少處理一筆事件。
+        """
+        new = {knob: _grow(needed[knob], self._grow_factor(knob))
+                     if int(needed[knob]) > value else value
+               for knob, value in capacity.items()}
+        if "L" in new and "max_steps" in new and new["L"] != capacity["L"]:
+            new["max_steps"] = new["L"]
+        return Capacity(**new)
+
+    def shrunk(self, capacity: Capacity, observed: dict) -> Capacity:
+        """用一整個 epoch 的最大需求決定要不要縮。
+
+        observed: 旋鈕名 -> 這個 epoch 所有 batch 的最大需求。
+        候選值 ceil(observed * 倍率) 掉到現值 * 縮小門檻以下才縮;沒有縮小門檻的旋鈕(L)不縮。
+        候選值至少是 1:整層一個 epoch 都沒 fire 時觀察值是 0,容量 0 會讓下一層拿到
+        長度 0 的輸入流,建佇列時直接出錯。
+        """
+        new = dict(capacity)
+        for knob, value in capacity.items():
+            threshold = self._shrink_threshold(knob)
+            if threshold is None:
+                continue
+            candidate = max(_grow(observed[knob], self._grow_factor(knob)), 1)
+            if candidate < value * threshold:
+                new[knob] = candidate
+        return Capacity(**new)
+
+
+def _replace_capacity(layers: list, new_capacities: list) -> list:
+    """容量有變的層換成新容量;全部沒變時回傳傳進來的同一個 list 物件(不觸發重編譯)。"""
+    replaced = [layer if capacity is None or capacity == layer.capacity
+                else layer.with_capacity(capacity)
+                for layer, capacity in zip(layers, new_capacities)]
+    if all(new is old for new, old in zip(replaced, layers)):
+        return layers
+    return replaced
+
+
+def grown_to_fit(layers: list, policies: dict, diags: list) -> list:
+    """放不下的層換成放大過的版本。
+
+    policies: 層名 -> GrowthPolicy,有容量的層都要有。
+    diags: 對齊 layers 的 LayerDiag,已經合併成一份(needed 是純量)。
+    全部放得下時回傳傳進來的同一個 list 物件。
+    """
+    return _replace_capacity(layers, [
+        None if layer.capacity is None
+        else policies[layer.name].grown(layer.capacity, diag.needed)
+        for layer, diag in zip(layers, diags)])
+
+
+def grown_to_fit_batch(layers: list, policies: dict, batch_diags: list) -> list:
+    """同 grown_to_fit,batch_diags 是逐筆診斷(每個值 shape (B,)),每層看最需要容量的那一筆。"""
+    return grown_to_fit(layers, policies, [reduce_over_batch(diag) for diag in batch_diags])
+
+
+def shrunk_to_observed(layers: list, policies: dict, observed: dict) -> list:
+    """用一整個 epoch 的最大需求縮小容量。
+
+    observed: 層名 -> 旋鈕名 -> 最大需求,有容量的層都要有。
+    都沒縮時回傳傳進來的同一個 list 物件。
+    """
+    return _replace_capacity(layers, [
+        None if layer.capacity is None
+        else policies[layer.name].shrunk(layer.capacity, observed[layer.name])
+        for layer in layers])

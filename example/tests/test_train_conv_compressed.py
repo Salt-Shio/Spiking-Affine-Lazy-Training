@@ -5,7 +5,7 @@ val_size=8),不用合成資料;不碰 train_conv_compressed.py 本身,只呼叫�
 共用 conftest.py 的 reference_run,整套測試只訓練一次。
 
 step 4b 起,每個 conv 層有兩個會出界的容量:壓縮佇列長度 `L`、輸出 spike
-上界 `max_out_spikes`。兩者同一套機制:偵測 -> 該層 `grown_to_fit` 放大 ->
+上界 `max_out_spikes`。兩者同一套機制:偵測 -> 該層照 `GrowthPolicy` 放大 ->
 退 checkpoint -> 重編譯續練。conv1 的 `L` 也走這套(不再像舊版那樣「conv1
 出界直接 raise」)。放大公式:`new = ceil(max(observed, old) * grow_factor)`,
 每個旋鈕各自一個 grow_factor。
@@ -48,8 +48,6 @@ import numpy as np
 import optax
 import pytest
 
-from salt_core.capacity import LayerDiag
-from example.models.conv_net import build_network
 from example.tests._train_runs import base_cfg, run_capture
 from example.train_conv_compressed import (_build_learning_rate, _build_optimizer,
                                             _cross_entropy_loss)
@@ -217,52 +215,6 @@ def test_build_learning_rate_cosine_decay_starts_high_ends_low():
 
     assert float(schedule(0)) == pytest.approx(1e-2, rel=1e-3)
     assert float(schedule(total_steps - 1)) < 1e-2 * 0.01  # alpha=0,退火到接近 0
-
-
-def _needed_diag(*, queue: int, out_spikes: int, steps: int) -> LayerDiag:
-    """一個 conv 層的單筆診斷,只填容量需求。"""
-    return LayerDiag(spike_count=jnp.array(0), firing_rate=jnp.array(0.0),
-                     needed={"L": jnp.array(queue), "max_out_spikes": jnp.array(out_spikes),
-                             "max_steps": jnp.array(steps)})
-
-
-def test_grown_to_fit_bumps_only_the_overflowing_knob():
-    """`ConvLayer.grown_to_fit`:出界的旋鈕按公式放大,沒出界的旋鈕跟其他欄位
-    原封不動;完全不出界時回傳自己(同一個物件)。這是動態放大機制的地基——
-    如果 grown_to_fit 不小心動到別的欄位,重編譯後的模型就不再等價於「一開始
-    就用大容量」。"""
-    cfg = base_cfg("grow_unit", seed=0, conv2_L_init=100, grow=1.5, epochs=1,
-                     conv2_max_out_init=2000)
-    _, conv2, _ = build_network(cfg["model"])
-
-    same = conv2.grown_to_fit(_needed_diag(queue=50, out_spikes=10, steps=conv2.max_steps))
-    assert same is conv2, "沒出界應回傳自己"
-
-    # 只有 L 出界:max_steps 沒有獨立超標,但 L 長大之後,這批用「舊、不夠大」
-    # 的佇列算出的 max_steps 需求已經不可信,安全網要求 max_steps 直接
-    # 補到新 L(不是保留舊值,也不是信這批的 max_steps 需求)。
-    grown = conv2.grown_to_fit(_needed_diag(queue=777, out_spikes=10, steps=0))
-    assert grown is not conv2
-    assert grown.L == int(math.ceil(max(777, 100) * 1.5)) == 1166
-    assert grown.max_out_spikes == conv2.max_out_spikes, "max_out 沒出界不該動"
-    assert grown.max_steps == grown.L, "L 出界長大時,max_steps 安全網要補到新 L"
-
-    # 只有 max_steps 自己的診斷出界(L / max_out 都沒事):max_steps 補到
-    # ceil(max_steps 需求 * max_steps_grow_factor)(跟 L/max_out 同一種留
-    # 餘裕公式,不是精確值——見 shrink_max_steps 的防震盪設計),L / max_out
-    # 原封不動。
-    steps_needed = conv2.max_steps + 7
-    grown_steps = conv2.grown_to_fit(_needed_diag(queue=50, out_spikes=10, steps=steps_needed))
-    assert grown_steps is not conv2
-    assert grown_steps.L == conv2.L, "L 沒出界不該動"
-    assert grown_steps.max_out_spikes == conv2.max_out_spikes, "max_out 沒出界不該動"
-    assert grown_steps.max_steps == int(
-        math.ceil(steps_needed * conv2.max_steps_grow_factor))
-
-    for f in ("name", "ic", "oc", "h_out", "w_out", "k", "s", "p", "tau", "v_th",
-              "alpha", "chunk_size", "init_k", "L_grow_factor", "out_grow_factor",
-              "out_shrink_threshold", "max_steps_grow_factor", "max_steps_shrink_threshold"):
-        assert getattr(grown, f) == getattr(conv2, f), f"{f} 不該被 grown_to_fit 改動"
 
 
 # ============================================================================

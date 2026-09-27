@@ -9,7 +9,8 @@ from data.src.nmnist import NMNISTSplit
 from example.models.conv_net import ConvNetCompressed
 from example.utils import make_evaluate
 from salt_core.decoder import MembraneRegressionDecoder
-from salt_core.tests._small_network import init_params, raw_batch, small_layers, with_conv_knob
+from salt_core.tests._small_network import (init_params, raw_batch, small_layers, small_policies,
+                                             with_conv_knob)
 
 N_SAMPLES = 6
 EVAL_BATCH = 3
@@ -28,7 +29,8 @@ def _generous_case():
     layers = small_layers()
     params = init_params(layers, seed=3)
     split = _split()
-    evaluate = make_evaluate(ConvNetCompressed(layers), MembraneRegressionDecoder(), EVAL_BATCH)
+    evaluate = make_evaluate(ConvNetCompressed(layers), MembraneRegressionDecoder(), EVAL_BATCH,
+                             small_policies(layers))
     return layers, params, split, evaluate(params, split)
 
 
@@ -41,7 +43,7 @@ def test_overflow_regrows_and_matches_generous():
     layers, params, split, (acc, loss, preds, _) = _generous_case()
     small = with_conv_knob(layers, "L", 1)
     net = ConvNetCompressed(small)
-    evaluate = make_evaluate(net, MembraneRegressionDecoder(), EVAL_BATCH)
+    evaluate = make_evaluate(net, MembraneRegressionDecoder(), EVAL_BATCH, small_policies(small))
 
     got_acc, got_loss, got_preds, regrows = evaluate(params, split)
     assert regrows > 0

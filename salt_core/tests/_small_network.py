@@ -4,6 +4,7 @@ from dataclasses import replace
 import jax
 import jax.numpy as jnp
 
+from salt_core.capacity import GrowthPolicy
 from salt_core.layers import ConvLayer, FCLayer
 
 INPUT_SHAPE = (2, 8, 8)
@@ -48,6 +49,11 @@ def small_layers(capacity: dict = GENEROUS) -> list:
                       init_k=5.0, chunk_size=4, **capacity["conv2"])
     out = FCLayer(name="out", n_in=conv2.n_neurons, n_out=10, init_k=5.0, chunk_size=512)
     return [conv1, conv2, out]
+
+
+def small_policies(layers: list) -> dict:
+    """有容量的層各一個預設 GrowthPolicy。"""
+    return {layer.name: GrowthPolicy() for layer in layers if layer.capacity is not None}
 
 
 def with_conv_knob(layers: list, knob: str, value: int) -> list:

@@ -13,12 +13,12 @@
 **靜態 vs 會被微分的切分**(JAX 函數式):
 
 - 層物件本身 = frozen dataclass,只有 Python 純量欄位(幾何 / 門檻 / chunk /
-  容量 / init 尺度 / 放大倍率),可雜湊 → 能當 `jax.jit` 靜態參數 / 被閉包捕捉。
+  容量 / init 尺度),可雜湊 → 能當 `jax.jit` 靜態參數 / 被閉包捕捉。
   **不含任何 JAX 陣列**,不是 pytree,不會被 trace。
 - 權重 = 一個 pytree(一層一份陣列),由 `run_network` 的 `weights` 參數獨立
   傳遞,是唯一餵給 `jax.grad` 的東西。
-- 容量旋鈕(`L` / `max_out_spikes`)動態放大 = `dataclasses.replace` 出一個
-  新的靜態層物件(觸發一次重編譯),見 `grown_to_fit`。
+- 容量旋鈕動態放大縮小 = `with_capacity` 換出一個新的靜態層物件(觸發一次
+  重編譯),公式見 `salt_core.capacity`。
 """
 import math
 from dataclasses import dataclass, replace
@@ -27,7 +27,7 @@ from typing import NamedTuple, Protocol
 import jax
 import jax.numpy as jnp
 
-from salt_core.capacity import Capacity, LayerDiag, reduce_over_batch
+from salt_core.capacity import Capacity, LayerDiag
 from salt_core.chunk_scan import (LayerForwardResult, LayerForwardResultInt,
                                    run_layer_forward, run_layer_forward_int,
                                    run_layer_forward_int_traced, run_layer_forward_traced)
@@ -84,31 +84,9 @@ class Layer(Protocol):
         給 `run_network_traced` 的週期性 debug probe 用,不進訓練熱路徑。"""
         ...
 
-    def grown_to_fit(self, diag: LayerDiag) -> "Layer":
-        """給定這層剛跑完的診斷(概念上是 host 端具體數值,不是 traced),
-        沒出界回自己、出界回一個容量放大過的新層物件。"""
+    def with_chunk_size(self, chunk_size: int) -> "Layer":
+        """換 chunk_size,其他跟著要改的欄位(例如 max_steps)由層自己改對。"""
         ...
-
-    def shrink_max_steps(self, observed: int) -> "Layer":
-        """給一個成功跑完的 epoch 裡、所有真實 batch 觀察到的 `max_steps`
-        需求最大值,決定要不要縮、縮多少,回一個新層物件;沒有可縮欄位的層
-        (例如 FC)原樣傳回自己。跟 `grown_to_fit` 是獨立的路:只在
-        `example/train_conv_compressed.py` 的 epoch 成功跑完之後呼叫,吃的是
-        整個 epoch 累積的觀察值,不是單一 batch 的 `LayerDiag`。"""
-        ...
-
-    def shrink_max_out_spikes(self, observed: int) -> "Layer":
-        """跟 `shrink_max_steps` 同一套規則,縮的旋鈕換成 `max_out_spikes`,
-        `observed` 是這個 epoch 裡所有真實 batch 觀察到的
-        `LayerDiag.needed["max_out_spikes"]` 最大值(真實觀察值,不是理論上界)。沒有可縮欄位的層
-        (例如 FC)原樣傳回自己。"""
-        ...
-
-
-def _grow(observed: int, current: int, factor: float) -> int:
-    """容量放大:放大到蓋過觀測值,再上浮 factor 倍留餘裕。對齊原
-    train_conv_compressed.py 的 `int(math.ceil(max(observed, current) * factor))`。"""
-    return int(math.ceil(max(int(observed), int(current)) * factor))
 
 
 class QuantizedLayerParams(NamedTuple):
@@ -191,7 +169,7 @@ def _constant_spike_gain(spike_mask: jax.Array) -> jax.Array:
 @dataclass(frozen=True)
 class ConvLayer:
     """一個壓縮版 conv 層。靜態欄位分五組:輸入面幾何 / 這層幾何 / init_k /
-    神經元動力學 / 容量 + 放大倍率。
+    神經元動力學 / 容量。
 
     輸入面幾何(`ic` / `h_in` / `w_in`)= 上一層的輸出:`ic` 要等於上一層的
     `oc`,`h_in`/`w_in` 要等於上一層的 `h_out`/`w_out`——組層 list 的時候
@@ -221,19 +199,10 @@ class ConvLayer:
     v_th: float = 1.0
     alpha: float = 2.0
     chunk_size: int = 1
-    # 容量 + 放大倍率 —— 有預設。L / max_out_spikes 的值不重要(出界會
-    # 自己長大),預設只求「不要太小、少幾次開頭重編譯」。
+    # 容量 —— 有預設。L / max_out_spikes 的值不重要(出界會自己長大),預設只求
+    # 「不要太小、少幾次開頭重編譯」。
     L: int = 128
     max_out_spikes: int = 8192
-    L_grow_factor: float = 1.5
-    out_grow_factor: float = 1.5
-    # max_out_spikes 縮小門檻(比照 max_steps_shrink_threshold):候選值要掉到
-    # 現在 max_out_spikes 的這個比例以下才值得縮。長大/縮小共用同一個
-    # out_grow_factor 公式(ceil(觀察值 * factor)),真實需求沒變時兩次算出來的
-    # 目標值相等,天然防震盪,道理跟 max_steps_grow_factor 一樣。跟 max_steps
-    # 縮小的差別:這裡吃的是真實觀察值 needed["max_out_spikes"],不是任何理論上界(見
-    # docs/問題紀錄.md 第十四節,為什麼 max_out_spikes 不能用 m*)。
-    out_shrink_threshold: float = 0.5
     # 跟 L 脫鉤的掃描步數上界(見 docs/math/掃描步數上界推導.md)。`None`
     # (預設)代表「沒特別設起始猜測」,`__post_init__` 落到 `self.L`,對齊這個
     # 欄位存在之前的行為(safe fallback,永遠夠用)——這是給**沒有經過**
@@ -243,15 +212,6 @@ class ConvLayer:
     # 起始值讓它自己長(跟 `L`/`max_out_spikes` 同一種「config 給起始猜測」
     # 的用法),config 就直接填這個欄位,不要靠這個 fallback。
     max_steps: int | None = None
-    # 長大跟縮小共用同一個倍率:長大時補到 `ceil(觀察值 * factor)`(留餘裕,
-    # 不是補精確值);縮小時候選值也用同一個公式算(`ceil(觀察值 * factor)`),
-    # 保證「真實需求沒變 → 兩次算出來的目標值相等 → 不會縮」,不需要另外
-    # 調參數搭配才能防震盪(見 docs/規格書.md「conv 層 max_steps」的推導)。
-    max_steps_grow_factor: float = 1.5
-    # 縮小門檻:候選值要掉到現在 max_steps 的這個比例以下才值得縮(付一次
-    # 重編譯的代價換空間)。不影響防震盪(那是上面 factor 共用的效果),純粹是
-    #「值不值得縮」的效率取捨。
-    max_steps_shrink_threshold: float = 0.5
 
     def __post_init__(self) -> None:
         if self.max_steps is None:
@@ -422,72 +382,13 @@ class ConvLayer:
         """
         return self._run_forward_quantized(params, in_stream, round_mode=round_mode, trace=True)
 
-    def grown_to_fit(self, diag: LayerDiag) -> "ConvLayer":
-        needed = diag.needed
-        new_L = (_grow(needed["L"], self.L, self.L_grow_factor) # 這裡算完必定 >= self.L
-                 if int(needed["L"]) > self.L else self.L)
-        new_out_spikes = (_grow(needed["max_out_spikes"], self.max_out_spikes, self.out_grow_factor)
-                   if int(needed["max_out_spikes"]) > self.max_out_spikes else self.max_out_spikes)
-        # max_steps 的安全網:needed["max_steps"] 是用「這個 batch 的實際權重」
-        # 算出來、保證夠用的步數上界(見 docs/math/掃描步數上界推導.md),超過
-        # 現在的 max_steps 就補到 ceil(needed["max_steps"] * max_steps_grow_factor)
-        # ——留跟 L/max_out_spikes 同樣精神的餘裕,也讓長大跟縮小(見
-        # shrink_max_steps)用同一個公式,兩者目標值才可能相等而不互相震盪。
-        # 但 L 這次如果也跟著長大,這批的 needed["max_steps"] 是在「舊、不夠大」
-        # 的佇列上算出來的,沒看到長大後才會出現的額外真實事件,不能信——退回
-        # 全保守值(= 新 L),下一批或下次 epoch 重估再用長大後的真實佇列重新
-        # 估出更緊的值。
-        if new_L != self.L: # 目前 new_L 嚴格 > self.L
-            new_max_steps = new_L
-        elif int(needed["max_steps"]) > self.max_steps:
-            new_max_steps = _grow(needed["max_steps"], 0, self.max_steps_grow_factor)
-        else:
-            new_max_steps = self.max_steps
-        if new_L == self.L and new_out_spikes == self.max_out_spikes and new_max_steps == self.max_steps:
-            return self
-        return replace(self, L=new_L, max_out_spikes=new_out_spikes, max_steps=new_max_steps)
-        # L: 事件佇列
-        # max_out_spikes: 作為輸入事件量的上界
-        # max_steps: affine map 的 b 估算出來的上界，作為輸出事件上界
+    def with_chunk_size(self, chunk_size: int) -> "ConvLayer":
+        """換 chunk_size,max_steps 退回 L。
 
-    def shrink_max_steps(self, observed: int) -> "ConvLayer":
-        """`max_steps` 的選擇性縮小路徑,給 `train_conv_compressed.py` 在一個
-        **成功跑完的 epoch** 之後呼叫(見 docs/規格書.md「conv 層 max_steps」)。
-        跟 `grown_to_fit` 是兩條獨立的路:這裡只縮不長。
-
-        `observed`:這個 epoch 裡,所有真實 batch 的 `LayerDiag.needed["max_steps"]`
-        取過的最大值——不是探測批,是這個 epoch 真正跑過的訓練資料。
-
-        候選值用跟 `grown_to_fit` **同一個公式**算(`ceil(observed *
-        max_steps_grow_factor)`),不是 `observed` 本身:真實需求沒變時,兩次
-        算出來的目標值會相等,天然不會縮,不用另外湊參數防震盪。候選值還要
-        掉到現在 `max_steps` 的 `max_steps_shrink_threshold` 比例以下才真的
-        縮(值不值得付一次重編譯的效率門檻,不影響防震盪)。都沒過就原樣傳回
-        (同一個物件,不觸發重編譯)。"""
-        candidate = _grow(observed, 0, self.max_steps_grow_factor)
-        if candidate >= self.max_steps * self.max_steps_shrink_threshold:
-            return self
-        return replace(self, max_steps=candidate)
-
-    def shrink_max_out_spikes(self, observed: int) -> "ConvLayer":
-        """`max_out_spikes` 的選擇性縮小路徑,規則跟 `shrink_max_steps` 逐項對應
-        (見 docs/規格書.md「conv 層 max_steps」)。跟 `max_steps` 唯一的差別:
-        這裡吃的是真實觀察值(`LayerDiag.needed["max_out_spikes"]`),不是任何理論上界——
-        `max_out_spikes` 出界是「真實資料裝不下」的被動事實,不像 `max_steps`
-        非得靠證明過的上界不可(見 docs/問題紀錄.md 第十四節)。
-
-        `observed`:這個 epoch 裡,所有真實 batch 的 `LayerDiag.needed["max_out_spikes"]`
-        取過的最大值——不是探測批,是這個 epoch 真正跑過的訓練資料。
-
-        候選值用跟 `grown_to_fit` 同一個公式算(`ceil(observed *
-        out_grow_factor)`),真實需求沒變時兩次算出來的目標值會相等,天然不會
-        縮,不用另外湊參數防震盪。候選值還要掉到現在 `max_out_spikes` 的
-        `out_shrink_threshold` 比例以下才真的縮。都沒過就原樣傳回(同一個
-        物件,不觸發重編譯)。"""
-        candidate = _grow(observed, 0, self.out_grow_factor)
-        if candidate >= self.max_out_spikes * self.out_shrink_threshold:
-            return self
-        return replace(self, max_out_spikes=candidate)
+        訓練時 max_steps 是照舊 chunk_size 的需求縮小過的,換成更小的 chunk_size
+        可能不夠;L 步一定夠,因為每一步至少處理一筆事件。
+        """
+        return replace(self, chunk_size=chunk_size, max_steps=self.L)
 
 
 @dataclass(frozen=True)
@@ -630,19 +531,9 @@ class FCLayer:
         """同 `ConvLayer.forward_quantized_traced`。"""
         return self._run_forward_quantized(params, in_stream, round_mode=round_mode, trace=True)
 
-    def grown_to_fit(self, diag: LayerDiag) -> "FCLayer":
-        # 輸出層沒有自己的容量旋鈕:積分預算來自上一層的輸出容量(輸入流長度),
-        # 上一層長大、重編譯時這層自動拿到更長的輸入流、更多 scan 步數。
-        return self
-
-    def shrink_max_steps(self, observed: int) -> "FCLayer":
-        # 沒有獨立的 max_steps 欄位(積分步數是上一層輸出容量現算的,見
-        # _run_forward 的 scan_steps),沒東西可以縮。
-        return self
-
-    def shrink_max_out_spikes(self, observed: int) -> "FCLayer":
-        # 沒有獨立的 max_out_spikes 欄位(輸出容量固定是 n_out),沒東西可以縮。
-        return self
+    def with_chunk_size(self, chunk_size: int) -> "FCLayer":
+        """換 chunk_size。掃描步數每次從輸入流長度現算,沒有其他欄位要跟著改。"""
+        return replace(self, chunk_size=chunk_size)
 
 
 def check_layer_connections(layers) -> None:
@@ -664,20 +555,6 @@ def check_layer_connections(layers) -> None:
             raise ValueError(f"{prev.name} 的輸出 {out_shape} 沒有空間形狀,"
                              f"不能接吃空間輸入的 {nxt.name}(輸入 {in_shape})")
         raise ValueError(f"{prev.name} 的輸出 {out_shape} 接不上 {nxt.name} 的輸入 {in_shape}")
-
-
-def grown_to_fit_batch(layers: list, batch_diags: list) -> list:
-    """一列層放不放得下一個 batch;放不下的層換成放大過的版本。
-
-    batch_diags: 對齊 layers 的逐筆 LayerDiag(每個欄位 shape (B,))。
-    每層看 batch 裡最需要容量的那一筆,放大公式是各層的 grown_to_fit。
-    全部放得下時回傳傳進來的同一個 list 物件。
-    """
-    grown = [layer.grown_to_fit(reduce_over_batch(diag))
-             for layer, diag in zip(layers, batch_diags)]
-    if all(new is old for new, old in zip(grown, layers)):
-        return layers
-    return grown
 
 
 def raw_events_to_stream(event_times: jax.Array, x: jax.Array, y: jax.Array,

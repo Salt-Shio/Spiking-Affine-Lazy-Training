@@ -31,8 +31,8 @@ from salt_core.capacity import Capacity
 def _rebuild_layers_at_epoch(run_record: dict, exp_dir: str, epoch: int) -> list:
     """跟 `example.utils.rebuild_layers`的差別:那個函式還原的是**整個 run
     結束時**的最終容量(`run.yaml` 的 `final_capacity`),但 `max_steps`/
-    `max_out_spikes` 訓練中途可能縮小過(`ConvLayer.shrink_max_steps`/
-    `shrink_max_out_spikes`,見 docs/問題紀錄.md §十五 踩過的坑)——要重建
+    `max_out_spikes` 訓練中途可能縮小過(`GrowthPolicy.shrunk`,見
+    docs/問題紀錄.md §十五 踩過的坑)——要重建
     「某個中途 epoch 當下」的權重,必須用那個 epoch **當下**的容量,不能用
     run 結束時的容量(可能已經比當下小,會把還沒縮小前的真實輸出/掃描步數
     截斷)。這裡改成直接讀 `metrics.csv` 裡對應 epoch 那一列的容量欄位。"""

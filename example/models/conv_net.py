@@ -17,12 +17,16 @@
 
 佇列長度 `L`、輸出 spike 上界 `max_out_spikes` 都是「起始猜測 + 訓練中偵測
 出界就放大」(見 docs/math/conv事件佇列壓縮版推導.md 第 7.2 節、
-`salt_core.layers.ConvLayer.grown_to_fit`、`example/train_conv_compressed.py`)。
+`salt_core.capacity`、`example/train_conv_compressed.py`)。放大縮小的倍率跟門檻
+寫在同一個 layer entry 裡,由 `build_growth_policies` 讀。
 `init_k` 是每層必填欄位,不校準(委定值見 docs/問題紀錄.md §12),layer entry
 沒填會在建層物件那一步直接報錯。
 """
+import dataclasses
+
 import jax
 
+from salt_core.capacity import GrowthPolicy
 from salt_core.decoder import (MembraneRegressionDecoder, PopulationDecoder,
                                 RateDecoder)
 from salt_core.layers import ConvLayer, FCLayer, raw_events_to_stream, run_network
@@ -33,20 +37,23 @@ from data.src.nmnist import CLASS_NAMES
 # 給 build_decoder 的群體分組用。
 N_CLASSES = len(CLASS_NAMES)
 
-__all__ = ["N_CLASSES", "build_network", "build_decoder", "ConvNetCompressed"]
+__all__ = ["N_CLASSES", "build_network", "build_growth_policies", "build_decoder",
+           "ConvNetCompressed"]
 
 # layer entry 裡這些 key 轉型後才傳給層類別(yaml 的 `1.0e9` 之類會被 parse
 # 成字串——PyYAML 遵 YAML 1.1,指數要 `1.0e+9` 才算 float)。不認得的 key
 # 原樣傳,讓層類別自己 TypeError。
 _LAYER_INT_FIELDS = ("chunk_size", "L", "max_out_spikes", "max_steps")
-_LAYER_FLOAT_FIELDS = ("tau", "v_th", "alpha", "init_k", "L_grow_factor", "out_grow_factor",
-                       "max_steps_grow_factor", "max_steps_shrink_threshold",
-                       "out_shrink_threshold")
+_LAYER_FLOAT_FIELDS = ("tau", "v_th", "alpha", "init_k")
+# layer entry 裡屬於 GrowthPolicy 的 key,不傳給層類別
+_POLICY_FIELDS = tuple(f.name for f in dataclasses.fields(GrowthPolicy))
 
 
 def _coerce_layer_opts(e: dict) -> dict:
     out = {}
     for key, val in e.items():
+        if key in _POLICY_FIELDS:
+            continue
         if val is None:
             out[key] = None
         elif key in _LAYER_INT_FIELDS:
@@ -67,11 +74,10 @@ def build_network(model_cfg: dict) -> list:
         - `conv` 必填 `oc` / `k` / `s` / `p`;空間尺寸由這裡算、`ic` 從上一層
           串。
         - `fc` 必填 `n_out`;`n_in` = 上一層攤平。
+        - `GrowthPolicy` 的欄位(`L_grow_factor` 這些)留給 `build_growth_policies`。
         - 其餘 key(`tau` / `v_th` / `alpha` / `chunk_size` / `L` /
-          `max_out_spikes` / `max_steps` / `init_k` / `L_grow_factor` /
-          `out_grow_factor` / `max_steps_grow_factor` /
-          `max_steps_shrink_threshold` / `out_shrink_threshold`)直接當關鍵字
-          傳給層類別,沒填就吃類別預設(見 `salt_core.layers`)。
+          `max_out_spikes` / `max_steps` / `init_k`)直接當關鍵字傳給層類別,
+          沒填就吃類別預設(見 `salt_core.layers`)。
         - `name` 選填,沒填自動 `conv1` / `conv2` / ... / `fc1` / ...。
 
     config 的格式 / key 命名 / 版本管理是開發者的事:entry 少了必填 key、或
@@ -117,6 +123,17 @@ def build_network(model_cfg: dict) -> list:
     return layers
 
 
+def build_growth_policies(model_cfg: dict, layers: list) -> dict:
+    """有容量的層各一個 GrowthPolicy,回傳 {層名: GrowthPolicy}。
+
+    layers: build_network(model_cfg) 的結果,跟 model_cfg["layers"] 一一對齊。
+    倍率、門檻讀 layer entry 裡的同名 key,沒填吃 GrowthPolicy 的預設。
+    """
+    return {layer.name: GrowthPolicy(**{key: float(entry[key])
+                                         for key in _POLICY_FIELDS if key in entry})
+            for entry, layer in zip(model_cfg["layers"], layers) if layer.capacity is not None}
+
+
 def build_decoder(model_cfg: dict, layers: list):
     """從 model config 的 `decoder` 建輸出解碼器(見 `salt_core.decoder`)。
     三選一:`membrane_regression`(預設,不填也是它)/ `rate` / `population`。
@@ -147,8 +164,8 @@ class ConvNetCompressed:
     **最後一層的原始 `LayerForwardResult`**(不自己挑 v_final;怎麼把它讀成
     預測分數是解碼器的事,見 `salt_core.decoder` / `build_decoder`),連同
     每層 `LayerDiag`(spike 數 / firing rate / L 出界訊號 / 輸出上界出界訊號)。
-    動態放大 = 用 `grown_to_fit` 重建 layer list 再 `ConvNetCompressed(新
-    layers)`,見 train_conv_compressed.py。
+    動態放大 = 用 `salt_core.capacity.grown_to_fit` 重建 layer list 再
+    `ConvNetCompressed(新 layers)`,見 train_conv_compressed.py。
 
     權重:`init` 回一個對齊 `self.layers` 的 tuple(一層一份陣列),就是餵給
     `run_network` / `jax.grad` 的東西——沒有寫死欄位的 NamedTuple。

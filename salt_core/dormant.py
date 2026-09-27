@@ -23,8 +23,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from salt_core.layers import (ConvLayer, check_layer_connections, grown_to_fit_batch,
-                              raw_events_to_stream)
+from salt_core.capacity import grown_to_fit_batch
+from salt_core.layers import ConvLayer, check_layer_connections, raw_events_to_stream
 
 
 def dormant_score(activity, *, tau: float = 0.1) -> dict:
@@ -77,13 +77,13 @@ def _make_chunk_activity(layers, use_s_value: bool):
     return chunk_activity
 
 
-def dormant_report(layers, params, probe_batch, *, tau: float = 0.1,
+def dormant_report(layers, params, probe_batch, policies: dict, *, tau: float = 0.1,
                    activity: str = "spike", chunk: int = 16) -> tuple[dict, int]:
     """在固定探測批次上量每個 conv 隱藏層的 dormant 統計。
 
     probe_batch: (event_times, x, y, c, n_real_events),leading axis = 樣本數。
     分 chunk 做 vmap forward(避免整批一次建構壓縮佇列 OOM)。某個 chunk 容量
-    出界時,放大容量重算那個 chunk;放大只在這次呼叫內有效。
+    出界時,照 policies(層名 -> GrowthPolicy)放大容量重算那個 chunk;放大只在這次呼叫內有效。
 
     回傳 ({conv_layer_name: {"dormant_frac": float}}, 重算次數)。
     activity 不是 "spike" 或 "s_value",或層接不起來時 raise ValueError。
@@ -102,13 +102,13 @@ def dormant_report(layers, params, probe_batch, *, tau: float = 0.1,
         hi = min(lo + chunk, n)
         chunk_args = (et[lo:hi], x[lo:hi], y[lo:hi], c[lo:hi], nr[lo:hi])
         acts, diags = chunk_activity(params, *chunk_args)
-        grown = grown_to_fit_batch(layers, diags)
+        grown = grown_to_fit_batch(layers, policies, diags)
         while grown is not layers:
             layers = grown
             chunk_activity = _make_chunk_activity(layers, use_s_value)
             regrows += 1
             acts, diags = chunk_activity(params, *chunk_args)
-            grown = grown_to_fit_batch(layers, diags)
+            grown = grown_to_fit_batch(layers, policies, diags)
         acts = {k: np.asarray(jnp.sum(v, axis=0)) for k, v in acts.items()}
         totals = acts if totals is None else {k: totals[k] + acts[k] for k in totals}
 

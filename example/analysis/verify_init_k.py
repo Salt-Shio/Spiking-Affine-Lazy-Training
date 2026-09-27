@@ -26,8 +26,8 @@ import optax
 from data.src.nmnist import NMNISTDataset
 from salt_core.connectivity.conv import _axis_candidates, unravel_conv_source
 from salt_core.layer_chain import EventStream
-from salt_core.capacity import reduce_over_batch
-from salt_core.layers import grown_to_fit_batch, raw_events_to_stream
+from salt_core.capacity import GrowthPolicy, grown_to_fit, grown_to_fit_batch, reduce_over_batch
+from salt_core.layers import raw_events_to_stream
 from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
 from example.paths import DATASET_ROOT, resolve_config
 from example.train_conv_compressed import load_config
@@ -38,6 +38,8 @@ INIT_KS = (math.sqrt(3.0), 3.0, 5.0, 8.0, 64.0)
 FAN_IN = {"conv1": 18, "conv2": 72}
 V_TH = 1.0
 ALPHA = 2.0
+# 容量只求放得下,放大倍率不影響量到的數值,用預設公式。
+FIT_POLICY = GrowthPolicy()
 CHUNK = 16
 
 
@@ -210,7 +212,7 @@ def _fit_layer(layer, w, stream_batch, chunk: int):
     while True:
         out, diag = _sub_batched(lambda s: _out_and_diag(layer.forward(w, s)),
                                  stream_batch, chunk)
-        grown = layer.grown_to_fit(reduce_over_batch(diag))
+        [grown] = grown_to_fit([layer], {layer.name: FIT_POLICY}, [reduce_over_batch(diag)])
         if grown is layer:
             return layer, out
         layer = grown
@@ -318,7 +320,8 @@ def _fit_network(layers, params, sl):
     while True:
         _result, diags = ConvNetCompressed(layers).apply_batched(
             params, sl.event_times, sl.x, sl.y, sl.c, sl.n_real_events)
-        grown = grown_to_fit_batch(layers, diags)
+        policies = {layer.name: FIT_POLICY for layer in layers if layer.capacity is not None}
+        grown = grown_to_fit_batch(layers, policies, diags)
         if grown is layers:
             return layers
         layers = grown

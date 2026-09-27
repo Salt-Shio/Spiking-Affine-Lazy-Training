@@ -8,12 +8,12 @@
   出來、由 `LayerDiag` 帶出。
 - 沒有「靜態精算一次永久有效」的做法(原本 `conv_param_search.py` 的 L1 靜態
   量測太慢已廢),一律:config 給起始猜測 → 訓練中某個 batch 偵測出界 →
-  該層 `grown_to_fit` 放大 → 退回最近的 checkpoint → 用新的 layer list 重
-  編譯續練。哪個旋鈕、放大多少是 `salt_core.layers.ConvLayer` 自己的知識,
-  這裡只負責「作廢這個 batch、退 checkpoint、重編譯」這圈訓練編排,而且是對
-  layer list 的一個**通用迴圈**,不寫死層名。
+  照 `salt_core.capacity.GrowthPolicy` 放大 → 退回最近的 checkpoint → 用新的
+  layer list 重編譯續練。放大多少是 `GrowthPolicy` 的公式,這裡只負責「作廢
+  這個 batch、退 checkpoint、重編譯」這圈訓練編排,而且是對 layer list 的一個
+  **通用迴圈**,不寫死層名。
 - `max_steps` 跟 `max_out_spikes` 都多一條**選擇性縮小**的路
-  (`_shrink_layers`):每 `train.max_steps_reestimate_every` 個**成功跑完的**
+  (`shrunk_to_observed`):每 `train.max_steps_reestimate_every` 個**成功跑完的**
   epoch,用這個 epoch 裡所有真實 batch 觀察到的最大值決定要不要縮,比現有值
   小就縮、重編譯續跑。這條路跟出界不一樣,不需要退 checkpoint(用的是已經
   確定沒問題的當下權重),但重編譯這件事借用同一條 while 外圈。`max_steps`
@@ -49,14 +49,15 @@ import optax
 import yaml
 
 from data.src.nmnist import NMNISTDataset
-from salt_core.capacity import reduce_over_batch
+from salt_core.capacity import grown_to_fit, reduce_over_batch, shrunk_to_observed
 from salt_core.layers import ConvLayer
 from example.checkpoint import Checkpointer
 from salt_core.dormant import dormant_report
 from example.metrics_log import MetricsLog
-from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
+from example.models.conv_net import (ConvNetCompressed, build_decoder, build_growth_policies,
+                                     build_network)
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR, REPO_ROOT, resolve_config
-from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, describe_growth,
+from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, capacity_changes, describe_growth,
                            get_git_commit_hash, make_evaluate, save_params_npz,
                            set_seed, weight_snapshot_path)
 
@@ -159,40 +160,10 @@ def make_train_step(net, optimizer, decoder, score_cap: float | None = None):
     return train_step
 
 
-def _grow_layers(layers: list, reduced_diags: list) -> list:
-    """對每一層問一次 `grown_to_fit`,回傳新的 layer list(沒出界的層原封不動,
-    是同一個物件)。"""
-    return [layer.grown_to_fit(diag) for layer, diag in zip(layers, reduced_diags)]
-
-
-def _shrink_layers(layers: list, epoch_needed: dict) -> list:
-    """有容量的層各問一次 `shrink_max_steps` + `shrink_max_out_spikes`,回傳新的
-    layer list(沒縮的層原封不動,是同一個物件)。`epoch_needed`:層名 -> 旋鈕 ->
-    這個**成功跑完的 epoch**裡,所有真實 batch 的需求最大值——不是探測批,
-    是這個 epoch 真正跑過的訓練資料(見 docs/規格書.md「conv 層 max_steps」,
-    `max_out_spikes` 比照辦理)。"""
-    result = []
-    for layer in layers:
-        if layer.capacity is not None:
-            needed = epoch_needed[layer.name]
-            layer = layer.shrink_max_steps(needed["max_steps"])
-            layer = layer.shrink_max_out_spikes(needed["max_out_spikes"])
-        result.append(layer)
-    return result
-
-
 def _describe_shrink(old_layers: list, new_layers: list) -> list[str]:
-    """跟 `describe_growth` 對應,一個旋鈕一行,格式:`conv1 max_steps
-    200->134`。"""
-    lines = []
-    for old, new in zip(old_layers, new_layers):
-        if old is new:
-            continue
-        if new.max_steps != old.max_steps:
-            lines.append(f"{old.name} max_steps {old.max_steps}->{new.max_steps}")
-        if new.max_out_spikes != old.max_out_spikes:
-            lines.append(f"{old.name} max_out {old.max_out_spikes}->{new.max_out_spikes}")
-    return lines
+    """跟 `describe_growth` 對應,一個旋鈕一行,格式:`conv1 max_steps 200->134`。"""
+    return [f"{old_layers[i].name} {knob} {old}->{new}"
+            for i, knob, old, new in capacity_changes(old_layers, new_layers)]
 
 
 class Best(NamedTuple):
@@ -208,12 +179,12 @@ class EpochsOutcome(NamedTuple):
     final_params: object       # 最後一個完成 epoch 的 params(出界/重估時呼叫端不用)
     best: Best
     reestimated: bool = False  # max_steps 選擇性縮小觸發的重編譯,不是出界(見
-                               # _shrink_layers);跟 overflowed 分開記,
+                               # shrunk_to_observed);跟 overflowed 分開記,
                                # 因為成因、要不要當「有問題」看待完全不同,不能
                                # 共用同一個欄位混在一起。
 
 
-def run_epochs(*, layers, train_step, evaluate, params, opt_state,
+def run_epochs(*, layers, policies, train_step, evaluate, params, opt_state,
                shuffle_key, start_epoch: int, total_epochs: int,
                train_split, val_split, batch_size: int, probe_batch,
                metrics_log, checkpointer, best: Best,
@@ -222,7 +193,7 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
     """跑 `[start_epoch, total_epochs)` 的訓練迴圈。
 
     **不知道「長大」這回事**:偵測到某 batch 的真實用量超過壓縮容量,就用
-    `_grow_layers` 算出放大後的新 layer list、印 `[出界]`、回傳
+    `grown_to_fit` 算出放大後的新 layer list、印 `[出界]`、回傳
     `EpochsOutcome(overflowed=True, grown_layers=...)`——不自己退 checkpoint /
     重編譯,那是呼叫端 `train()` 的 while 外圈。跑完整段沒出界回
     `overflowed=False`,`final_params` 是最後一個 epoch 的權重。
@@ -231,7 +202,7 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
     的 batch 迴圈裡,順便累積這個 epoch 所有真實 batch 的 `LayerDiag.needed`
     最大值(`epoch_needed`)。**epoch 成功跑完**(checkpoint 存完)之後,
     `max_steps_reestimate_every > 0` 且這個 epoch number 命中頻率時,拿這兩份
-    累積值問 `_shrink_layers`(見 docs/規格書.md「conv 層 max_steps」,
+    累積值問 `shrunk_to_observed`(見 docs/規格書.md「conv 層 max_steps」,
     `max_out_spikes` 比照辦理)——不是探測批,是這個 epoch 真正跑過的訓練
     資料。真的縮了就印 `[縮小]`、回傳 `EpochsOutcome(reestimated=True,
     grown_layers=...)`,一樣交給 `train()` 的 while 外圈重編譯續跑,從剛存的
@@ -260,7 +231,7 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
                 train_split.n_real_events[idx], train_split.labels_onehot[idx])
 
             # 出界偵測:任何一層要長大,就作廢這個 batch、回報給外圈。
-            grown = _grow_layers(layers, reduced_diags)
+            grown = grown_to_fit(layers, policies, reduced_diags)
             if grown != layers:
                 where = (f"退回 checkpoint(epoch={checkpointer.last_epoch})"
                          if checkpointer.exists() else "還沒有 checkpoint,退回訓練最初始狀態")
@@ -283,7 +254,7 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
         val_accuracy, _val_loss, _, val_regrows = evaluate(params, val_split)
         if val_accuracy > best.val_accuracy:
             best = Best(params=params, val_accuracy=val_accuracy, epoch=epoch)
-        dormant, dormant_regrows = dormant_report(layers, params, probe_batch)
+        dormant, dormant_regrows = dormant_report(layers, params, probe_batch, policies)
         if dormant_regrows:
             print(f"[dormant 出界] epoch={epoch}: 放大探測用容量重算 {dormant_regrows} 次")
         metrics_log.finish_epoch(epoch=epoch, val_accuracy=val_accuracy, layers=layers,
@@ -303,7 +274,7 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
         # 縮小檢查:只在這個 epoch 真正成功跑完、checkpoint 也存完之後才問,
         # 用的是這個 epoch 累積的真實觀察值,不是探測批。
         if max_steps_reestimate_every > 0 and epoch % max_steps_reestimate_every == 0:
-            shrunk = _shrink_layers(layers, epoch_needed)
+            shrunk = shrunk_to_observed(layers, policies, epoch_needed)
             if shrunk != layers:
                 print(f"[縮小] epoch={epoch}:")
                 for line in _describe_shrink(layers, shrunk):
@@ -350,6 +321,8 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
     # list,跨 while 迴圈迭代持續累積(層名不變)。init_k 是每層必填欄位(不校準,
     # 委定值見 docs/問題紀錄.md §12),config 沒填會在 build_network 這一步就報錯。
     layers = build_network(model_cfg)
+    # 層名在動態放大縮小時不變,policies 建一次就好
+    policies = build_growth_policies(model_cfg, layers)
 
     layer_names = [layer.name for layer in layers]
     # dormant 統計只算 conv 隱藏層(salt_core.dormant 的挑層規則)
@@ -411,10 +384,10 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
             start_epoch = ckpt_epoch + 1
 
         outcome = run_epochs(
-            layers=layers,
+            layers=layers, policies=policies,
             train_step=make_train_step(
                 net, optimizer, decoder, score_cap=train_cfg.get("score_cap")),
-            evaluate=make_evaluate(net, decoder, eval_batch_size=batch_size),
+            evaluate=make_evaluate(net, decoder, eval_batch_size=batch_size, policies=policies),
             params=params, opt_state=opt_state, shuffle_key=shuffle_key,
             start_epoch=start_epoch, total_epochs=train_cfg["epochs"],
             train_split=train_split, val_split=val_split, batch_size=batch_size,

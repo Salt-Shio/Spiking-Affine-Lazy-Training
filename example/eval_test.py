@@ -31,7 +31,8 @@ import numpy as np
 import yaml
 
 from data.src.nmnist import NMNISTDataset
-from example.models.conv_net import N_CLASSES, ConvNetCompressed, build_decoder
+from example.models.conv_net import (N_CLASSES, ConvNetCompressed, build_decoder,
+                                     build_growth_policies)
 from example.paths import DATASET_ROOT
 from example.utils import (EVAL_DIRNAME, load_run_params, load_run_record,
                            make_evaluate, rebuild_layers)
@@ -62,7 +63,8 @@ def evaluate_run(exp_dir: str, which: str, n_samples: int | None,
     split = dataset.build_split(seed=seed, n_samples=n_samples, which=which)
 
     eval_batch_size = int(run_record["config"]["train"]["batch_size"])
-    evaluate = make_evaluate(net, decoder, eval_batch_size)
+    evaluate = make_evaluate(net, decoder, eval_batch_size,
+                             build_growth_policies(model_cfg, layers))
     accuracy, loss, preds, capacity_regrows = evaluate(params, split)
     labels = np.asarray(split.labels)
     confusion_matrix = _confusion_matrix(labels, preds, N_CLASSES)

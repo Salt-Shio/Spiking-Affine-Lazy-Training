@@ -196,9 +196,6 @@
   entropy 梯度爆炸」模式。還沒查:optimizer 有沒有配 gradient clipping、
   實際去 replay 那個 batch 看數值。優先度看之後要不要繼續訓更深/更久的網路
   再決定。
-- **`ConvLayer.shrink_max_out_spikes` 觀察值是 0 時會把容量縮成 0。** 某層整個
-  epoch 都沒有 fire 時,候選值 `ceil(0 * out_grow_factor) = 0`,縮成
-  `max_out_spikes=0`,下游 gather 直接崩潰。架構審查第 5 條做容量型別時一起修。
 - **文件說「forward 結果跟 chunk_size 無關、逐位元相同」,實際不是。** 不同
   chunk_size 的浮點加總順序不同。實測(2026-09-27)FC 輸出層吃約 2.2 萬筆事件,
   跟 float64 逐事件遞迴比的最大相對誤差:chunk_size=1 是 6.0e-6、8 是 2.1e-6、

@@ -22,11 +22,10 @@ import numpy as np
 import yaml
 
 from data.src.nmnist import NMNISTDataset
-from example.models.conv_net import ConvNetCompressed, build_decoder
+from example.models.conv_net import ConvNetCompressed, build_decoder, build_growth_policies
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
-from example.replay_epoch import force_chunk_size_one
 from example.utils import load_run_params, load_run_record, rebuild_layers
-from salt_core.capacity import Capacity, LayerDiag
+from salt_core.capacity import Capacity, LayerDiag, grown_to_fit
 from salt_core.layers import (dequantize_v_final, raw_events_to_stream,
                               run_network_quantized_traced, run_network_traced)
 from salt_core.quant.calibrate import merge_v_ranges, v_abs_max_per_channel, v_range_per_channel
@@ -111,12 +110,12 @@ def overflow_report(layers: list, out: dict) -> dict:
 
 
 def grown_layers(layers: list, out: dict) -> list:
-    """照訓練的放大公式,用整個 split 的最大需求放大每一層。"""
-    grown = []
-    for layer in layers:
-        needed = {knob: int(v.max()) for knob, v in out["needed"][layer.name].items()}
-        grown.append(layer.grown_to_fit(LayerDiag(spike_count=0, firing_rate=0.0, needed=needed)))
-    return grown
+    """照那次 run 的放大公式,用整個 split 的最大需求放大每一層。"""
+    policies = build_growth_policies(load_run_record(str(RUN_DIR))["config"]["model"], layers)
+    diags = [LayerDiag(spike_count=0, firing_rate=0.0,
+                       needed={knob: int(v.max()) for knob, v in out["needed"][layer.name].items()})
+             for layer in layers]
+    return grown_to_fit(layers, policies, diags)
 
 
 def accuracy(out: dict, labels: np.ndarray) -> float:
@@ -225,7 +224,7 @@ def load_quant_run() -> tuple:
     with open(GOLDEN_DIR / "report.yaml", "r", encoding="utf-8") as f:
         report = yaml.safe_load(f)
     layers, decoder, params, split, _batch_size = load_run()
-    layers = force_chunk_size_one(with_capacity(layers, report["golden_capacity"]))
+    layers = [layer.with_chunk_size(1) for layer in with_capacity(layers, report["golden_capacity"])]
     return layers, decoder, build_golden_quant_params(layers, params, split), split
 
 

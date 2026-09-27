@@ -56,4 +56,4 @@ def test_network_entry_points_check_connections(run):
 
 def test_dormant_report_checks_connections():
     with pytest.raises(ValueError, match="conv1.*conv2"):
-        dormant_report([CONV1, replace(CONV2, ic=3)], None, None)
+        dormant_report([CONV1, replace(CONV2, ic=3)], None, None, None)

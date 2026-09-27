@@ -34,8 +34,7 @@ import numpy as np
 import optax
 import yaml
 
-from salt_core.capacity import Capacity, reduce_over_batch
-from salt_core.layers import grown_to_fit_batch
+from salt_core.capacity import Capacity, grown_to_fit_batch, reduce_over_batch
 
 from example.models.conv_net import ConvNetCompressed, build_network
 
@@ -118,22 +117,25 @@ def load_run_params(exp_dir: str, layers: list, which_params: str) -> tuple:
     return load_params_npz(os.path.join(exp_dir, TRAIN_DIRNAME, fname), layers)
 
 
+def capacity_changes(old_layers: list, new_layers: list):
+    """逐一產生容量有變的 (層索引, 旋鈕名, 舊值, 新值)。"""
+    for i, (old, new) in enumerate(zip(old_layers, new_layers)):
+        if old is new or old.capacity is None:
+            continue
+        for knob, old_value in old.capacity.items():
+            if new.capacity[knob] != old_value:
+                yield i, knob, old_value, new.capacity[knob]
+
+
 def describe_growth(old_layers: list, new_layers: list, reduced_diags: list) -> list[str]:
     """哪些層的哪些容量旋鈕從多少放大到多少,一個旋鈕一行。
 
     reduced_diags: 對齊層的 LayerDiag,needed 是這個 batch 的最大值。
     格式:conv2 L 32->2100(觀察 1401)。
     """
-    lines = []
-    for old, new, d in zip(old_layers, new_layers, reduced_diags):
-        if old is new or old.capacity is None:
-            continue
-        for knob, old_value in old.capacity.items():
-            new_value = new.capacity[knob]
-            if new_value != old_value:
-                lines.append(f"{old.name} {knob} {old_value}->{new_value}"
-                             f"(觀察 {int(d.needed[knob])})")
-    return lines
+    return [f"{old_layers[i].name} {knob} {old}->{new}"
+            f"(觀察 {int(reduced_diags[i].needed[knob])})"
+            for i, knob, old, new in capacity_changes(old_layers, new_layers)]
 
 
 def _make_scores_fn(layers: list, decoder):
@@ -148,12 +150,12 @@ def _make_scores_fn(layers: list, decoder):
     return scores_fn
 
 
-def make_evaluate(net, decoder, eval_batch_size: int):
+def make_evaluate(net, decoder, eval_batch_size: int, policies: dict):
     """回傳 evaluate(params, split) -> (accuracy, loss, preds, capacity_regrows)。
 
-    分批 vmap 算 scores。某個 batch 容量出界時,放大評估用的容量、重算那個
-    batch,capacity_regrows 是這次呼叫重算的次數。放大後的容量留給之後的呼叫,
-    net 本身的容量不變。
+    分批 vmap 算 scores。某個 batch 容量出界時,照 policies(層名 -> GrowthPolicy)
+    放大評估用的容量、重算那個 batch,capacity_regrows 是這次呼叫重算的次數。
+    放大後的容量留給之後的呼叫,net 本身的容量不變。
     """
     layers = net.layers
     scores_fn = _make_scores_fn(layers, decoder)
@@ -168,7 +170,7 @@ def make_evaluate(net, decoder, eval_batch_size: int):
             batch = (split.event_times[start:end], split.x[start:end], split.y[start:end],
                      split.c[start:end], split.n_real_events[start:end])
             scores, diags = scores_fn(params, *batch)
-            grown = grown_to_fit_batch(layers, diags)
+            grown = grown_to_fit_batch(layers, policies, diags)
             while grown is not layers:
                 print(f"[評估出界] batch={start // eval_batch_size}: 放大評估容量重算")
                 reduced = [reduce_over_batch(d) for d in diags]
@@ -178,7 +180,7 @@ def make_evaluate(net, decoder, eval_batch_size: int):
                 scores_fn = _make_scores_fn(layers, decoder)
                 regrows += 1
                 scores, diags = scores_fn(params, *batch)
-                grown = grown_to_fit_batch(layers, diags)
+                grown = grown_to_fit_batch(layers, policies, diags)
             scores_parts.append(scores)
         scores = jnp.concatenate(scores_parts)
         preds = jnp.argmax(scores, axis=1)

@@ -1,14 +1,16 @@
-"""salt_core/capacity.py 的 Capacity、reduce_over_batch,跟 layers.py 的 grown_to_fit_batch。"""
+"""salt_core/capacity.py:Capacity、reduce_over_batch、GrowthPolicy、層清單的放大縮小。"""
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from salt_core.capacity import Capacity, LayerDiag, reduce_over_batch
-from salt_core.layers import ConvLayer, FCLayer, grown_to_fit_batch
+from salt_core.capacity import (Capacity, GrowthPolicy, LayerDiag, grown_to_fit, grown_to_fit_batch,
+                                reduce_over_batch, shrunk_to_observed)
+from salt_core.layers import ConvLayer, FCLayer
 
 CONV = ConvLayer(name="conv", ic=1, h_in=4, w_in=4, oc=1, k=3, s=1, p=1, init_k=1.0,
                  L=10, max_out_spikes=20, max_steps=10)
 FC = FCLayer(name="out", n_in=16, n_out=2, init_k=1.0)
+POLICIES = {"conv": GrowthPolicy()}
 
 
 def _diag(queue, out_spikes, steps, spike_count=(0, 0, 0)) -> LayerDiag:
@@ -54,14 +56,83 @@ def test_fits_checks_every_knob_per_sample():
 def test_fits_returns_same_list_object():
     layers = [CONV, FC]
     diags = [_diag([10, 3, 3], [20, 1, 1], [10, 2, 2]), _fc_diag()]
-    assert grown_to_fit_batch(layers, diags) is layers
+    assert grown_to_fit_batch(layers, POLICIES, diags) is layers
 
 
 def test_one_overflowing_sample_grows_layer():
     # 只有第二筆超過 L=10;放大公式 ceil(max(11, 10) * 1.5) = 17,L 放大時 max_steps 跟著變成新 L
     layers = [CONV, FC]
     diags = [_diag([2, 11, 2], [1, 1, 1], [1, 1, 1]), _fc_diag()]
-    grown = grown_to_fit_batch(layers, diags)
+    grown = grown_to_fit_batch(layers, POLICIES, diags)
     assert grown is not layers
     assert (grown[0].L, grown[0].max_out_spikes, grown[0].max_steps) == (17, 20, 17)
     assert grown[1] is FC
+
+
+# ============================================================================
+# GrowthPolicy
+# ============================================================================
+
+def _needed(queue, out_spikes, steps) -> dict:
+    return {"L": queue, "max_out_spikes": out_spikes, "max_steps": steps}
+
+
+def test_grown_returns_same_capacity_when_everything_fits():
+    capacity = Capacity(L=100, max_out_spikes=2000, max_steps=100)
+    assert GrowthPolicy().grown(capacity, _needed(50, 10, 100)) == capacity
+
+
+def test_grown_queue_overflow_resets_max_steps_to_new_queue_length():
+    # 只有 L 出界:ceil(777 * 1.5) = 1166;這批的 max_steps 需求是在裝不下的佇列上算的,
+    # 不可信,max_steps 直接設成新的 L
+    capacity = Capacity(L=100, max_out_spikes=2000, max_steps=100)
+    grown = GrowthPolicy().grown(capacity, _needed(777, 10, 0))
+    assert dict(grown) == {"L": 1166, "max_out_spikes": 2000, "max_steps": 1166}
+
+
+def test_grown_only_max_steps_overflow_bumps_only_max_steps():
+    # max_steps 需求 107 > 100:ceil(107 * 2.0) = 214,其他不動
+    capacity = Capacity(L=100, max_out_spikes=2000, max_steps=100)
+    grown = GrowthPolicy(max_steps_grow_factor=2.0).grown(capacity, _needed(50, 10, 107))
+    assert dict(grown) == {"L": 100, "max_out_spikes": 2000, "max_steps": 214}
+
+
+def test_shrunk_needs_candidate_below_threshold():
+    # max_out_spikes:觀察 600 -> 候選 ceil(600 * 1.5) = 900 < 2000 * 0.5 = 1000,縮
+    # max_steps:觀察 40 -> 候選 60,不低於 100 * 0.5 = 50,不縮
+    # L 沒有縮小門檻,不縮
+    capacity = Capacity(L=100, max_out_spikes=2000, max_steps=100)
+    shrunk = GrowthPolicy().shrunk(capacity, _needed(10, 600, 40))
+    assert dict(shrunk) == {"L": 100, "max_out_spikes": 900, "max_steps": 100}
+
+
+def test_shrunk_never_goes_below_one():
+    # 整層沒 fire:觀察 0 -> ceil(0 * 1.5) = 0,夾到 1(容量 0 會讓下一層拿到長度 0 的輸入流)
+    capacity = Capacity(L=100, max_out_spikes=2000, max_steps=100)
+    shrunk = GrowthPolicy().shrunk(capacity, _needed(0, 0, 40))
+    assert shrunk["max_out_spikes"] == 1
+
+
+def test_grown_to_fit_changes_only_capacity_fields():
+    """放大後的層除了容量,其他欄位都跟原本一樣。"""
+    diag = LayerDiag(spike_count=jnp.array(0), firing_rate=jnp.array(0.0),
+                     needed=_needed(jnp.array(11), jnp.array(1), jnp.array(1)))
+    [grown] = grown_to_fit([CONV], POLICIES, [diag])
+    assert grown is not CONV
+    assert grown == CONV.with_capacity(grown.capacity)
+    assert grown.L == 17
+
+
+def test_shrunk_to_observed_returns_same_list_when_nothing_shrinks():
+    layers = [CONV, FC]
+    observed = {"conv": _needed(10, 20, 10)}
+    assert shrunk_to_observed(layers, POLICIES, observed) is layers
+
+
+def test_with_chunk_size_resets_conv_max_steps_to_queue_length():
+    # max_steps=10 是照 chunk_size=4 縮過的值;換成 1 之後退回 L=30
+    conv = ConvLayer(name="conv", ic=1, h_in=4, w_in=4, oc=1, k=3, s=1, p=1, init_k=1.0,
+                     chunk_size=4, L=30, max_out_spikes=20, max_steps=10)
+    one = conv.with_chunk_size(1)
+    assert (one.chunk_size, one.max_steps, one.L) == (1, 30, 30)
+    assert FC.with_chunk_size(3) == FCLayer(name="out", n_in=16, n_out=2, init_k=1.0, chunk_size=3)

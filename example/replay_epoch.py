@@ -18,37 +18,20 @@
   python -m example.replay_epoch <exp_dir> <epoch> [--sample S]
 """
 import argparse
-import dataclasses
 import os
 
 from data.src.nmnist import NMNISTDataset
 from example.paths import DATASET_ROOT
 from example.utils import (WEIGHTS_DIRNAME, load_params_npz, load_run_record,
                            rebuild_layers, weight_snapshot_path)
-from salt_core.layers import ConvLayer, raw_events_to_stream, run_network_traced
+from salt_core.layers import raw_events_to_stream, run_network_traced
 from salt_core.monitor import summarize_trace_scalars
-
-
-def force_chunk_size_one(layers: list) -> list:
-    """把每一層的 `chunk_size` 覆蓋成 1。`ConvLayer` 額外把 `max_steps` 補到
-    `L`——`chunk_size=1` 下的安全上界(跟 `ConvLayer.__post_init__` 沒填
-    `max_steps` 時的 fallback 同一個值),避免沿用舊 `chunk_size` 校準出的
-    `max_steps`(可能比 `L` 小)silently 截斷掃描。`FCLayer` 的掃描步數是
-    `_run_forward` 現算的(`輸入流長度 / chunk_size`),`chunk_size` 改成 1
-    會自動變成完整解析度,沒有欄位需要另外調。"""
-    out = []
-    for layer in layers:
-        if isinstance(layer, ConvLayer):
-            out.append(dataclasses.replace(layer, chunk_size=1, max_steps=layer.L))
-        else:
-            out.append(dataclasses.replace(layer, chunk_size=1))
-    return out
 
 
 def load_epoch_weights(exp_dir: str, epoch: int) -> tuple[list, tuple]:
     """回傳 `(chunk_size=1 的 layers, 那個 epoch 存的權重)`。"""
     run_record = load_run_record(exp_dir)
-    layers = force_chunk_size_one(rebuild_layers(run_record))
+    layers = [layer.with_chunk_size(1) for layer in rebuild_layers(run_record)]
     weights_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
     params = load_params_npz(weight_snapshot_path(weights_dir, epoch), layers)
     return layers, params
