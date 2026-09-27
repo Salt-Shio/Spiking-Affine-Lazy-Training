@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from salt_core.capacity import grown_to_fit_batch
-from salt_core.layers import ConvLayer, check_layer_connections, raw_events_to_stream
+from salt_core.layers import ConvLayer, check_layer_connections, raw_events_to_stream, run_network
 
 
 def dormant_score(activity, *, tau: float = 0.1) -> dict:
@@ -48,20 +48,17 @@ def dormant_score(activity, *, tau: float = 0.1) -> dict:
 
 
 def _per_neuron_activity(layers, params, in_stream, *, use_s_value: bool):
-    """逐層跑 forward,回傳 ({conv 層名: (n_neurons,) 活動量}, 每層 LayerDiag list)。
+    """跑一次 run_network,回傳 ({conv 層名: (n_neurons,) 活動量}, 每層 LayerDiag)。
 
     use_s_value=False 時活動量是 sum(spike_mask, axis=1),True 時是 sum(s_value, axis=1)。
     """
-    stream = in_stream
+    output = run_network(layers, params, in_stream)
     activity = {}
-    diags = []
-    for layer, w in zip(layers, params):
-        stream, result, diag = layer.forward(w, stream)
-        diags.append(diag)
+    for layer, result in zip(layers, output.results):
         if isinstance(layer, ConvLayer):
             per_step = result.s_value if use_s_value else result.spike_mask
             activity[layer.name] = jnp.sum(per_step, axis=1)
-    return activity, diags
+    return activity, output.diags
 
 
 def _make_chunk_activity(layers, use_s_value: bool):

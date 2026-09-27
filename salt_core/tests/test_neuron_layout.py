@@ -26,7 +26,7 @@ def test_conv_forward_spikes_land_in_the_only_active_channel():
                             event_source_idx=jnp.arange(n),
                             event_gain=jnp.ones((n,)), n_real_events=jnp.array(n))
 
-    _out, result, _diag = conv.forward(w, in_stream)
+    result = conv.forward(w, in_stream).result
     spikes = np.asarray(result.spike_mask).sum(axis=1)
 
     grid = conv.unflatten_neurons(spikes)

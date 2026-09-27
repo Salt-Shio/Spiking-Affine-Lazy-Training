@@ -10,7 +10,7 @@
 與其為了保留這個粒度另外設計新的存檔格式(例如存逐事件的 `(a,b)`),不如
 直接利用「權重 + 原始樣本」本身就能唯一決定整條軌跡這件事:只要某個 epoch
 的權重還在(`train.weight_snapshot_every` 存的 `weights/epoch_XXX.npz`),把
-`chunk_size` 覆蓋成 1 重跑 `run_network_traced`,就能拿到跟訓練當下(不管
+`chunk_size` 覆蓋成 1 重跑 `run_network(..., trace=True)`,就能拿到跟訓練當下(不管
 原本用哪個 `chunk_size`)逐位元一致、但完全精確、每一步對應一筆真實事件的
 軌跡——不需要另存任何逐步/逐事件格式,也不用碰 `salt_core` 的核心運算。
 
@@ -24,7 +24,7 @@ from data.src.nmnist import NMNISTDataset
 from example.paths import DATASET_ROOT
 from example.utils import (WEIGHTS_DIRNAME, load_params_npz, load_run_record,
                            rebuild_layers, weight_snapshot_path)
-from salt_core.layers import raw_events_to_stream, run_network_traced
+from salt_core.layers import raw_events_to_stream, run_network
 from salt_core.monitor import summarize_trace_scalars
 
 
@@ -45,7 +45,7 @@ def replay_sample(exp_dir: str, epoch: int, event_times, x, y, c, n_real_events)
     first = layers[0]
     in_stream = raw_events_to_stream(event_times, x, y, c, n_real_events,
                                       h_in=first.h_in, w_in=first.w_in)
-    return run_network_traced(layers, in_stream, params)
+    return list(run_network(layers, params, in_stream, trace=True).traces)
 
 
 def load_train_sample(run_record: dict, sample: int):
@@ -73,7 +73,7 @@ def main() -> None:
     layers, params = load_epoch_weights(args.exp_dir, args.epoch)
     first = layers[0]
     in_stream = raw_events_to_stream(*sample, h_in=first.h_in, w_in=first.w_in)
-    traces = run_network_traced(layers, in_stream, params)
+    traces = run_network(layers, params, in_stream, trace=True).traces
 
     print(f"epoch={args.epoch} sample={args.sample}(chunk_size 全部強制為 1,逐事件精確)\n")
     for layer, trace in zip(layers, traces):

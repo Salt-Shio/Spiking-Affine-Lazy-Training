@@ -90,7 +90,7 @@ def weight_snapshot_path(weights_dir: str, epoch: int) -> str:
     state,格式跟 `params.npz`/`best_params.npz` 一樣是 `save_params_npz` 存的
     純權重)——訓練那邊每 `train.weight_snapshot_every` 個 epoch 存一份,事後
     要精確重現某個 epoch 當下的 forward(例如強制 `chunk_size=1` 重跑
-    `run_network_traced` 拿逐事件軌跡)就讀對應的這一份。"""
+    `run_network(..., trace=True)` 拿逐事件軌跡)就讀對應的這一份。"""
     return os.path.join(weights_dir, f"epoch_{epoch:03d}.npz")
 
 

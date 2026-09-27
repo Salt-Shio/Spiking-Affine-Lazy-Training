@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from salt_core.layer_chain import EventStream
-from salt_core.layers import ConvLayer, FCLayer, run_network_quantized
+from salt_core.layers import ConvLayer, FCLayer, run_network
+from salt_core.quant.backend import QuantBackend
 from salt_core.quant.convert import (LayerQuantSpec, build_quantized_params, iv_per_channel,
                                      weight_codes)
 from salt_core.quantize import build_decay_table_int
@@ -98,7 +99,7 @@ def test_build_quantized_params_output_runs_through_quantized_network():
                             event_source_idx=jnp.arange(n),
                             event_gain=jnp.ones((n,)), n_real_events=jnp.array(n))
 
-    readout, diags = run_network_quantized([CONV, FC], in_stream, params)
+    out = run_network([CONV, FC], params, in_stream, backend=QuantBackend())
 
-    assert readout.v_final.shape == (2,)
-    assert not any(bool(d.queue_truncated) or bool(d.output_truncated) for d in diags)
+    assert out.last.v_final.shape == (2,)
+    assert bool(CONV.capacity.fits(out.diags[0]))

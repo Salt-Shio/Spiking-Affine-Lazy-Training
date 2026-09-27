@@ -186,8 +186,8 @@ class ConvNetCompressed:
         first = self.layers[0]
         in_stream = raw_events_to_stream(event_times, x, y, c, n_real_events,
                                           h_in=first.h_in, w_in=first.w_in)
-        result, diags = run_network(self.layers, in_stream, params)
-        return result, diags
+        output = run_network(self.layers, params, in_stream)
+        return output.last, output.diags
 
     def apply_batched(self, params: tuple, batch_event_times: jax.Array,
                        batch_x: jax.Array, batch_y: jax.Array, batch_c: jax.Array,

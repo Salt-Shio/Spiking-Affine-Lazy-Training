@@ -4,9 +4,9 @@ from dataclasses import replace
 import pytest
 
 from salt_core.dormant import dormant_report
-from salt_core.layers import (ConvLayer, FCLayer, check_layer_connections, run_network,
-                              run_network_quantized, run_network_quantized_traced,
-                              run_network_traced)
+from salt_core.backend import FLOAT
+from salt_core.layers import ConvLayer, FCLayer, check_layer_connections, run_network
+from salt_core.quant.backend import QuantBackend
 
 # 2x8x8 -> 4x8x8 -> 4x4x4(攤平 64)-> FC 10
 CONV1 = ConvLayer(name="conv1", ic=2, h_in=8, w_in=8, oc=4, k=3, s=1, p=1, init_k=1.0)
@@ -46,12 +46,12 @@ def test_conv_after_fc_raises():
         check_layer_connections([fc, CONV1])
 
 
-@pytest.mark.parametrize("run", [run_network, run_network_traced, run_network_quantized,
-                                 run_network_quantized_traced])
-def test_network_entry_points_check_connections(run):
+@pytest.mark.parametrize("backend", [FLOAT, QuantBackend()])
+@pytest.mark.parametrize("trace", [False, True])
+def test_run_network_checks_connections(backend, trace):
     # 檢查在碰到輸入之前就 raise,輸入跟權重用不到
     with pytest.raises(ValueError, match="conv1.*conv2"):
-        run([CONV1, replace(CONV2, ic=3)], None, None)
+        run_network([CONV1, replace(CONV2, ic=3)], None, None, backend=backend, trace=trace)
 
 
 def test_dormant_report_checks_connections():

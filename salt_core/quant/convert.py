@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from salt_core.fixed_point import OverflowMode
-from salt_core.layers import QuantizedLayerParams
+from salt_core.quant.backend import QuantizedLayerParams
 from salt_core.quantize import (build_decay_table_int, iv_from_measurement, iv_layer,
                                 max_weight_code, percentile_abs_threshold, quantize_to_int,
                                 v_th_to_int)
@@ -57,7 +57,7 @@ def iv_per_channel(v_abs_max, scale, bits: int) -> list[int]:
 
 def build_quantized_params(layers: list, float_params, specs: list[LayerQuantSpec],
                            v_abs_max: list) -> list[QuantizedLayerParams]:
-    """每層的 QuantizedLayerParams,直接餵 run_network_quantized。
+    """每層的 QuantizedLayerParams,直接當 run_network 在 QuantBackend 下的 weights。
 
     float_params: 對齊 layers 的浮點權重。
     specs: 對齊 layers 的 LayerQuantSpec。

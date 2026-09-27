@@ -2,8 +2,8 @@
 
 `LayerForwardTrace` = 一層 traced forward 吐的 `(n, max_steps)` 陣列包,跟
 `LayerForwardResult`(readout 契約)/ `LayerDiag`(容量哨兵)同一套 `Layer...`
-命名,是給人工 debug 自訂 decoder / 動力學用的紀錄。**不進訓練熱路徑** ——
-`layers.run_network_traced` 是 forward-only、`stop_gradient` 後回傳的獨立函式。
+命名,是給人工 debug 自訂 decoder / 動力學用的紀錄。`layers.run_network(...,
+trace=True)` 收集,`stop_gradient` 後回傳;浮點、整數 backend 都用這個型別。
 
 這裡除了結構定義,還有「掃描步指標 -> 真實毫秒」的還原(`resolve_ms_*`)、
 一個對 `LayerForwardTrace` 的純歸約函式(`summarize_trace_scalars`)——只吃
@@ -34,7 +34,7 @@ class LayerForwardTrace(NamedTuple):
 
     - `spike_mask`:轉抄 `LayerForwardResult` 的同名欄位。
     - `v_steps`:每步 chunk 結束(套過 soft reset)的膜電位 = 完整膜電位軌跡;
-      最後一欄 = `LayerForwardResult.v_final`。
+      最後一欄 = `LayerForwardResult.v_final`。整數 backend 是暫存器的整數值。
     - `event_ms`:每步消化的(首)事件真實毫秒;空轉步(pointer 已越過該神經元
       的真實事件數)= `nan`。`chunk_size=1` 時每步剛好對到一筆事件;
       `chunk_size>1` 時是「這步從哪個時刻開始」。

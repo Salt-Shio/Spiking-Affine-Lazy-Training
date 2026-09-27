@@ -111,7 +111,7 @@ def calibration_measure(layer, calib_stream_batch: EventStream, chunk: int = 16)
 
     def measure(w: jax.Array) -> float:
         def one(s: EventStream):
-            _out, result, _diag = layer.forward(w, s)
+            result = layer.forward(w, s).result
             x, y, _c = unravel_conv_source(s.event_source_idx, layer.h_in, layer.w_in)
             return conv_layer_receptive_field_firing_rate(
                 result.spike_mask, x, y, layer.s, layer.p, layer.h_out, layer.w_out,
@@ -218,9 +218,8 @@ def _fit_layer(layer, w, stream_batch, chunk: int):
         layer = grown
 
 
-def _out_and_diag(forward_result):
-    out, _result, diag = forward_result
-    return out, diag
+def _out_and_diag(output):
+    return output.stream, output.diag
 
 
 def _weights_for(layers, init_ks: dict, key0: int = 0):
@@ -268,7 +267,7 @@ def _print_v2(rows: list[dict]) -> None:
 # ----------------------------------------------------------------------------
 def _vfinal_stats(layer, w, stream_batch, chunk: int) -> np.ndarray:
     layer, _ = _fit_layer(layer, w, stream_batch, chunk)
-    vf = _sub_batched(lambda s: layer.forward(w, s)[1].v_final, stream_batch, chunk)
+    vf = _sub_batched(lambda s: layer.forward(w, s).result.v_final, stream_batch, chunk)
     return np.asarray(vf).reshape(-1)
 
 

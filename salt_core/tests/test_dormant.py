@@ -109,7 +109,7 @@ def test_dormant_report_matches_manual_reduction():
 
     def one(e, xx, yy, cc, rr):
         s = raw_events_to_stream(e, xx, yy, cc, rr, conv1.h_in, conv1.w_in)
-        _out, result, _diag = conv1.forward(params[0], s)
+        result = conv1.forward(params[0], s).result
         return jnp.sum(result.spike_mask, axis=1)
 
     per_sample = jax.vmap(one)(et, x, y, c, nr)          # (n, n_neurons)
@@ -130,8 +130,9 @@ def test_dormant_report_s_value_matches_manual_reduction():
 
     def one(e, xx, yy, cc, rr):
         s = raw_events_to_stream(e, xx, yy, cc, rr, conv1.h_in, conv1.w_in)
-        s2, result1, _diag = conv1.forward(params[0], s)
-        _out, result2, _diag = conv2.forward(params[1], s2)
+        out1 = conv1.forward(params[0], s)
+        result1 = out1.result
+        result2 = conv2.forward(params[1], out1.stream).result
         return jnp.sum(result1.s_value, axis=1), jnp.sum(result2.s_value, axis=1)
 
     per_sample = jax.vmap(one)(et, x, y, c, nr)

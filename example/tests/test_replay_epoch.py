@@ -35,6 +35,6 @@ def test_replay_matches_training_forward(reference_run):
     train_layers = rebuild_layers(run_record)
     first = train_layers[0]
     in_stream = raw_events_to_stream(*sample, h_in=first.h_in, w_in=first.w_in)
-    result, _diags = run_network(train_layers, in_stream, params)
+    result = run_network(train_layers, params, in_stream).last
     np.testing.assert_allclose(np.asarray(traces[-1].v_steps[:, -1]),
                                np.asarray(result.v_final), rtol=RTOL)

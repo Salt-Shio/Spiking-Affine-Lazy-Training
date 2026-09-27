@@ -1,6 +1,6 @@
 """量每層逐 channel 的膜電位範圍,給 quant.convert 算 i_V。
 
-逐樣本跑 run_network_traced、挑哪些樣本,由呼叫端決定。
+逐樣本跑 run_network(..., trace=True)、挑哪些樣本,由呼叫端決定。
 """
 import numpy as np
 
@@ -8,7 +8,7 @@ import numpy as np
 def v_range_per_channel(layers: list, traces: list) -> list[tuple[np.ndarray, np.ndarray]]:
     """一筆樣本每層逐 channel 的膜電位最大、最小值。
 
-    traces: run_network_traced 的回傳,對齊 layers。
+    traces: run_network(..., trace=True).traces,對齊 layers。
     回傳 list,每層一個 (v_max, v_min),形狀都是 (n_channels,)。
     任一層 chunk_size 不是 1 時 raise ValueError:軌跡只記每個 chunk 結束時的值,
     chunk 中間的峰值會漏掉。

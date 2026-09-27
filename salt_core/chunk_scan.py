@@ -129,8 +129,8 @@ def run_layer_forward_traced(maps: AffineMap, v_th: float, chunk_size: int, max_
       時因 spike 提前收而不均勻。配 `local_to_global_j`(壓縮 conv)/ 直接當
       全域 index(密集)+ event_times 可還原每步的真實毫秒。
 
-    定位是週期性深 probe,不進訓練熱路徑;呼叫端(`layers` 的 `forward_traced` /
-    `run_network_traced`)負責組成 `LayerForwardTrace` 並 `stop_gradient`。
+    定位是週期性深 probe,不進訓練熱路徑;呼叫端(`layers` 的 `forward` /
+    `run_network` 帶 `trace=True`)負責組成 `LayerForwardTrace` 並 `stop_gradient`。
     """
     return _run_layer_scan(maps, v_th, chunk_size, max_steps, n_real_events, alpha,
                             trace=True)
@@ -210,7 +210,7 @@ class LayerForwardResultInt(NamedTuple):
     spike_event_idx: jax.Array  # shape (n_out_neurons, L) int32,就是佇列自己的欄位索引
                                  # (跟 LayerForwardResult 同一個局部 index 慣例)
     v_final: jax.Array          # shape (n_out_neurons,) 暫存器值 int32;
-                                 # layers.dequantize_v_final 換過之後是物理尺度 float32
+                                 # QuantBackend.readout 換過之後是物理尺度 float32
     overflowed: jax.Array       # shape (n_out_neurons, L) bool,每一步寫回暫存器
                                  # 之前的真實值有沒有超出 i_V+f_V 位元
 
@@ -248,8 +248,8 @@ def run_layer_forward_int_traced(a_int: jax.Array, is_identity: jax.Array, q_int
                                  ) -> tuple[LayerForwardResultInt, jax.Array]:
     """跟 `run_layer_forward_int` 跑一模一樣的掃描,額外回傳每步(寫回之後)
     的暫存器值 `v_steps`,shape `(n_out_neurons, L)`,最後一欄等於
-    `result.v_final`。為什麼溢位驗證要看逐步值,見
-    `layers.ConvLayer.forward_quantized_traced`。
+    `result.v_final`。溢位驗證要看逐步值:神經元可能中途衝到峰值再衰減下來,
+    只看 v_final 會漏掉。
     """
     return _run_layer_scan_int(a_int, is_identity, q_int, v_th_int,
                                f_a=f_a, f_V=f_V, i_V=i_V, round_mode=round_mode,

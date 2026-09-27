@@ -26,8 +26,8 @@ from example.models.conv_net import ConvNetCompressed, build_decoder, build_grow
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
 from example.utils import load_run_params, load_run_record, rebuild_layers
 from salt_core.capacity import Capacity, LayerDiag, grown_to_fit
-from salt_core.layers import (dequantize_v_final, raw_events_to_stream,
-                              run_network_quantized_traced, run_network_traced)
+from salt_core.layers import raw_events_to_stream, run_network
+from salt_core.quant.backend import QuantBackend
 from salt_core.quant.calibrate import merge_v_ranges, v_abs_max_per_channel, v_range_per_channel
 from salt_core.quant.convert import LayerQuantSpec, build_quantized_params
 
@@ -189,8 +189,8 @@ def sample_stream(layers: list, split, i: int):
 
 def build_golden_quant_params(layers: list, params, split) -> list:
     """照 QUANT_SPEC 算每層的量化參數,M 用 split 前 QUANT_CALIBRATION_SAMPLES 筆量。"""
-    per_sample = [v_range_per_channel(layers, run_network_traced(
-                      layers, sample_stream(layers, split, i), params))
+    per_sample = [v_range_per_channel(layers, run_network(
+                      layers, params, sample_stream(layers, split, i), trace=True).traces)
                   for i in range(QUANT_CALIBRATION_SAMPLES)]
     v_abs_max = v_abs_max_per_channel(merge_v_ranges(per_sample))
     spec = LayerQuantSpec(bits=QUANT_SPEC["bits"], f_a=QUANT_SPEC["f_a"], f_V=QUANT_SPEC["f_V"],
@@ -202,19 +202,18 @@ def build_golden_quant_params(layers: list, params, split) -> list:
 def quant_forward_split(layers: list, decoder, quant_params: list, split) -> dict:
     """整個 split 逐筆跑量化版 forward。回傳 numpy 陣列:v_final_int (N, n_class)、
     preds (N,),spike_count、truncated、overflowed 各 (N, n_layers)。"""
+    backend = QuantBackend(round_mode=QUANT_SPEC["round_mode"])
     rows = []
     for i in range(split.labels.shape[0]):
-        traces = run_network_quantized_traced(layers, sample_stream(layers, split, i),
-                                              quant_params, round_mode=QUANT_SPEC["round_mode"])
-        last_result = traces[-1][0]
-        scores, _ = decoder.decode(dequantize_v_final(last_result, quant_params[-1]))
+        out = run_network(layers, quant_params, sample_stream(layers, split, i), backend=backend)
+        scores, _ = decoder.decode(backend.readout(out.last, quant_params[-1]))
         rows.append({
-            "v_final_int": np.asarray(last_result.v_final),
+            "v_final_int": np.asarray(out.last.v_final),
             "preds": int(np.argmax(np.asarray(scores))),
-            "spike_count": [int(np.asarray(r.spike_mask).sum()) for r, _v, _d in traces],
-            "truncated": [bool(d.queue_truncated) or bool(d.output_truncated)
-                          for _r, _v, d in traces],
-            "overflowed": [bool(np.asarray(r.overflowed).any()) for r, _v, _d in traces],
+            "spike_count": [int(np.asarray(r.spike_mask).sum()) for r in out.results],
+            "truncated": [layer.capacity is not None and not bool(layer.capacity.fits(d))
+                          for layer, d in zip(layers, out.diags)],
+            "overflowed": [bool(np.asarray(r.overflowed).any()) for r in out.results],
         })
     return {key: np.array([row[key] for row in rows]) for key in rows[0]}
 

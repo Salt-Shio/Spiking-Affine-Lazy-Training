@@ -5,7 +5,7 @@
 - `run_layer_forward_traced` vs `run_layer_forward`:同參數下 `LayerForwardResult`
   五欄逐位元相同(共用 scan 內核),`v_steps` 的最後一欄膜電位 == `v_final`。
 - `resolve_ms_*`:掃描步指標 -> 真實毫秒的還原,手算小例子 + 空轉步 = nan。
-- `run_network_traced`:輸出跟 `run_network` 一致、`LayerForwardTrace` 形狀對、
+- `run_network(..., trace=True)`:結果跟不帶軌跡時一致、`LayerForwardTrace` 形狀對、
   `stop_gradient` 生效。
 - `summarize_trace_scalars`:純歸約函式,手算小例子 + 非有限值計數。
 
@@ -21,8 +21,7 @@ import numpy as np
 
 from salt_core.chunk_scan import run_layer_forward, run_layer_forward_traced
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.layers import (ConvLayer, FCLayer, raw_events_to_stream,
-                               run_network, run_network_traced)
+from salt_core.layers import ConvLayer, FCLayer, raw_events_to_stream, run_network
 from salt_core.monitor import (LayerForwardTrace, resolve_ms_compressed,
                                 resolve_ms_dense, summarize_trace_scalars)
 
@@ -143,7 +142,7 @@ def test_resolve_ms_compressed_hand():
 
 
 # ============================================================================
-# C. layer.forward_traced / run_network_traced
+# C. layer.forward / run_network 帶 trace=True
 # ============================================================================
 
 
@@ -152,7 +151,7 @@ def test_traced_event_ms_within_input_range_or_nan():
     params = _params(layers)
     batch = _raw_batch(jax.random.PRNGKey(2), 3, 20, 34, 34, 2)
     stream = _stream0(batch, layers[0])
-    _out, trace = layers[0].forward_traced(params[0], stream)
+    trace = layers[0].forward(params[0], stream, trace=True).trace
     ms = np.asarray(trace.event_ms)
     real = np.asarray(stream.event_times)[:int(stream.n_real_events)]
     finite = ms[np.isfinite(ms)]
@@ -161,24 +160,24 @@ def test_traced_event_ms_within_input_range_or_nan():
     assert np.isnan(ms).any(), "L=185 遠大於事件數,應該有空轉步 = nan"
 
 
-def test_run_network_traced_shape_and_alignment():
+def test_run_network_trace_shape_and_alignment():
     layers = _layers()
     params = _params(layers)
     stream = _stream0(_raw_batch(jax.random.PRNGKey(3), 3, 20, 34, 34, 2), layers[0])
-    traces = run_network_traced(layers, stream, params)
+    traces = run_network(layers, params, stream, trace=True).traces
     assert len(traces) == len(layers)
     for layer, t in zip(layers, traces):
         assert isinstance(t, LayerForwardTrace)
         assert t.v_steps.shape[0] == layer.n_neurons
 
 
-def test_run_network_traced_stops_gradient():
+def test_run_network_trace_stops_gradient():
     layers = _layers()
     params = _params(layers)
     stream = _stream0(_raw_batch(jax.random.PRNGKey(4), 2, 16, 34, 34, 2), layers[0])
 
     def loss(ps):
-        traces = run_network_traced(layers, stream, ps)
+        traces = run_network(layers, ps, stream, trace=True).traces
         return sum(jnp.nansum(t.v_steps) for t in traces)
 
     grads = jax.grad(loss)(params)
@@ -186,14 +185,14 @@ def test_run_network_traced_stops_gradient():
         np.testing.assert_array_equal(np.asarray(g), np.zeros_like(np.asarray(g)))
 
 
-def test_run_network_traced_forward_matches_run_network():
-    """traced 路徑的每層輸出流串接,跟正常 run_network 的最後一層結果一致。"""
+def test_run_network_trace_matches_run_network_without_trace():
+    """帶軌跡的最後一層軌跡,跟不帶軌跡的最後一層結果一致。"""
     layers = _layers()
     params = _params(layers)
     stream = _stream0(_raw_batch(jax.random.PRNGKey(5), 3, 20, 34, 34, 2), layers[0])
 
-    result, _diags = run_network(layers, stream, params)
-    traces = run_network_traced(layers, stream, params)
+    result = run_network(layers, params, stream).last
+    traces = run_network(layers, params, stream, trace=True).traces
     np.testing.assert_array_equal(np.asarray(traces[-1].spike_mask),
                                    np.asarray(result.spike_mask))
     np.testing.assert_allclose(np.asarray(traces[-1].v_steps[:, -1]),

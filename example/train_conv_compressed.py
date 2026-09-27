@@ -264,7 +264,7 @@ def run_epochs(*, layers, policies, train_step, evaluate, params, opt_state,
                           shuffle_key=shuffle_key, epoch=epoch)
 
         # 逐 epoch 權重快照(純權重,不含 optimizer state):給事後分析工具用
-        # (例如強制 chunk_size=1 重跑 run_network_traced 拿逐事件精確軌跡,
+        # (例如強制 chunk_size=1 重跑 run_network(..., trace=True) 拿逐事件精確軌跡,
         # 見 docs/監測規格.md)。跟 checkpointer 的 checkpoint.npz 是兩回事——
         # checkpoint.npz 只為了續練,每個 epoch 覆寫;這裡逐 epoch 各自保留
         # 一份,才能事後回頭看任何一個存過的 epoch。

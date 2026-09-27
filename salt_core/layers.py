@@ -5,7 +5,8 @@
 - 神經元行為(`chunk_scan.run_layer_forward`)、佇列建構(`connectivity/`)、
   標準事件流(`layer_chain.EventStream` + `extract_output_events*`)都不動,
   這個檔案只是把它們按「一種 layer 型別」串起來,對外只露兩個約定:
-  **讀一條 `EventStream`、吐一條 `EventStream` + 一份 `LayerDiag`**。
+  **讀一條 `EventStream`、吐一份 `LayerOutput`(輸出流、結果、診斷、軌跡)**。
+  數值段跟掃描交給 backend(`salt_core.backend`、`salt_core.quant.backend`)。
 - 壓縮版的內部記帳(`local_to_global_j` 查表)留在 `ConvLayer.forward` 裡自己
   清掉,呼叫端看不到。conv 的「扁平神經元編號 → (x,y,c)」也在 `ConvLayer`
   內用自己的 `h_in`/`w_in` 還原,不外洩成呼叫端的一步。
@@ -27,20 +28,16 @@ from typing import NamedTuple, Protocol
 import jax
 import jax.numpy as jnp
 
+from salt_core.backend import FLOAT
 from salt_core.capacity import Capacity, LayerDiag
-from salt_core.chunk_scan import (LayerForwardResult, LayerForwardResultInt,
-                                   run_layer_forward, run_layer_forward_int,
-                                   run_layer_forward_int_traced, run_layer_forward_traced)
-from salt_core.core import spike_step_upper_bound
-from salt_core.connectivity.conv import (build_conv_structure, conv_float_values, tile_channels,
-                                          unravel_conv_source)
-from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.fixed_point import OverflowMode, RoundMode
+from salt_core.connectivity.conv import (ConvQueueStructure, build_conv_structure,
+                                          conv_float_values, tile_channels, unravel_conv_source)
+from salt_core.connectivity.fc import FCQueueStructure, build_fc_structure, fc_float_values
+from salt_core.core import AffineMap
 from salt_core.layer_chain import (EventStream, extract_output_events,
                                     extract_output_events_compressed)
 from salt_core.monitor import (LayerForwardTrace, resolve_ms_compressed,
                                 resolve_ms_dense)
-from salt_core.quantize import apply_decay_table_int
 
 
 def uniform_init(key: jax.Array, shape: tuple, fan_in: int, init_k: float) -> jax.Array:
@@ -53,12 +50,15 @@ def uniform_init(key: jax.Array, shape: tuple, fan_in: int, init_k: float) -> ja
 
 
 class Layer(Protocol):
-    """一個 layer 的對外約定(純文件用途,`run_network` 靠 duck typing)。
-    `run_network` 只需要底下這幾樣,不管是 conv 還是 FC。"""
+    """一個 layer 的對外約定(純文件用途,`run_network` 跟 backend 靠 duck typing)。
+    `run_network` 跟 backend 只需要底下這幾樣,不管是 conv 還是 FC。"""
     name: str
     input_shape: tuple    # 吃空間輸入時是 (channel, 高, 寬),吃攤平輸入時是 (n,)
     output_shape: tuple   # 同上,這層輸出的形狀
     capacity: Capacity | None  # 容量旋鈕;沒有容量的層是 None。有容量的層另外提供 with_capacity
+    v_th: float           # 以下三個給浮點 backend 的掃描用
+    alpha: float
+    chunk_size: int
 
     def init_weight(self, key: jax.Array) -> jax.Array:
         """這一層的權重張量(形狀 / fan_in / init_k 都是層自己的知識)。"""
@@ -72,16 +72,27 @@ class Layer(Protocol):
         """逐 channel 的值展開成逐神經元 (n_neurons, ...)。"""
         ...
 
-    def forward(self, w: jax.Array,
-                in_stream: EventStream) -> tuple[EventStream, LayerForwardResult, LayerDiag]:
-        """讀一條標準事件流 + 這層權重,吐 (標準輸出事件流, 原始 forward 結果,
-        固定診斷)。原始結果留給最後一層的解碼器(step 5)用。"""
+    def forward(self, params, in_stream: EventStream, *, backend=FLOAT,
+                trace: bool = False) -> "LayerOutput":
+        """讀一條標準事件流 + 這層參數(backend 決定是浮點權重還是量化參數),
+        吐 LayerOutput。trace=True 時多帶逐步軌跡。"""
         ...
 
-    def forward_traced(self, w: jax.Array,
-                       in_stream: EventStream) -> tuple[EventStream, LayerForwardTrace]:
-        """跟 `forward` 一樣跑一層,但吐 (輸出事件流, `LayerForwardTrace` 逐步軌跡)。
-        給 `run_network_traced` 的週期性 debug probe 用,不進訓練熱路徑。"""
+    # 以下給 backend 用:佇列的數值段跟掃描設定。structure 是這層自己的佇列結構。
+    def float_values(self, structure, w: jax.Array, event_gain: jax.Array | None) -> AffineMap:
+        """浮點數值段,a、b 形狀 (n_neurons, 佇列長度)。"""
+        ...
+
+    def neuron_delta_t(self, structure) -> jax.Array:
+        """逐神經元的 Δt,(n_neurons, 佇列長度)。"""
+        ...
+
+    def neuron_n_real(self, structure) -> jax.Array:
+        """逐神經元的真事件數,(n_neurons,)。"""
+        ...
+
+    def scan_steps(self, structure) -> int:
+        """浮點掃描的步數上限。"""
         ...
 
     def with_chunk_size(self, chunk_size: int) -> "Layer":
@@ -89,81 +100,27 @@ class Layer(Protocol):
         ...
 
 
-class QuantizedLayerParams(NamedTuple):
-    """一層整數版 forward(`forward_quantized`)要的量化設定,推導見
-    docs/math/膜電位量化推導.md。"""
-    q: jax.Array                   # 整數權重碼(`quantize.quantize_to_int` 的 q),整數 dtype,
-                                   # shape 同 `layer.weight_shape`
-    decay_table_int: jax.Array     # `quantize.build_decay_table_int(f_a, layer.tau)`
-    v_th_int: jax.Array | None     # `quantize.v_th_to_int` 的整數門檻,純量或 (n_neurons,);
-                                   # None 代表這層不 fire(例如膜電位回歸的輸出層)
-    scale: jax.Array               # 逐神經元的權重量化步長 s_c,純量或 (n_neurons,);
-                                   # 只在讀出換回物理尺度時用(`dequantize_v_final`)
-    f_a: int                       # 衰減碼小數位元
-    f_V: int                       # 暫存器小數位元
-    i_V: int                       # 暫存器整數位元(含符號位)
-    overflow_mode: OverflowMode | str = OverflowMode.WRAP  # 暫存器溢位處理,見 fixed_point
+class LayerOutput(NamedTuple):
+    """一層 forward 的輸出。"""
+    stream: EventStream                  # 給下一層的輸出事件流
+    result: NamedTuple                   # 浮點是 LayerForwardResult,整數是 LayerForwardResultInt
+    diag: LayerDiag
+    trace: LayerForwardTrace | None      # trace=True 才有
 
 
-class LayerDiagInt(NamedTuple):
-    """整數版 forward 的容量診斷,全部是 bool 純量。容量(`L`/
-    `max_out_spikes`)是照浮點模型的放電量校準的,量化之後放電量會變;超過
-    容量時多出來的輸入事件或輸出 spike 會被默默截掉,這組結果就不能用。"""
-    queue_truncated: jax.Array   # 壓縮佇列需要的長度超過 L(FC 沒有壓縮佇列,固定 False)
-    output_truncated: jax.Array  # 這層真正吐出的 spike 數超過輸出容量
-
-
-def _run_quantized_scan(delta_t: jax.Array, b: jax.Array, params: QuantizedLayerParams,
-                        round_mode: RoundMode | str, trace: bool):
-    """Conv/FC 整數版 forward 共用的「查表 → 取權重碼 → 整數掃描」。delta_t、b 形狀
-    (n_neurons, 佇列長度)。回傳 (result, v_steps),v_steps 只有 trace=True 時是陣列。"""
-    a_int, is_identity = apply_decay_table_int(delta_t, params.decay_table_int)
-    # 浮點數值段把權重碼帶成 float32。q 是整數 dtype(入口檢查過),
-    # |q| < 2^24 時 float32 表示是精確的,直接轉回 int32 不會改值。
-    q_int = b.astype(jnp.int32)
-    scan_args = (a_int, is_identity, q_int, params.v_th_int)
-    scan_kwargs = dict(f_a=params.f_a, f_V=params.f_V, i_V=params.i_V, round_mode=round_mode,
-                       overflow_mode=params.overflow_mode)
-    if trace:
-        return run_layer_forward_int_traced(*scan_args, **scan_kwargs)
-    return run_layer_forward_int(*scan_args, **scan_kwargs), None
-
-
-def dequantize_v_final(result: LayerForwardResultInt,
-                       params: QuantizedLayerParams) -> LayerForwardResultInt:
-    """把整數版結果的 `v_final` 從暫存器值換回物理尺度
-    $V=\\tilde V\\cdot s_c = v_{int}\\cdot2^{-f_V}\\cdot s_c$(逐神經元),
-    其他欄位不變。
-
-    膜電位回歸的讀出要用換過的值:權重逐輸出 channel 量化時,每顆輸出
-    神經元的 $s_c$ 不同,整數暫存器值直接比大小會選錯類別。整層共用一個
-    $s_c$ 時乘同一個正數不改變 argmax,所以同一段讀出對兩種量化粒度都對。
-    """
-    v_physical = (result.v_final.astype(jnp.float32) * 2.0 ** -params.f_V
-                  * jnp.asarray(params.scale, dtype=jnp.float32))
-    return result._replace(v_final=v_physical)
-
-
-def _check_weight_codes(q: jax.Array) -> None:
-    """整數版 forward 的入口檢查:`q` 必須是整數 dtype。傳成乘回 scale 的
-    浮點權重(量值大約 0.01)時,轉成整數碼會全部變成 0,forward 照樣跑完,
-    不會有任何錯誤訊息。"""
-    dtype = jnp.asarray(q).dtype
-    if not jnp.issubdtype(dtype, jnp.integer):
-        raise ValueError(
-            f"q 必須是整數權重碼(quantize.quantize_to_int 的 q),拿到的 dtype 是 {dtype}")
+def _layer_diag(spike_mask: jax.Array, n_neurons: int, n_real_in: jax.Array,
+                needed: dict) -> LayerDiag:
+    """一層的 LayerDiag。firing_rate = spike 數 / (n_neurons * max(輸入真事件數, 1))。"""
+    spike_count = jnp.sum(spike_mask)
+    return LayerDiag(spike_count=spike_count,
+                     firing_rate=spike_count / (n_neurons * jnp.maximum(n_real_in, 1)),
+                     needed=needed)
 
 
 def _check_leading_axis(values, expected: int, what: str) -> None:
     """unflatten_neurons / broadcast_channels 的入口檢查。"""
     if values.ndim == 0 or values.shape[0] != expected:
         raise ValueError(f"第 0 軸長度要等於 {what}={expected},拿到的形狀是 {values.shape}")
-
-
-def _constant_spike_gain(spike_mask: jax.Array) -> jax.Array:
-    """整數版沒有 surrogate gradient,跨層的 event_gain 直接用常數 1。下一層
-    gather 出整數權重碼之後乘上這個 1,值不變。"""
-    return jnp.ones_like(spike_mask, dtype=jnp.float32)
 
 
 @dataclass(frozen=True)
@@ -276,114 +233,55 @@ class ConvLayer:
         _check_leading_axis(values, self.oc, "oc")
         return values.repeat(self.h_out * self.w_out, axis=0)
 
-    def _run_forward(self, w: jax.Array, in_stream: EventStream, *, trace: bool):
-        """建壓縮佇列 + 跑一層 + 抽輸出流。`forward` / `forward_traced` 共用。
-        `trace=False` 時 graph 跟舊 `forward` body 逐位元相同(`trace` 是 Python
-        端靜態 bool,分支在 trace 期被消掉)。回傳 (out_stream, result, structure,
-        maps, v_steps, pointer_steps);後兩個只有 trace=True 時是陣列,否則 None。"""
-        # 扁平來源編號 -> (x,y,c),用這層自己的輸入面尺寸。第一層吃 ravel 過的
-        # 原始事件,ravel↔unravel 對合法座標((0..w_in-1, 0..h_in-1, 0..ic-1),
-        # pad 也是 (0,0,0))是嚴格逆運算,不改數值。
-        x, y, c = unravel_conv_source(in_stream.event_source_idx, self.h_in, self.w_in)
-        structure = build_conv_structure(
-            in_stream.event_times, x, y, c, self.k, self.s, self.p, self.h_out, self.w_out,
-            self.L, in_stream.n_real_events)
-        maps = conv_float_values(structure, w, self.tau, in_stream.event_gain)
-        n_real_events = tile_channels(structure.n_real_events, self.oc)
+    def forward(self, params, in_stream: EventStream, *, backend=FLOAT,
+                trace: bool = False) -> LayerOutput:
+        """建壓縮佇列 -> backend 算數值段跟掃描 -> 抽輸出流、算診斷。
+
+        params: 浮點 backend 是權重 (oc, ic, k, k);整數 backend 是 QuantizedLayerParams。
+        trace: True 時 LayerOutput.trace 帶逐步軌跡。
+        """
+        structure = self.build_structure(in_stream)
+        scan = backend.scan(self, structure, params, in_stream.event_gain, trace=trace)
+        local_to_global_j = tile_channels(structure.local_to_global_j, self.oc)
+        out_stream = extract_output_events_compressed(
+            scan.result.spike_mask, scan.result.spike_event_idx, scan.spike_gain,
+            in_stream.event_times, local_to_global_j, max_total_spikes=self.max_out_spikes)
+        diag = _layer_diag(scan.result.spike_mask, self.n_neurons, in_stream.n_real_events,
+                           needed={"L": jnp.max(structure.n_real_events),
+                                   "max_out_spikes": out_stream.n_real_events,
+                                   "max_steps": scan.steps_needed})
+        layer_trace = None
         if trace:
-            result, v_steps, pointer_steps = run_layer_forward_traced(
-                maps, self.v_th, chunk_size=self.chunk_size, max_steps=self.max_steps,
-                alpha=self.alpha, n_real_events=n_real_events)
-        else:
-            result = run_layer_forward(
-                maps, self.v_th, chunk_size=self.chunk_size, max_steps=self.max_steps,
-                alpha=self.alpha, n_real_events=n_real_events)
-            v_steps = pointer_steps = None
-        out_stream = extract_output_events_compressed(
-            result.spike_mask, result.spike_event_idx, result.s_spike,
-            in_stream.event_times, tile_channels(structure.local_to_global_j, self.oc),
-            max_total_spikes=self.max_out_spikes)
-        return out_stream, result, structure, maps, v_steps, pointer_steps
+            event_ms = resolve_ms_compressed(scan.pointer_steps, local_to_global_j,
+                                             self.neuron_n_real(structure),
+                                             in_stream.event_times)
+            layer_trace = LayerForwardTrace(spike_mask=scan.result.spike_mask,
+                                            v_steps=scan.v_steps, event_ms=event_ms)
+        return LayerOutput(stream=out_stream, result=scan.result, diag=diag, trace=layer_trace)
 
-    def forward(self, w: jax.Array,
-                in_stream: EventStream) -> tuple[EventStream, LayerForwardResult, LayerDiag]:
-        out_stream, result, structure, maps, _, _ = self._run_forward(w, in_stream, trace=False)
-        spike_count = jnp.sum(result.spike_mask)
-        diag = LayerDiag(
-            spike_count=spike_count,
-            firing_rate=spike_count / (self.n_neurons * jnp.maximum(in_stream.n_real_events, 1)),
-            needed={"L": jnp.max(structure.n_real_events),
-                    "max_out_spikes": out_stream.n_real_events,
-                    "max_steps": jnp.max(spike_step_upper_bound(
-                        maps.b, self.v_th, self.chunk_size))})
-        return out_stream, result, diag
-
-    def forward_traced(self, w: jax.Array,
-                       in_stream: EventStream) -> tuple[EventStream, LayerForwardTrace]:
-        """跟 `forward` 一樣跑一層,但吐 `LayerForwardTrace`(逐步軌跡)取代
-        `(LayerForwardResult, LayerDiag)`。給 `run_network_traced` 用。"""
-        out_stream, result, structure, _maps, v_steps, pointer_steps = self._run_forward(
-            w, in_stream, trace=True)
-        event_ms = resolve_ms_compressed(
-            pointer_steps, tile_channels(structure.local_to_global_j, self.oc),
-            tile_channels(structure.n_real_events, self.oc), in_stream.event_times)
-        trace = LayerForwardTrace(spike_mask=result.spike_mask,
-                                   v_steps=v_steps, event_ms=event_ms)
-        return out_stream, trace
-
-    def _run_forward_quantized(self, params: QuantizedLayerParams, in_stream: EventStream, *,
-                               round_mode: RoundMode | str, trace: bool):
-        """`forward_quantized`/`forward_quantized_traced` 共用。回傳
-        `(out_stream, result, v_steps, diag)`,`v_steps` 只有 `trace=True` 時
-        是陣列,否則 `None`。"""
-        _check_weight_codes(params.q)
+    def build_structure(self, in_stream: EventStream) -> ConvQueueStructure:
+        """這層的佇列結構段。扁平來源編號用這層的輸入面尺寸還原成 (x, y, c)。"""
         x, y, c = unravel_conv_source(in_stream.event_source_idx, self.h_in, self.w_in)
-        structure = build_conv_structure(
+        return build_conv_structure(
             in_stream.event_times, x, y, c, self.k, self.s, self.p, self.h_out, self.w_out,
             self.L, in_stream.n_real_events)
-        b = conv_float_values(structure, params.q, self.tau, in_stream.event_gain).b
-        result, v_steps = _run_quantized_scan(
-            tile_channels(structure.delta_t, self.oc), b, params, round_mode, trace)
-        out_stream = extract_output_events_compressed(
-            result.spike_mask, result.spike_event_idx, _constant_spike_gain(result.spike_mask),
-            in_stream.event_times, tile_channels(structure.local_to_global_j, self.oc),
-            max_total_spikes=self.max_out_spikes)
-        diag = LayerDiagInt(queue_truncated=jnp.max(structure.n_real_events) > self.L,
-                            output_truncated=out_stream.n_real_events > self.max_out_spikes)
-        return out_stream, result, v_steps, diag
 
-    def forward_quantized(self, params: QuantizedLayerParams, in_stream: EventStream, *,
-                          round_mode: RoundMode | str = RoundMode.ROUND
-                          ) -> tuple[EventStream, LayerForwardResultInt, LayerDiagInt]:
-        """整數版 forward(膜電位量化模擬,見 docs/math/膜電位量化推導.md):
-        全程整數運算,沒有 $s_c$、沒有浮點除法,模擬 FPGA 逐事件更新暫存器。
-        跟 `forward` 不共用程式碼,不影響訓練路徑。
+    def float_values(self, structure: ConvQueueStructure, w: jax.Array,
+                     event_gain: jax.Array | None) -> AffineMap:
+        """浮點數值段,a、b 形狀 (n_neurons, L)。"""
+        return conv_float_values(structure, w, self.tau, event_gain)
 
-        `params`:這層的 `QuantizedLayerParams`;`q` 不是整數 dtype 時 raise
-        `ValueError`。`round_mode`:乘法後的捨入規則(`fixed_point.RoundMode`)。
-        一步處理一筆事件(chunk_size 恆為 1),掃描長度就是壓縮佇列長度
-        `self.L`,跟訓練用的 `self.chunk_size`/`self.max_steps` 無關。
+    def neuron_delta_t(self, structure: ConvQueueStructure) -> jax.Array:
+        """逐神經元的 Δt,(n_neurons, L)。"""
+        return tile_channels(structure.delta_t, self.oc)
 
-        回傳 `(out_stream, result, diag)`:`result` 是 `LayerForwardResultInt`;
-        `diag` 是 `LayerDiagInt`,任一旗標為 True 時這組結果不能用。
-        """
-        out_stream, result, _v_steps, diag = self._run_forward_quantized(
-            params, in_stream, round_mode=round_mode, trace=False)
-        return out_stream, result, diag
+    def neuron_n_real(self, structure: ConvQueueStructure) -> jax.Array:
+        """逐神經元的真 tap 數,(n_neurons,)。"""
+        return tile_channels(structure.n_real_events, self.oc)
 
-    def forward_quantized_traced(self, params: QuantizedLayerParams, in_stream: EventStream, *,
-                                 round_mode: RoundMode | str = RoundMode.ROUND
-                                 ) -> tuple[EventStream, LayerForwardResultInt, jax.Array,
-                                            LayerDiagInt]:
-        """跟 `forward_quantized` 一樣,額外回傳每步(寫回之後)的暫存器值
-        `v_steps`,shape `(n_neurons, L)`。回傳 `(out_stream, result, v_steps, diag)`。
-
-        溢位驗證要看逐步值,不能只看 `v_final`:神經元可能在某一步衝到最高點,
-        之後因為衰減或後面的事件又掉下來,只看最終值會漏掉中間真正的峰值。
-        不回傳 `LayerForwardTrace`:這條路沒有梯度,不需要 `event_ms` 時間戳
-        反查;`result.overflowed` 已經逐步疊好。
-        """
-        return self._run_forward_quantized(params, in_stream, round_mode=round_mode, trace=True)
+    def scan_steps(self, structure: ConvQueueStructure) -> int:
+        """浮點掃描的步數上限。"""
+        return self.max_steps
 
     def with_chunk_size(self, chunk_size: int) -> "ConvLayer":
         """換 chunk_size,max_steps 退回 L。
@@ -455,85 +353,47 @@ class FCLayer:
         _check_leading_axis(values, self.n_out, "n_out")
         return values
 
-    def _run_forward(self, w: jax.Array, in_stream: EventStream, *, trace: bool):
-        """建密集佇列 + 跑一層 + 抽輸出流。`forward` / `forward_traced` 共用。
-        `trace=False` 時 graph 跟舊 `forward` body 逐位元相同。回傳
-        `(out_stream, result, v_steps, pointer_steps)`;後兩個只有 `trace=True`
-        時是陣列,否則 `None`。"""
-        structure = build_fc_structure(
-            in_stream.event_times, in_stream.event_source_idx, in_stream.n_real_events)
-        maps = fc_float_values(structure, w, self.tau, in_stream.event_gain)
-        # 積分預算 = 上一層宣告的輸出容量(輸入流固定長度),不是自己的欄位。
-        scan_steps = -(-in_stream.event_times.shape[0] // self.chunk_size)  # ceil div
+    def forward(self, params, in_stream: EventStream, *, backend=FLOAT,
+                trace: bool = False) -> LayerOutput:
+        """同 ConvLayer.forward。params 在浮點 backend 是權重 (n_out, n_in)。"""
+        structure = self.build_structure(in_stream)
+        scan = backend.scan(self, structure, params, in_stream.event_gain, trace=trace)
+        out_stream = extract_output_events(
+            scan.result.spike_mask, scan.result.spike_event_idx, scan.spike_gain,
+            in_stream.event_times, max_total_spikes=self.n_out)
+        diag = _layer_diag(scan.result.spike_mask, self.n_neurons, in_stream.n_real_events,
+                           needed={})
+        layer_trace = None
         if trace:
-            result, v_steps, pointer_steps = run_layer_forward_traced(
-                maps, self.v_th, chunk_size=self.chunk_size, max_steps=scan_steps,
-                alpha=self.alpha, n_real_events=in_stream.n_real_events)
-        else:
-            result = run_layer_forward(
-                maps, self.v_th, chunk_size=self.chunk_size, max_steps=scan_steps,
-                alpha=self.alpha, n_real_events=in_stream.n_real_events)
-            v_steps = pointer_steps = None
-        out_stream = extract_output_events(
-            result.spike_mask, result.spike_event_idx, result.s_spike,
-            in_stream.event_times, max_total_spikes=self.n_out)
-        return out_stream, result, maps, v_steps, pointer_steps
+            event_ms = resolve_ms_dense(scan.pointer_steps, self.neuron_n_real(structure),
+                                        in_stream.event_times)
+            layer_trace = LayerForwardTrace(spike_mask=scan.result.spike_mask,
+                                            v_steps=scan.v_steps, event_ms=event_ms)
+        return LayerOutput(stream=out_stream, result=scan.result, diag=diag, trace=layer_trace)
 
-    def forward(self, w: jax.Array,
-                in_stream: EventStream) -> tuple[EventStream, LayerForwardResult, LayerDiag]:
-        out_stream, result, _maps, _, _ = self._run_forward(w, in_stream, trace=False)
-        spike_count = jnp.sum(result.spike_mask)
-        diag = LayerDiag(
-            spike_count=spike_count,
-            firing_rate=spike_count / (self.n_neurons * jnp.maximum(in_stream.n_real_events, 1)),
-            needed={})
-        return out_stream, result, diag
+    def build_structure(self, in_stream: EventStream) -> FCQueueStructure:
+        """這層的佇列結構段。"""
+        return build_fc_structure(in_stream.event_times, in_stream.event_source_idx,
+                                  in_stream.n_real_events)
 
-    def forward_traced(self, w: jax.Array,
-                       in_stream: EventStream) -> tuple[EventStream, LayerForwardTrace]:
-        """跟 `forward` 一樣跑一層,但吐 `LayerForwardTrace`(逐步軌跡)。密集
-        佇列的 `pointer` 直接是全域事件 index,`resolve_ms_dense` 不必查表。"""
-        out_stream, result, _maps, v_steps, pointer_steps = self._run_forward(
-            w, in_stream, trace=True)
-        n_real = jnp.broadcast_to(
-            jnp.asarray(in_stream.n_real_events, jnp.int32), (self.n_out,))
-        event_ms = resolve_ms_dense(pointer_steps, n_real, in_stream.event_times)
-        trace = LayerForwardTrace(spike_mask=result.spike_mask,
-                                   v_steps=v_steps, event_ms=event_ms)
-        return out_stream, trace
+    def float_values(self, structure: FCQueueStructure, w: jax.Array,
+                     event_gain: jax.Array | None) -> AffineMap:
+        """浮點數值段,a、b 形狀 (n_out, 輸入流長度)。"""
+        return fc_float_values(structure, w, self.tau, event_gain)
 
-    def _run_forward_quantized(self, params: QuantizedLayerParams, in_stream: EventStream, *,
-                               round_mode: RoundMode | str, trace: bool):
-        """跟 `ConvLayer._run_forward_quantized` 同一個組裝方式。回傳
-        `(out_stream, result, v_steps, diag)`。"""
-        _check_weight_codes(params.q)
-        structure = build_fc_structure(
-            in_stream.event_times, in_stream.event_source_idx, in_stream.n_real_events)
-        b = fc_float_values(structure, params.q, self.tau, in_stream.event_gain).b
-        delta_t = jnp.broadcast_to(structure.delta_t[None, :], b.shape)
-        result, v_steps = _run_quantized_scan(delta_t, b, params, round_mode, trace)
-        out_stream = extract_output_events(
-            result.spike_mask, result.spike_event_idx, _constant_spike_gain(result.spike_mask),
-            in_stream.event_times, max_total_spikes=self.n_out)
-        diag = LayerDiagInt(queue_truncated=jnp.zeros((), dtype=bool),
-                            output_truncated=out_stream.n_real_events > self.n_out)
-        return out_stream, result, v_steps, diag
+    def neuron_delta_t(self, structure: FCQueueStructure) -> jax.Array:
+        """逐神經元的 Δt,(n_out, 輸入流長度),每顆神經元都一樣。"""
+        return jnp.broadcast_to(structure.delta_t[None, :],
+                                (self.n_out, structure.delta_t.shape[0]))
 
-    def forward_quantized(self, params: QuantizedLayerParams, in_stream: EventStream, *,
-                          round_mode: RoundMode | str = RoundMode.ROUND
-                          ) -> tuple[EventStream, LayerForwardResultInt, LayerDiagInt]:
-        """同 `ConvLayer.forward_quantized`;掃描長度是輸入流長度
-        (`in_stream.event_times.shape[0]`)。"""
-        out_stream, result, _v_steps, diag = self._run_forward_quantized(
-            params, in_stream, round_mode=round_mode, trace=False)
-        return out_stream, result, diag
+    def neuron_n_real(self, structure: FCQueueStructure) -> jax.Array:
+        """逐神經元的真事件數,(n_out,),每顆神經元都一樣。"""
+        return jnp.broadcast_to(structure.n_real_events, (self.n_out,))
 
-    def forward_quantized_traced(self, params: QuantizedLayerParams, in_stream: EventStream, *,
-                                 round_mode: RoundMode | str = RoundMode.ROUND
-                                 ) -> tuple[EventStream, LayerForwardResultInt, jax.Array,
-                                            LayerDiagInt]:
-        """同 `ConvLayer.forward_quantized_traced`。"""
-        return self._run_forward_quantized(params, in_stream, round_mode=round_mode, trace=True)
+    def scan_steps(self, structure: FCQueueStructure) -> int:
+        """浮點掃描的步數上限:整條輸入流除以 chunk_size 取上整。輸入流長度是上一層
+        宣告的輸出容量,上一層容量長大時這裡跟著變多。"""
+        return -(-structure.delta_t.shape[0] // self.chunk_size)
 
     def with_chunk_size(self, chunk_size: int) -> "FCLayer":
         """換 chunk_size。掃描步數每次從輸入流長度現算,沒有其他欄位要跟著改。"""
@@ -577,83 +437,38 @@ def raw_events_to_stream(event_times: jax.Array, x: jax.Array, y: jax.Array,
         n_real_events=jnp.asarray(n_real_events, dtype=jnp.int32))
 
 
-def run_network(layers, input_stream: EventStream, weights):
-    """一列 layer 串起來:把輸入流餵進第一層,每層的輸出流轉給下一層,收集
-    每層的 `LayerDiag`。回傳 (最後一層的原始 forward 結果, 每層診斷 list)。
+class NetworkOutput(NamedTuple):
+    """run_network 的輸出,每個欄位每層一個,對齊 layers。"""
+    results: tuple        # 每層的 LayerOutput.result
+    diags: tuple          # 每層的 LayerDiag
+    traces: tuple | None  # trace=True 才有,已經 stop_gradient
 
-    `layers`:一列符合 `Layer` 約定的物件(靜態,`jax.jit` 下當閉包捕捉或
-    static 參數)。`weights`:對齊 `layers` 的權重序列(pytree,`jax.grad` 的
-    對象)。`input_stream`:`EventStream`。
+    @property
+    def last(self):
+        """最後一層的結果,給解碼器。"""
+        return self.results[-1]
 
-    加 pooling / residual / 新 layer 型別 = 照 `Layer` 約定寫一個新層物件,
-    這支函式一行不用改。
+
+def run_network(layers, weights, input_stream: EventStream, *, backend=FLOAT,
+                trace: bool = False) -> NetworkOutput:
+    """一列 layer 串起來跑:每層的輸出流餵給下一層。
+
+    layers: 一列符合 Layer 約定的物件(靜態,jax.jit 下當閉包捕捉)。
+    weights: 對齊 layers 的每層參數;浮點 backend 是權重,整數 backend 是
+        QuantizedLayerParams。
+    trace: True 時收每層逐步軌跡。
+    相鄰層接不上時 raise ValueError。
     """
     check_layer_connections(layers)
     stream = input_stream
-    result = None
-    diags = []
-    for layer, w in zip(layers, weights):
-        stream, result, diag = layer.forward(w, stream)
-        diags.append(diag)
-    return result, diags
-
-
-def run_network_traced(layers, input_stream: EventStream, weights):
-    """`run_network` 的 forward-only 姊妹:逐層跑 `forward_traced`,每層收一份
-    `LayerForwardTrace`(逐步軌跡),`stop_gradient` 後回傳 list。
-
-    定位是週期性 debug probe(見 docs/監測規格.md §6):shape 比 `run_network`
-    大一截、另編一個函式,不織進 `train_step`、不參與 grad。呼叫端拿它 dump
-    `.npz` 看自訂 decoder / 動力學。
-    """
-    check_layer_connections(layers)
-    stream = input_stream
-    traces = []
-    for layer, w in zip(layers, weights):
-        stream, trace = layer.forward_traced(w, stream)
-        traces.append(trace)
-    return jax.tree_util.tree_map(jax.lax.stop_gradient, traces)
-
-
-def run_network_quantized(layers, input_stream: EventStream,
-                          quant_params: list[QuantizedLayerParams], *,
-                          round_mode: RoundMode | str = RoundMode.ROUND):
-    """`run_network` 的整數版姊妹(膜電位量化模擬):逐層跑
-    `forward_quantized`。定位是事後分析,不進訓練路徑。
-
-    `quant_params`:對齊 `layers` 的 `QuantizedLayerParams` list,每層各自的
-    權重碼、查表、門檻、位元寬度,呼叫端照 docs/math/膜電位量化推導.md 的
-    公式算好傳進來。`round_mode` 是整個網路共用的單一設計選擇。
-
-    回傳 `(readout, diags)`:
-    - `readout`:最後一層的 `LayerForwardResultInt`,`v_final` 已經用
-      `dequantize_v_final` 換回物理尺度,直接餵解碼器。要看暫存器裡的
-      整數值,用 `run_network_quantized_traced`。
-    - `diags`:每層的 `LayerDiagInt`,任何一個旗標為 True 時這組結果不能用。
-    """
-    check_layer_connections(layers)
-    stream = input_stream
-    result = None
-    diags = []
-    for layer, params in zip(layers, quant_params):
-        stream, result, diag = layer.forward_quantized(params, stream, round_mode=round_mode)
-        diags.append(diag)
-    return dequantize_v_final(result, quant_params[-1]), diags
-
-
-def run_network_quantized_traced(layers, input_stream: EventStream,
-                                 quant_params: list[QuantizedLayerParams], *,
-                                 round_mode: RoundMode | str = RoundMode.ROUND):
-    """`run_network_quantized` 的逐步軌跡版本:逐層跑 `forward_quantized_traced`,
-    回傳對齊 `layers` 的 list,每層一份 `(result, v_steps, diag)`,
-    `result.v_final`/`v_steps` 都是暫存器裡的整數值(沒有換回物理尺度)。
-    為什麼溢位驗證要逐步值,見 `ConvLayer.forward_quantized_traced`。參數同
-    `run_network_quantized`。"""
-    check_layer_connections(layers)
-    stream = input_stream
-    traces = []
-    for layer, params in zip(layers, quant_params):
-        stream, result, v_steps, diag = layer.forward_quantized_traced(
-            params, stream, round_mode=round_mode)
-        traces.append((result, v_steps, diag))
-    return traces
+    outputs = []
+    for layer, params in zip(layers, weights):
+        output = layer.forward(params, stream, backend=backend, trace=trace)
+        outputs.append(output)
+        stream = output.stream
+    traces = None
+    if trace:
+        traces = jax.tree_util.tree_map(jax.lax.stop_gradient,
+                                        tuple(output.trace for output in outputs))
+    return NetworkOutput(results=tuple(output.result for output in outputs),
+                         diags=tuple(output.diag for output in outputs), traces=traces)
