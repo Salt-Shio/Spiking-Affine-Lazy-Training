@@ -659,32 +659,3 @@ def test_compressed_event_gain_gradient_matches_dense():
     grad_compressed = jax.grad(compressed_loss)(event_gain0)
     assert bool(jnp.allclose(grad_ref, grad_compressed, atol=_GRAD_TOL)), \
         (grad_ref, grad_compressed)
-
-
-TESTS = [
-    test_compress_candidates_matches_worked_example,
-    test_affine_with_catchup_matches_worked_example,
-    test_affine_with_catchup_identity_pitfall_matches_hand_derivation,
-    test_compressed_matches_dense_single_event,
-    test_compressed_matches_dense_two_events_with_degenerate_catchup,
-    test_compressed_matches_dense_with_genuine_non_degenerate_catchup,
-    test_compressed_matches_dense_with_pad_events,
-    test_compressed_neuron_with_zero_real_events_matches_dense_zero,
-    test_compressed_exactly_fills_max_queue_len_no_padding_needed,
-    test_compressed_oc_independent_candidacy_only_weight_differs,
-    test_compressed_matches_dense_on_realistic_random_case,
-    test_compressed_gradient_matches_dense_pure_affine,
-    test_compressed_dropped_candidate_gradient_matches_dense,
-    test_compressed_gradient_matches_dense_with_genuine_catchup,
-    test_compressed_gradient_matches_dense_with_pad_events,
-    test_compressed_matches_dense_spike_details_and_gradient_when_neuron_fires,
-    test_compressed_matches_dense_with_event_gain,
-    test_compressed_event_gain_gradient_matches_dense,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

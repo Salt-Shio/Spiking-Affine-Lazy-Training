@@ -247,25 +247,3 @@ def test_summarize_trace_scalars_nonfinite_counts():
     trace = _toy_trace()._replace(v_steps=bad_v)
     out = summarize_trace_scalars(trace)
     assert out["nonfinite_v"] == 2          # 一個 inf + 一個 nan
-
-
-TESTS = [
-    test_traced_forward_result_bit_identical,
-    test_traced_pointer_monotone_and_starts_at_zero,
-    test_resolve_ms_dense_hand,
-    test_resolve_ms_compressed_hand,
-    test_conv_forward_traced_agrees_with_forward,
-    test_traced_event_ms_within_input_range_or_nan,
-    test_run_network_traced_shape_and_alignment,
-    test_run_network_traced_stops_gradient,
-    test_run_network_traced_forward_matches_run_network,
-    test_summarize_trace_scalars_hand,
-    test_summarize_trace_scalars_nonfinite_counts,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

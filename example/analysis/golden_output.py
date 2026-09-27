@@ -5,7 +5,7 @@ save:用那次 run 的容量跑一次,記下哪些樣本出界;有出界就放�
 compare:用黃金輸出記下的容量重跑,逐筆比對。預測類別、每層 spike 數要相等,
     v_final 容差 V_FINAL_ATOL。有不同就回傳非 0。
 
-用法:python example/debug-test/golden_output.py {save,compare}
+用法:python -m example.analysis.golden_output {save,compare}
 輸出:experiments/<那次 run>/golden/golden.npz、report.yaml
 """
 import argparse

@@ -180,7 +180,7 @@
   見監測規格 §7;這個判準問題留給以後其他視覺化工具碰到時再定案。)
 
 - **訓練中期梯度突然炸開,炸完 val_accuracy 回不到炸之前的水準。** 2026-09-14
-  用改名後的新版 `metrics.csv`(`configs/conv/baseline.yaml`,40 epochs)第一次
+  用改名後的新版 `metrics.csv`(`archive/configs/verify_maxsteps.yaml`,40 epochs)第一次
   被人眼看出來——這正是欄名改名/`plot_metrics.ipynb` 分組改版想要達成的效果
   (資料本身早就在,只是之前沒對齊、沒疊在一起看不出趨勢)。實際數字(見
   `experiments/conv_compressed_compressed_maxsteps_verify_20260914_122946/train/metrics.csv`):
@@ -196,8 +196,16 @@
   entropy 梯度爆炸」模式。還沒查:optimizer 有沒有配 gradient clipping、
   實際去 replay 那個 batch 看數值。優先度看之後要不要繼續訓更深/更久的網路
   再決定。
+- **`ConvLayer.shrink_max_out_spikes` 觀察值是 0 時會把容量縮成 0。** 某層整個
+  epoch 都沒有 fire 時,候選值 `ceil(0 * out_grow_factor) = 0`,縮成
+  `max_out_spikes=0`,下游 gather 直接崩潰。架構審查第 5 條做容量型別時一起修。
 
 ## 開放題(往下走才需要)
+
+- **conv1 被訓練震盪撞遠之後修不回來。** 查文獻找到兩個方向:firing-rate 正則化
+  (把 dormant 統計的活動量接回 loss,懲罰活動量太低的神經元)、調寬 surrogate
+  gradient(調小 `alpha`)。都還沒實作;訓練演算法這條線目前已收尾,要重開時再評估。
+  背景見 [`問題紀錄.md`](問題紀錄.md) 第十六節「conv1 vs conv2 firing rate 不對稱」。
 
 - **`init_k = √3`(Lee 變異數保持)+ ReDo(訓練中回收休眠神經元)當一個 package。**
   目前 baseline `init_k = 5.0`、不做 ReDo(2-conv 網路不需要:V6 連 √3 的 70% 休眠

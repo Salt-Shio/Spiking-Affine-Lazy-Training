@@ -87,18 +87,3 @@ def test_fc_queue_pad_positions_are_identity_with_zero_delta_t():
     assert list(queue.delta_t[0]) == [1, 1, 0]
     assert float(queue.maps.a[0, 2]) == 1.0
     assert float(queue.maps.b[0, 2]) == 0.0
-
-
-TESTS = [
-    test_fc_forward_chunk_size_1,
-    test_fc_forward_chunk_size_full,
-    test_fc_queue_delta_t_matches_hand_computation,
-    test_fc_queue_pad_positions_are_identity_with_zero_delta_t,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

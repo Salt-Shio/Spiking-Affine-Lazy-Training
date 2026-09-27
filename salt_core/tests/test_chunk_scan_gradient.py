@@ -138,18 +138,3 @@ def test_v_final_regression_gradient_two_small_chunks():
     是同一個數學,只是切成兩個小 chunk 而不是一個大 chunk,梯度應該完全
     一致,驗證這個「在 fire 後立刻停止」的場景本身也不受 chunk_size 影響。"""
     _check_v_final_grad_matches_reference(chunk_size=1, max_steps=2)
-
-
-TESTS = [
-    test_gradient_matches_sequential_reference_chunk_size_1,
-    test_gradient_matches_sequential_reference_chunk_size_full,
-    test_v_final_regression_gradient_single_chunk,
-    test_v_final_regression_gradient_two_small_chunks,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

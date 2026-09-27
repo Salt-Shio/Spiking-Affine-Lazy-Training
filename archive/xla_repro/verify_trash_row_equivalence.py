@@ -5,15 +5,14 @@
 - 全部候選都合法(沒有任何丟棄)
 - 全部候選都不合法(某個神經元完全沒有候選)
 - L 溢出(某個神經元的合法候選數超過 max_queue_len)
-"""
-import sys
-sys.path.insert(0, "/home/salt/Projects/Spiking-Affine-Lazy-Training")
 
+原版在 compress_candidates_drop.py。用法:python archive/xla_repro/verify_trash_row_equivalence.py
+"""
 import numpy as np
 import jax
 import jax.numpy as jnp
 
-from salt_core.connectivity.conv import _compress_candidates as original
+from compress_candidates_drop import _compress_candidates as original
 
 
 def trash_row_version(n_flat, j_flat, n_out_spatial, max_queue_len, n_events):

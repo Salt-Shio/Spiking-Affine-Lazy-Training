@@ -127,22 +127,3 @@ def test_run_layer_forward_int_traced_matches_untraced_and_last_v_step_is_v_fina
     assert v_steps.shape == (1, 2)
     assert int(v_steps[0, 0]) == 20, "第一步套用完的膜電位"
     assert int(v_steps[0, -1]) == int(traced.v_final[0]), "最後一欄要等於 v_final"
-
-
-TESTS = [
-    test_run_layer_forward_int_two_events_chained_matches_hand_computation,
-    test_run_layer_forward_int_applies_catchup_decay_after_last_real_tap,
-    test_run_layer_forward_int_scan_length_is_queue_length,
-    test_run_layer_forward_int_per_neuron_v_th_fire_and_reset,
-    test_run_layer_forward_int_overflow_flag_set_and_propagates_to_v_final,
-    test_run_layer_forward_int_no_threshold_accumulates_without_firing,
-    test_run_layer_forward_int_overflow_mode_reaches_register,
-    test_run_layer_forward_int_traced_matches_untraced_and_last_v_step_is_v_final,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

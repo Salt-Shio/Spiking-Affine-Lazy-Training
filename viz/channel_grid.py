@@ -26,10 +26,6 @@ from typing import Protocol
 
 import numpy as np
 
-import matplotlib
-matplotlib.use("Agg")
-matplotlib.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei", "DejaVu Sans"]
-matplotlib.rcParams["axes.unicode_minus"] = False
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.colors import ListedColormap, to_rgb

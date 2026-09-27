@@ -176,26 +176,3 @@ def test_dormant_report_regrows_on_output_spike_overflow():
 
 def test_dormant_report_regrows_on_scan_step_overflow():
     _assert_regrow_matches_generous("max_steps")
-
-
-TESTS = [
-    test_dormant_score_uniform_activity_zero_dormant,
-    test_dormant_score_bimodal_matches_fraction,
-    test_dormant_score_all_zero_is_fully_dormant,
-    test_dormant_score_tau_is_inclusive_and_monotone,
-    test_dormant_report_only_conv_layers_and_valid_shape,
-    test_dormant_report_chunking_is_invariant,
-    test_dormant_report_matches_manual_reduction,
-    test_dormant_report_s_value_activity_runs,
-    test_dormant_report_rejects_bad_activity,
-    test_dormant_report_regrows_on_queue_overflow,
-    test_dormant_report_regrows_on_output_spike_overflow,
-    test_dormant_report_regrows_on_scan_step_overflow,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

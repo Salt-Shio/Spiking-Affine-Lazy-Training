@@ -14,7 +14,7 @@ import numpy as np
 import yaml
 
 from example.paths import EXPERIMENTS_DIR
-from example.replay_epoch import _load_train_sample, load_epoch_weights, replay_sample
+from example.replay_epoch import load_train_sample, load_epoch_weights, replay_sample
 from example.train_conv_compressed import train
 from example.utils import load_run_record
 from salt_core.layers import ConvLayer, FCLayer
@@ -54,7 +54,7 @@ _RUN_RECORD = load_run_record(_EXP_DIR)
 _CONV1 = next(l for l in _LAYERS if isinstance(l, ConvLayer) and l.name == "conv1")
 _FC_OUT = next(l for l in _LAYERS if isinstance(l, FCLayer))
 
-_SAMPLE = _load_train_sample(_RUN_RECORD, 0)
+_SAMPLE = load_train_sample(_RUN_RECORD, 0)
 _TRACES = replay_sample(_EXP_DIR, 0, *_SAMPLE)
 _CONV1_TRACE = _TRACES[_LAYERS.index(_CONV1)]
 _FC_TRACE = _TRACES[_LAYERS.index(_FC_OUT)]
@@ -144,21 +144,3 @@ def test_fc_panel_early_frames_pad_missing_history_with_nan():
     first_frame = panel.frame(0)
     half_width = round(window_ms / _DT_MS)
     assert np.isnan(first_frame[:, :half_width]).all()
-
-
-TESTS = [
-    test_conv_panel_frame_shape_matches_layer_geometry,
-    test_conv_panel_spike_mask_is_discrete_with_no_value_range,
-    test_conv_panel_v_steps_is_continuous_with_value_range,
-    test_conv_panel_invalid_channel_raises,
-    test_fc_panel_frame_shape_matches_neuron_range_and_window,
-    test_fc_panel_extent_and_labels_use_real_coordinates,
-    test_fc_panel_invalid_neuron_range_raises,
-    test_fc_panel_early_frames_pad_missing_history_with_nan,
-]
-
-if __name__ == "__main__":
-    for t in TESTS:
-        t()
-        print(f"PASS: {t.__name__}")
-    print(f"\n全部 {len(TESTS)} 項通過")

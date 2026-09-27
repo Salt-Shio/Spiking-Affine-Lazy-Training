@@ -153,6 +153,22 @@ class NMNISTDataset:
                                        val_files, labels[val_idx])
         return self._train_val_pools_cache
 
+    def _pool(self, which: str) -> tuple[list[str], np.ndarray]:
+        """which 對應的 pool:(檔案清單, 標籤)。which 不是 train/val/test 時 raise ValueError。"""
+        if which == "train":
+            pool_files, pool_labels, _, _ = self._train_val_pools()
+        elif which == "val":
+            _, _, pool_files, pool_labels = self._train_val_pools()
+        elif which == "test":
+            pool_files, pool_labels = _list_files(self.dataset_root, "Test")
+        else:
+            raise ValueError(f"which 必須是 'train'/'val'/'test',拿到 {which!r}")
+        return pool_files, pool_labels
+
+    def pool_size(self, which: str) -> int:
+        """which("train"/"val"/"test")的 pool 總筆數,實際數檔案。"""
+        return len(self._pool(which)[0])
+
     def build_split(self, seed: int, n_samples: int, which: str) -> NMNISTSplit:
         """建一個 split。
 
@@ -169,15 +185,7 @@ class NMNISTDataset:
         docs/math/conv事件佇列建構推導.md 第 8.1 節:pad 座標 (0,0,c=0) unravel 後
         看起來完全合法,必須靠 n_real_events 而不是座標合法性檢查來擋)。
         """
-        if which == "train":
-            pool_files, pool_labels, _, _ = self._train_val_pools()
-        elif which == "val":
-            _, _, pool_files, pool_labels = self._train_val_pools()
-        elif which == "test":
-            pool_files, pool_labels = _list_files(self.dataset_root, "Test")
-        else:
-            raise ValueError(f"which 必須是 'train'/'val'/'test',拿到 {which!r}")
-
+        pool_files, pool_labels = self._pool(which)
         if n_samples > len(pool_files):
             raise ValueError(f"which={which!r} 的 pool 只有 {len(pool_files)} 筆,"
                               f"要求 n_samples={n_samples} 超過上限")

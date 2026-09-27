@@ -1,5 +1,12 @@
 # XLA GPU determinism: wrong gradients through `mode='drop'` scatter, merged batch
 
+**封存(2026-09-27)**:這個資料夾只當 XLA bug 的查證證據,不維護。
+
+- `verify_trash_row_equivalence.py` 比對的原版是 `compress_candidates_drop.py`
+  (從 commit `60fa3a7` 的前一版凍結下來),不再 import `salt_core`,現在還能跑。
+- `test_no_vmap_customvjp_small.py`、`verify_real_pipeline.py` 對應 commit
+  `60fa3a7` 當時的程式碼,之後沒有跟著專案更新,只當證據。
+
 ## 現況(2026-09-18,已解決)
 
 根因已定位、已在正式程式碼修掉並驗證(`salt_core/connectivity/conv.py::_compress_candidates`,
@@ -51,7 +58,7 @@ gather 用 `jax.custom_vjp` + 手寫 `jax.lax.scatter_add`,自己指定
 切掉。BATCH=1~4、旗標開關全部正確。
 
 **邏輯等價驗證**(`verify_trash_row_equivalence.py`):直接拿這個新寫法跟
-原版 `salt_core/connectivity/conv.py::_compress_candidates` 逐位元比對(不是
+原版(`compress_candidates_drop.py`)逐位元比對(不是
 只看梯度測試過),涵蓋一般情況、全部合法、全部不合法、L 溢出、空清單、多組
 隨機 seed,10/10 一致。第一版有個真的邏輯錯誤(把 `n_real_per_neuron` 誤
 封頂在 `max_queue_len`,這個數字下游動態放大機制要用來偵測「真的需要比 L

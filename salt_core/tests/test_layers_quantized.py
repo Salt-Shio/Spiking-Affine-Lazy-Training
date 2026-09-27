@@ -308,28 +308,3 @@ def test_forward_quantized_uses_layer_overflow_mode():
 
     assert int(layer.forward_quantized(wrap, in_stream)[1].v_final[0]) == -7
     assert int(layer.forward_quantized(saturate, in_stream)[1].v_final[0]) == 7
-
-
-TESTS = [
-    test_fc_forward_quantized_single_identity_event_matches_hand_computation,
-    test_fc_forward_quantized_matches_manual_assembly_of_trusted_primitives,
-    test_fc_forward_quantized_coarser_f_a_changes_result,
-    test_conv_forward_quantized_applies_catchup_decay,
-    test_conv_forward_quantized_ignores_training_max_steps,
-    test_run_network_quantized_chains_conv_into_fc_matches_manual_chaining,
-    test_fc_forward_quantized_traced_last_column_matches_forward_quantized_v_final,
-    test_run_network_quantized_traced_returns_result_v_steps_diag_per_layer,
-    test_forward_quantized_rejects_non_integer_weight_codes,
-    test_conv_forward_quantized_reports_queue_truncation,
-    test_conv_forward_quantized_reports_output_truncation,
-    test_dequantize_v_final_multiplies_back_per_neuron_scale,
-    test_forward_quantized_without_threshold_never_fires,
-    test_forward_quantized_uses_layer_overflow_mode,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

@@ -191,31 +191,3 @@ def test_sliding_windows_bool_array_with_nan_pad_promotes_dtype():
     assert np.isnan(out[0, 0, 0])
     assert out[0, 0, 1] == 1.0
     assert out[0, 0, 2] == 0.0
-
-
-TESTS = [
-    test_build_frame_grid_exact_multiple,
-    test_build_frame_grid_last_frame_not_exceeding_t_end,
-    test_build_frame_grid_nonpositive_dt_raises,
-    test_build_frame_grid_t_end_before_t_start_raises,
-    test_resample_pulse_only_lights_up_the_frame_the_event_falls_in,
-    test_resample_pulse_neuron_with_no_real_events_is_all_background,
-    test_resample_pulse_two_events_in_same_bucket_last_one_wins,
-    test_resample_decay_matches_hand_computed_values,
-    test_resample_decay_no_real_events_decays_before_first_from_t_zero,
-    test_pad_events_by_neuron_groups_and_sorts_per_neuron,
-    test_pad_events_by_neuron_pads_shorter_neurons_with_nan,
-    test_pad_events_by_neuron_neuron_with_no_events_is_all_nan,
-    test_pad_events_by_neuron_no_events_at_all_returns_empty_columns,
-    test_sliding_windows_fully_inside_bounds,
-    test_sliding_windows_left_boundary_pads,
-    test_sliding_windows_right_boundary_pads,
-    test_sliding_windows_multiple_centers_stacked,
-    test_sliding_windows_bool_array_with_nan_pad_promotes_dtype,
-]
-
-if __name__ == "__main__":
-    for t in TESTS:
-        t()
-        print(f"PASS: {t.__name__}")
-    print(f"\n全部 {len(TESTS)} 項通過")

@@ -657,26 +657,3 @@ def test_conv_output_buffer_grow_result_matches_generous_start():
     assert _parse_overflows(stdout_small), "小起始值應出界"
     assert not _parse_overflows(stdout_big), "_base_cfg 預設 max_out 對 seed=42 小規模應夠用"
     _assert_params_close(params_small, params_big, "max_out 出界放大 vs 一開始就給夠")
-
-
-TESTS = [
-    test_checkpoint_roundtrip_preserves_all_fields,
-    test_grown_to_fit_bumps_only_the_overflowing_knob,
-    test_conv1_L_overflow_grows_not_raises,
-    test_conv2_L_overflow_before_first_checkpoint_reinits_with_same_seed,
-    test_conv2_L_overflow_mid_epoch_discards_partial_epoch_updates,
-    test_conv2_L_overflow_after_checkpoint_resumes_from_disk_not_reinit,
-    test_conv2_L_overflow_multiple_times_eventually_converges,
-    test_conv2_L_overflow_on_final_epoch_still_detected,
-    test_sufficient_L_headroom_does_not_change_result,
-    test_metrics_csv_capacity_columns_reflect_growth_after_overflow,
-    test_conv_output_buffer_overflow_detected_and_grown,
-    test_conv_output_buffer_grow_result_matches_generous_start,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

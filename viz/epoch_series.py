@@ -20,10 +20,6 @@ int,其餘欄是 float,含 inf/nan)。
 import csv
 import math
 
-import matplotlib
-matplotlib.use("Agg")
-matplotlib.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei", "DejaVu Sans"]
-matplotlib.rcParams["axes.unicode_minus"] = False
 import matplotlib.pyplot as plt
 
 

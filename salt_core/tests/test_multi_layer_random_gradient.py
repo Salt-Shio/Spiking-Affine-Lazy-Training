@@ -225,18 +225,3 @@ def test_three_layer_random_gradient_s_value():
         data_seed=1, weight_seed=1, num_events=34, sizes=[4, 6, 5, 3])
     for chunk_size in [1, 5]:
         _check_gradient_matches_reference(weights, times, source_idx, "s_value", chunk_size)
-
-
-TESTS = [
-    test_two_layer_random_gradient_v_final,
-    test_two_layer_random_gradient_s_value,
-    test_three_layer_random_gradient_v_final,
-    test_three_layer_random_gradient_s_value,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

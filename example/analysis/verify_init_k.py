@@ -12,8 +12,8 @@
       低 init_k 那側 slope 維持在 α/2、梯度不塌                        步驟 5
 
 用法:
-  python -m example.tests.verify_init_k              # 跑全部 V1–V5,印表
-  pytest example/tests/verify_init_k.py              # 只跑 test_v1_*(純 numpy、快)
+  python -m example.analysis.verify_init_k           # 跑全部 V1–V5,印表
+  pytest example/analysis/verify_init_k.py           # 只跑 test_v1_*(純 numpy、快)
 """
 import math
 from dataclasses import replace
@@ -24,7 +24,9 @@ import numpy as np
 import optax
 
 from data.src.nmnist import NMNISTDataset
-from salt_core.layers import raw_events_to_stream
+from salt_core.connectivity.conv import _axis_candidates, unravel_conv_source
+from salt_core.layer_chain import EventStream
+from salt_core.layers import grown_to_fit_batch, max_over_batch, raw_events_to_stream
 from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
 from example.paths import DATASET_ROOT, resolve_config
 from example.train_conv_compressed import load_config
@@ -53,6 +55,72 @@ def _slope(u, alpha: float = ALPHA):
     """ATan surrogate 斜率,u = V - v_th。α=2 時 = 1/(1+(π u)²)。"""
     a = alpha / 2.0
     return a / (1.0 + (math.pi * a * np.asarray(u)) ** 2)
+
+
+def receptive_field_tap_count(x: jax.Array, y: jax.Array, S: int, P: int,
+                               H_out: int, W_out: int, K: int,
+                               n_real_events: jax.Array | int) -> jax.Array:
+    """每個空間輸出位置有幾筆真事件是它的合法 tap。
+
+    只看事件座標、K/S/P、n_real_events,不看 channel 跟權重。
+    回傳 (H_out*W_out,) int32。
+    """
+    x = jnp.asarray(x, dtype=jnp.int32)
+    y = jnp.asarray(y, dtype=jnp.int32)
+    n_events = x.shape[0]
+    N = (K - 1) // S + 1
+    o_y, valid_y, _ = _axis_candidates(y, K, S, P, N, H_out)  # (n_events, N)
+    o_x, valid_x, _ = _axis_candidates(x, K, S, P, N, W_out)  # (n_events, N)
+    valid_2d = valid_y[:, :, None] & valid_x[:, None, :]        # (n_events, N, N)
+    is_real = jnp.arange(n_events) < jnp.asarray(n_real_events, dtype=jnp.int32)
+    valid_2d = valid_2d & is_real[:, None, None]
+
+    o_flat = o_y[:, :, None] * W_out + o_x[:, None, :]          # (n_events, N, N)
+    o_flat = jnp.where(valid_2d, o_flat, H_out * W_out).reshape(-1)  # 不合法標成越界
+    counts = jnp.zeros((H_out * W_out,), dtype=jnp.int32)
+    return counts.at[o_flat].add(valid_2d.reshape(-1).astype(jnp.int32), mode='drop')
+
+
+def conv_layer_receptive_field_firing_rate(spike_mask: jax.Array, x: jax.Array, y: jax.Array,
+                                            S: int, P: int, H_out: int, W_out: int, K: int,
+                                            OC: int, n_real_events: jax.Array | int
+                                            ) -> jax.Array:
+    """每顆神經元 spike 數 / 自己的感受野事件數,對感受野事件數 > 0 的神經元取平均。
+
+    感受野事件數 0 的神經元這個樣本沒機會 fire,不算進平均。
+    spike_mask: (OC*H_out*W_out, max_steps)。回傳純量。
+    """
+    spatial = receptive_field_tap_count(x, y, S, P, H_out, W_out, K, n_real_events)
+    opportunity = jnp.tile(spatial, OC)  # (OC*H_out*W_out,)
+    spike_count = jnp.sum(spike_mask, axis=1)
+    has_opp = opportunity > 0
+    rate_per_neuron = jnp.where(has_opp, spike_count / jnp.maximum(opportunity, 1), 0.0)
+    return jnp.sum(rate_per_neuron) / jnp.maximum(jnp.sum(has_opp), 1)
+
+
+def calibration_measure(layer, calib_stream_batch: EventStream, chunk: int = 16):
+    """回傳 measure(weight) -> 純量:一批輸入流的感受野正規化 firing rate,對樣本取平均。
+
+    layer: ConvLayer,容量要放得下這批輸入(見 _fit_layer)。
+    分批 vmap,避免整批一次建壓縮佇列 OOM。
+    """
+    n = calib_stream_batch.event_times.shape[0]
+
+    def measure(w: jax.Array) -> float:
+        def one(s: EventStream):
+            _out, result, _diag = layer.forward(w, s)
+            x, y, _c = unravel_conv_source(s.event_source_idx, layer.h_in, layer.w_in)
+            return conv_layer_receptive_field_firing_rate(
+                result.spike_mask, x, y, layer.s, layer.p, layer.h_out, layer.w_out,
+                layer.k, layer.oc, s.n_real_events)
+
+        total = 0.0
+        for lo in range(0, n, chunk):
+            total += float(jnp.sum(jax.vmap(one)(_slice_stream(calib_stream_batch, lo,
+                                                                min(lo + chunk, n)))))
+        return total / n
+
+    return measure
 
 
 # ----------------------------------------------------------------------------
@@ -105,7 +173,7 @@ def _print_v1(rows: list[dict]) -> None:
 # forward 驗證共用:載資料、建 baseline 層、生權重、逐層 forward
 # ----------------------------------------------------------------------------
 def _load_layers_and_stream(n_samples: int):
-    cfg = load_config(str(resolve_config("configs/conv/verify_k5.yaml")))
+    cfg = load_config(str(resolve_config("configs/conv/baseline.yaml")))
     model_cfg = cfg["model"]
     data_cfg = cfg["data"]
     layers = build_network(model_cfg)
@@ -133,6 +201,25 @@ def _sub_batched(fn, stream_batch, chunk: int):
     return jax.tree_util.tree_map(lambda *xs: jnp.concatenate(xs, axis=0), *parts)
 
 
+def _fit_layer(layer, w, stream_batch, chunk: int):
+    """容量放大到放得下這批輸入為止。回傳 (放得下的層, 這層的逐筆輸出流)。
+
+    config 的容量是訓練用的小起始值,不放大的話 forward 會被截斷。
+    """
+    while True:
+        out, diag = _sub_batched(lambda s: _out_and_diag(layer.forward(w, s)),
+                                 stream_batch, chunk)
+        grown = layer.grown_to_fit(max_over_batch(diag))
+        if grown is layer:
+            return layer, out
+        layer = grown
+
+
+def _out_and_diag(forward_result):
+    out, _result, diag = forward_result
+    return out, diag
+
+
 def _weights_for(layers, init_ks: dict, key0: int = 0):
     """每層用固定 key、只換 init_k 生權重(對齊 uniform_init 的設計意圖)。"""
     keys = jax.random.split(jax.random.PRNGKey(key0), len(layers))
@@ -152,9 +239,10 @@ def run_v2(n_samples: int = 128) -> list[dict]:
     rows = []
     for init_k in INIT_KS:
         ws = _weights_for(layers, {"conv1": init_k, "conv2": init_k})
-        fr1 = float(conv1.calibration_measure(stream, CHUNK)(ws[0]))
-        conv1_out = _sub_batched(lambda s: conv1.forward(ws[0], s)[0], stream, CHUNK)
-        fr2 = float(conv2.calibration_measure(conv1_out, CHUNK)(ws[1]))
+        conv1_fit, conv1_out = _fit_layer(conv1, ws[0], stream, CHUNK)
+        conv2_fit, _ = _fit_layer(conv2, ws[1], conv1_out, CHUNK)
+        fr1 = float(calibration_measure(conv1_fit, stream, CHUNK)(ws[0]))
+        fr2 = float(calibration_measure(conv2_fit, conv1_out, CHUNK)(ws[1]))
         rows.append(dict(init_k=init_k,
                          fr1=fr1, p_se1=_p_se(init_k, FAN_IN["conv1"]),
                          fr2=fr2, p_se2=_p_se(init_k, FAN_IN["conv2"])))
@@ -176,6 +264,7 @@ def _print_v2(rows: list[dict]) -> None:
 # V3:no-fire 膜電位分布 -> σ_V、P(V≥v_th)、E[slope | V≥v_th]
 # ----------------------------------------------------------------------------
 def _vfinal_stats(layer, w, stream_batch, chunk: int) -> np.ndarray:
+    layer, _ = _fit_layer(layer, w, stream_batch, chunk)
     vf = _sub_batched(lambda s: layer.forward(w, s)[1].v_final, stream_batch, chunk)
     return np.asarray(vf).reshape(-1)
 
@@ -189,7 +278,7 @@ def run_v3(n_samples: int = 128) -> list[dict]:
     for init_k in INIT_KS:
         ws = _weights_for(layers, {"conv1": init_k, "conv2": init_k})
         v1 = _vfinal_stats(nofire1, ws[0], stream, CHUNK)
-        conv1_out = _sub_batched(lambda s: conv1.forward(ws[0], s)[0], stream, CHUNK)
+        _, conv1_out = _fit_layer(conv1, ws[0], stream, CHUNK)
         v2 = _vfinal_stats(nofire2, ws[1], conv1_out, CHUNK)
         rows.append(dict(init_k=init_k,
                          **_one_layer_v3("conv1", init_k, v1),
@@ -223,13 +312,23 @@ def _print_v3(rows: list[dict]) -> None:
 # ----------------------------------------------------------------------------
 # V4:‖∂L/∂W‖ 逐層對 init_k
 # ----------------------------------------------------------------------------
+def _fit_network(layers, params, sl):
+    """整個網路的容量放大到放得下這批樣本為止,回傳放得下的層。"""
+    while True:
+        _result, diags = ConvNetCompressed(layers).apply_batched(
+            params, sl.event_times, sl.x, sl.y, sl.c, sl.n_real_events)
+        grown = grown_to_fit_batch(layers, diags)
+        if grown is layers:
+            return layers
+        layers = grown
+
+
 def run_v4(n_samples: int = 16) -> list[dict]:
     model_cfg, layers, _split, sl, _stream = _load_layers_and_stream(n_samples)
     decoder = build_decoder(model_cfg, layers)
-    net = ConvNetCompressed(layers)
     labels_oh = sl.labels_onehot
 
-    def loss_fn(params):
+    def loss_fn(params, net):
         result, _diags = net.apply_batched(params, sl.event_times, sl.x, sl.y,
                                             sl.c, sl.n_real_events)
         scores, _ = jax.vmap(decoder.decode)(result)
@@ -238,7 +337,8 @@ def run_v4(n_samples: int = 16) -> list[dict]:
     rows = []
     for init_k in INIT_KS:
         params = _weights_for(layers, {"conv1": init_k, "conv2": init_k})
-        loss, grad = jax.value_and_grad(loss_fn)(params)
+        net = ConvNetCompressed(_fit_network(layers, params, sl))
+        loss, grad = jax.value_and_grad(loss_fn)(params, net)
         gn = {layer.name: float(jnp.linalg.norm(g)) for layer, g in zip(layers, grad)}
         rows.append(dict(init_k=init_k, loss=float(loss), **gn))
     return rows

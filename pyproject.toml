@@ -21,6 +21,7 @@ packages = [
     "data.viz",
     "data.tests",
     "example",
+    "example.analysis",
     "example.models",
     "example.tests",
     "viz",

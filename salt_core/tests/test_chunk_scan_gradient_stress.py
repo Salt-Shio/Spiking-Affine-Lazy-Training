@@ -63,15 +63,3 @@ def test_gradient_invariant_across_chunk_sizes_with_two_fires():
         for i in range(7):
             assert_allclose(grad_W[0, i], oracle[0, i],
                              f"chunk_size={chunk_size}: d(loss)/dW[0,{i}] 應該跟 chunk_size=1 一致")
-
-
-TESTS = [
-    test_gradient_invariant_across_chunk_sizes_with_two_fires,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

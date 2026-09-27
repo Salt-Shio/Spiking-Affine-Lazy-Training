@@ -201,17 +201,3 @@ def test_empty_layer_output():
 
     assert not bool(spike_mask_2.any())
     assert_allclose(v_final_2[0], 0.0, "沒有任何真實輸入事件,電壓應該維持初始值 0")
-
-
-TESTS = [
-    test_two_layer_fc_forward,
-    test_two_layer_fc_forward_multi_fire_interleaved,
-    test_empty_layer_output,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

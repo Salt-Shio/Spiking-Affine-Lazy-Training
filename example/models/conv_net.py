@@ -183,7 +183,7 @@ class ConvNetCompressed:
         # `_compress_candidates` 用 `mode='drop'` scatter 處理不合法/溢出
         # 候選,踩到 XLA 一個 GPU determinism codegen bug,已經在
         # `salt_core/connectivity/conv.py::_compress_candidates` 改用「垃圾桶」
-        # 寫法修掉(不用 mode='drop',邏輯驗證見 xla_repro/verify_trash_row_equivalence.py),
+        # 寫法修掉(不用 mode='drop',邏輯驗證見 archive/xla_repro/verify_trash_row_equivalence.py),
         # 換回 vmap(比 lax.map 快,batch=8 時量過差距達 10 倍)。
         # lax.map 版本(修法生效前的暫時繞法)保留在下面當註解,不要刪除。
         return jax.vmap(self.apply, in_axes=(None, 0, 0, 0, 0, 0))(

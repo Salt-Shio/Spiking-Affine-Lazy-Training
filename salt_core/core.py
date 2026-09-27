@@ -45,24 +45,11 @@ def create_affine_maps(n_ms: jax.Array, w: jax.Array, tau: float) -> AffineMap:
     return AffineMap(a=a, b=b)
 
 
-def normalize_real_events(n_real_events: jax.Array | int,
-                           n_out_neurons: int, n_total_events: int) -> jax.Array:
-    """把「這條佇列前面幾筆是真事件」這個資訊統一成一種形式:shape
-    `(n_out_neurons,)` 的 int32 陣列,每個元素是那顆神經元佇列裡的真事件數。
+def normalize_real_events(n_real_events: jax.Array | int, n_out_neurons: int) -> jax.Array:
+    """每顆神經元佇列裡的真事件數,統一成 (n_out_neurons,) int32 陣列。
 
-    接受兩種輸入:
-      - 純量(int 或 traced scalar):所有神經元共用同一個真事件數
-        (密集版佇列:所有神經元看同一條事件軸)。沒有 padding 就傳
-        n_total_events(整條都是真事件)。
-      - shape (n_out_neurons,) 陣列:每顆神經元各自的真事件數
-        (壓縮版佇列:每顆神經元有自己的子序列)。
-
-    `n_total_events` 只用來對照理解,不參與計算(留著是因為呼叫端已經有它、
-    未來若要加範圍檢查也用得到)。正規化之後,`mask_pad_events` /
-    `run_layer_forward` 內部只需要處理陣列一種形式(見 docs/問題紀錄.md
-    第二節「n_real_events 傳法不一致」)。
+    n_real_events: 純量(所有神經元共用)或 (n_out_neurons,) 陣列(每顆各自的數)。
     """
-    del n_total_events
     arr = jnp.asarray(n_real_events, dtype=jnp.int32)
     return jnp.broadcast_to(arr, (n_out_neurons,))
 
@@ -86,7 +73,7 @@ def mask_pad_events(maps: AffineMap,
     成 no-op。
     """
     n_out_neurons, n_total_events = maps.a.shape
-    n_real = normalize_real_events(n_real_events, n_out_neurons, n_total_events)
+    n_real = normalize_real_events(n_real_events, n_out_neurons)
     real_mask = jnp.arange(n_total_events)[None, :] < n_real[:, None]  # (n_out_neurons, n_total_events)
     return AffineMap(a=jnp.where(real_mask, maps.a, 1.0),
                       b=jnp.where(real_mask, maps.b, 0.0))

@@ -211,18 +211,3 @@ def test_end_to_end_compressed_matches_dense_with_multiple_fires_and_pad_input()
     assert int(ev_dense.n_real_events) >= 2, \
         f"前置確認:這個場景至少要有兩顆神經元 fire 才夠測排序,實際 {int(ev_dense.n_real_events)}"
     _extracted_events_equal(ev_dense, ev_compressed)
-
-
-TESTS = [
-    test_extract_output_events_matches_worked_example_section_5_3,
-    test_tiebreak_stable_when_multiple_neurons_share_same_global_j,
-    test_end_to_end_compressed_matches_dense_all_four_fields,
-    test_end_to_end_compressed_matches_dense_with_multiple_fires_and_pad_input,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

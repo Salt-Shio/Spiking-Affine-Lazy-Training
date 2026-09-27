@@ -155,7 +155,7 @@ def test_quantization_error_matches_manual_computation():
 def test_quantize_params_preserves_shapes_and_alignment():
     layers = _layers()
     params = _params(layers)
-    q = quantize_params(layers, params, bits=8)
+    q = quantize_params(params, bits=8)
     assert len(q) == len(layers)
     for w, w_q in zip(params, q):
         assert w_q.shape == w.shape
@@ -166,7 +166,7 @@ def test_quantize_params_clip_percentile_100_equals_max_abs_default():
     時的預設(max-abs)行為一致——100th percentile 精確等於最大值。"""
     layers = _layers()
     params = _params(layers)
-    q_pct = quantize_params(layers, params, bits=8, per_channel=True, clip_percentile=100.0)
+    q_pct = quantize_params(params, bits=8, per_channel=True, clip_percentile=100.0)
     q_direct = tuple(fake_quantize_tensor(w, bits=8, axis=0)[0] for w in params)
     for a, b in zip(q_pct, q_direct):
         assert np.allclose(np.asarray(a), np.asarray(b), atol=TOL)
@@ -177,8 +177,8 @@ def test_quantize_params_lower_percentile_increases_error():
     整體 mse 不該系統性變小(推導文件步驟 2 的 trade-off 方向性檢查)。"""
     layers = _layers()
     params = _params(layers)
-    q_full = quantize_params(layers, params, bits=8, clip_percentile=100.0)
-    q_clip = quantize_params(layers, params, bits=8, clip_percentile=50.0)
+    q_full = quantize_params(params, bits=8, clip_percentile=100.0)
+    q_clip = quantize_params(params, bits=8, clip_percentile=50.0)
     err_full = sum(quantization_error(w, w_hat)["mse"] for w, w_hat in zip(params, q_full))
     err_clip = sum(quantization_error(w, w_hat)["mse"] for w, w_hat in zip(params, q_clip))
     assert err_clip >= err_full - TOL

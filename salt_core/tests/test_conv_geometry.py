@@ -273,26 +273,3 @@ def test_without_event_gain_cross_layer_gradient_is_exactly_zero():
 
     g = jax.grad(fwd_no_gain)(_w1())
     assert _tol_close(g, 0.0, tol=TOL), g
-
-
-TESTS = [
-    test_unravel_conv_source_roundtrip,
-    test_reference_anchored_n1_one_to_one,
-    test_reference_anchored_n3_multiple_candidates_per_axis,
-    test_compressed_matches_ref_multi_output_channels,
-    test_compressed_matches_ref_multi_input_channels,
-    test_compressed_matches_ref_n1_stride1_pad0,
-    test_compressed_matches_ref_n3_k5_stride2_pad2,
-    test_compressed_matches_ref_random_various_geometry,
-    test_compressed_realistic_scale_smoke,
-    test_conv_to_conv_cross_layer_gradient_matches_hand_calc,
-    test_conv_to_fc_cross_layer_gradient_matches_hand_calc,
-    test_without_event_gain_cross_layer_gradient_is_exactly_zero,
-]
-
-
-if __name__ == "__main__":
-    for t in TESTS:
-        t()
-        print(f"PASS: {t.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

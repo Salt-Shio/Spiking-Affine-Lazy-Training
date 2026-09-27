@@ -82,18 +82,3 @@ def test_input_panel_no_events_is_all_background():
 
     for t in range(panel.n_frames):
         assert not panel.frame(t).any()
-
-
-TESTS = [
-    test_input_panel_places_event_at_correct_pixel_and_frame,
-    test_input_panel_ignores_padding_beyond_n_real_events,
-    test_input_panel_is_always_discrete_with_no_value_range,
-    test_input_panel_invalid_channel_raises,
-    test_input_panel_no_events_is_all_background,
-]
-
-if __name__ == "__main__":
-    for t in TESTS:
-        t()
-        print(f"PASS: {t.__name__}")
-    print(f"\n全部 {len(TESTS)} 項通過")

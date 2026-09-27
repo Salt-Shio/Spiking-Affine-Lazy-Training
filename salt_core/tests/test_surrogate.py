@@ -125,17 +125,3 @@ def test_gradient_flows_through_fire_reset():
     assert_allclose(grad[0], 0.898341, "d(loss)/dw0(手算鏈式法則核對)", tol=1e-4)
     assert_allclose(grad[1], 0.680819, "d(loss)/dw1(手算鏈式法則核對)", tol=1e-4)
     assert_allclose(grad[2], 0.910170, "d(loss)/dw2(手算鏈式法則核對)", tol=1e-4)
-
-
-TESTS = [
-    test_forward_matches_exact_heaviside,
-    test_backward_matches_smooth_primitive_derivative,
-    test_gradient_flows_through_fire_reset,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

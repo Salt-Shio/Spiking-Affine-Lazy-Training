@@ -7,7 +7,7 @@ loss/spike 數離群的樣本;再重建該 epoch 實際的 batch 切法(PRNG spl
 就是路徑 B——這份快照是真正爆炸前一刻的權重,不是近似值。
 
 用法:
-  python example/debug-test/inspect_explosion_batch.py <exp_dir_name> \
+  python -m example.analysis.inspect_explosion_batch <exp_dir_name> \
       --snapshot-epoch N --target-epoch M [--top-k K]
 """
 import argparse

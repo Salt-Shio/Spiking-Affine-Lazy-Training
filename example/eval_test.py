@@ -36,8 +36,6 @@ from example.paths import DATASET_ROOT
 from example.utils import (EVAL_DIRNAME, load_run_params, load_run_record,
                            make_evaluate, rebuild_layers)
 
-TEST_POOL_SIZE = 10000   # N-MNIST Test/ 全量(見 data.src.nmnist.build_split）
-
 
 def _confusion_matrix(labels: np.ndarray, preds: np.ndarray, n_classes: int) -> np.ndarray:
     """列 = 真實類別、欄 = 預測類別,標籤就是類別的數字 index(N-MNIST 是 0–9)。"""
@@ -60,11 +58,10 @@ def evaluate_run(exp_dir: str, which: str, n_samples: int | None,
 
     dataset = NMNISTDataset(DATASET_ROOT, max_events=int(data_cfg["max_events"]))
     if n_samples is None:
-        n_samples = TEST_POOL_SIZE if which == "test" else int(data_cfg["val_size"])
+        n_samples = dataset.pool_size("test") if which == "test" else int(data_cfg["val_size"])
     split = dataset.build_split(seed=seed, n_samples=n_samples, which=which)
 
-    eval_batch_size = int(data_cfg.get("batch_size")
-                          or run_record["config"]["train"]["batch_size"])
+    eval_batch_size = int(run_record["config"]["train"]["batch_size"])
     evaluate = make_evaluate(net, decoder, eval_batch_size)
     accuracy, loss, preds, capacity_regrows = evaluate(params, split)
     labels = np.asarray(split.labels)
@@ -93,7 +90,7 @@ def main() -> None:
     parser.add_argument("exp_dir", help="一次訓練的輸出目錄")
     parser.add_argument("--which", choices=("test", "val"), default="test")
     parser.add_argument("--n", type=int, default=None,
-                        help="抽幾筆(預設:test 全量 10000、val 用 config 的 val_size)")
+                        help="抽幾筆(預設:test 全量、val 用 config 的 val_size)")
     parser.add_argument("--seed", type=int, default=0,
                         help="抽樣 seed(決定抽哪些、順序),預設 0")
     parser.add_argument("--params", choices=("best", "final"), default="best",

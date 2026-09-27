@@ -138,22 +138,16 @@ def _percentile_abs_threshold(x: jnp.ndarray, percentile: float, axis: int | Non
     return thresh.reshape(shape)
 
 
-def quantize_params(layers: list, params: tuple, *, bits: int, per_channel: bool = True,
+def quantize_params(params: tuple, *, bits: int, per_channel: bool = True,
                     clip_percentile: float = 100.0) -> tuple:
-    """對齊 `layers` 的整份權重(每層一個陣列的 tuple)套用 PTQ。
+    """整份權重(每層一個陣列的 tuple)套用 PTQ,回傳同形狀的 fake-quantized 權重。
 
-    `per_channel=True` 時用每層 `weight_shape` 的 axis 0(`ConvLayer`/
-    `FCLayer` 都是輸出 channel/neuron)當量化軸,`per_channel=False` 是
-    per-tensor,兩者的取捨見推導文件步驟 3。`clip_percentile` 是推導文件
-    步驟 2 網格搜尋的旋鈕:`100.0`(預設)等於 max-abs,呼叫端掃一組候選值
-    (例如 100/99.9/99/95)搭配 `quantization_error` 或直接接
-    `example.utils.make_evaluate` 量測 PTQ 準確率,取最好的組合。
-
-    只換權重數值,不動 `layers`(容量、幾何、chunk_size 都不變)——回傳的
-    `params` 可以直接餵給既有的 `run_network`/`make_evaluate`。
+    per_channel: True 用 axis 0(輸出 channel/neuron)當量化軸,False 是 per-tensor。
+    clip_percentile: 截斷門檻取 |w| 的第幾百分位,100 等於 max-abs。
+    取捨見 docs/math/權重量化推導.md。
     """
     out = []
-    for layer, w in zip(layers, params):
+    for w in params:
         axis = 0 if per_channel else None
         threshold = _percentile_abs_threshold(w, clip_percentile, axis=axis)
         w_hat, _scale = fake_quantize_tensor(w, bits, axis=axis, threshold=threshold)

@@ -43,7 +43,7 @@ def _resample_quantity(layer, quantity: str, trace: LayerForwardTrace,
 
 class InputChannelPanel:
     """原始輸入(dataset 樣本本身,`(event_times, x, y, c, n_real_events)`,
-    跟 `example/replay_epoch.py` 的 `_load_train_sample` 回傳的格式一致)某一
+    跟 `example/replay_epoch.py` 的 `load_train_sample` 回傳的格式一致)某一
     個 channel 的逐 frame 空間快照,跟 `ConvChannelPanel` 同構(攤成
     `(h_in, w_in)` 圖、channel-major 定址跟 `salt_core.layers.
     raw_events_to_stream` 用的 `c*(h*w)+y*w+x` 公式一致)。不用重跑

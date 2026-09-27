@@ -32,7 +32,6 @@ from salt_core.chunk_scan import (LayerForwardResult, LayerForwardResultInt,
                                    run_layer_forward_int_traced, run_layer_forward_traced)
 from salt_core.core import spike_step_upper_bound
 from salt_core.connectivity.conv import (CompressedConvQueue, build_conv_queue_compressed,
-                                          conv_layer_receptive_field_firing_rate,
                                           unravel_conv_source)
 from salt_core.connectivity.fc import FCQueue, build_fc_queue
 from salt_core.fixed_point import OverflowMode, RoundMode
@@ -224,9 +223,7 @@ class ConvLayer:
     s: int
     p: int
     # 初始權重尺度 —— 必填,不校準,委定值見 docs/問題紀錄.md §12(firing-rate
-    # 目標帶準則廢棄,固定 init_k=5.0)。找 k 的搜尋能力(舊 `salt_core/calibrate.py`)
-    # 已移除;`calibration_measure` 這個量測 primitive 還留著,給
-    # `example/tests/verify_init_k.py` 的獨立數值驗證用。
+    # 目標帶準則廢棄,固定 init_k=5.0)。
     init_k: float
     # 神經元動力學(逐層)—— 有預設,是「起點」,config 要覆蓋就覆蓋。
     tau: float = 16.0
@@ -250,7 +247,7 @@ class ConvLayer:
     # (預設)代表「沒特別設起始猜測」,`__post_init__` 落到 `self.L`,對齊這個
     # 欄位存在之前的行為(safe fallback,永遠夠用)——這是給**沒有經過**
     # `example/train_conv_compressed.py` 動態放大迴圈的呼叫端(例如
-    # `example/tests/verify_init_k.py` 直接用 `build_network`)用的安全預設,
+    # 直接用 `build_network` 的分析腳本)用的安全預設,
     # 不會因為這個欄位的新增而默默截斷掃描、算出錯的結果。訓練腳本要用小
     # 起始值讓它自己長(跟 `L`/`max_out_spikes` 同一種「config 給起始猜測」
     # 的用法),config 就直接填這個欄位,不要靠這個 fallback。
@@ -405,32 +402,6 @@ class ConvLayer:
         反查;`result.overflowed` 已經逐步疊好。
         """
         return self._run_forward_quantized(params, in_stream, round_mode=round_mode, trace=True)
-
-    def calibration_measure(self, calib_stream_batch: EventStream, chunk: int = 16):
-        """回傳一個 `measure(weight) -> 純量`:對一批校準輸入流跑這層 forward,
-        算感受野正規化的 firing rate(每顆神經元 spike 數 / 自己的感受野事件數,
-        只對感受野事件數 > 0 的神經元取平均),再對整批樣本取平均。分批 vmap
-        避免整批一次建構壓縮佇列 OOM。自動找 init_k 的搜尋管線(舊
-        `salt_core/calibrate.py`)已移除(見 docs/問題紀錄.md §12),這個量測
-        primitive 留著給 `example/tests/verify_init_k.py` 的獨立數值驗證用。"""
-        n = calib_stream_batch.event_times.shape[0]
-
-        def measure(w: jax.Array) -> float:
-            def one(s: EventStream):
-                _out, result, _diag = self.forward(w, s)
-                x, y, _c = unravel_conv_source(s.event_source_idx, self.h_in, self.w_in)
-                return conv_layer_receptive_field_firing_rate(
-                    result.spike_mask, x, y, self.s, self.p, self.h_out, self.w_out,
-                    self.k, self.oc, s.n_real_events)
-
-            total = 0.0
-            for lo in range(0, n, chunk):
-                sub = type(calib_stream_batch)(*(f[lo:min(lo + chunk, n)]
-                                                  for f in calib_stream_batch))
-                total += float(jnp.sum(jax.vmap(one)(sub)))
-            return total / n
-
-        return measure
 
     def grown_to_fit(self, diag: LayerDiag) -> "ConvLayer":
         new_L = (_grow(diag.max_real_queue, self.L, self.L_grow_factor) # 這裡算完必定 >= self.L

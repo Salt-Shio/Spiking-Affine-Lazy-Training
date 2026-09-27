@@ -1,9 +1,5 @@
 """viz/channel_grid.py 的單元測試(合成陣列,不需要訓練 run)。"""
 import numpy as np
-
-import matplotlib
-matplotlib.use("Agg")
-
 from matplotlib.animation import FuncAnimation
 from matplotlib.colors import to_rgb, to_rgba
 
@@ -491,52 +487,3 @@ def test_animation_mismatched_frame_labels_length_raises():
         pass
     else:
         raise AssertionError("預期 frame_labels 長度不對要拋 ValueError")
-
-
-TESTS = [
-    test_unflatten_channels_matches_channel_major_order,
-    test_unflatten_channels_wrong_length_raises,
-    test_render_creates_one_axes_per_image_with_titles,
-    test_render_without_titles_defaults_to_blank,
-    test_render_mismatched_titles_length_raises,
-    test_render_empty_images_raises,
-    test_render_discrete_true_uses_two_value_colorbar,
-    test_render_without_discrete_keeps_default_colorbar_even_for_bool,
-    test_render_discrete_list_applies_per_image,
-    test_render_discrete_mismatched_length_raises,
-    test_render_without_extent_strips_ticks,
-    test_render_with_extent_keeps_real_axis_coordinates,
-    test_animation_extent_stays_fixed_across_frame_updates,
-    test_render_nan_pixel_uses_pad_color_for_continuous_image,
-    test_render_nan_pixel_uses_pad_color_for_discrete_image,
-    test_animation_nan_region_uses_pad_color,
-    test_animation_build_returns_func_animation_with_expected_axes,
-    test_animation_continuous_color_scale_fixed_across_all_frames,
-    test_animation_update_sets_image_data_for_requested_frame,
-    test_animation_discrete_uses_two_value_colorbar,
-    test_animation_frame_labels_update_suptitle,
-    test_animation_panels_in_same_row_keep_own_box_aspect,
-    test_animation_panel_with_extent_skips_box_aspect_constraint,
-    test_animation_rows_are_independent_of_each_other,
-    test_animation_row_height_weight_scales_row_relative_to_others,
-    test_animation_widths_scale_columns_within_same_row,
-    test_add_row_mismatched_widths_length_raises,
-    test_color_overlay_panel_combines_colors_at_each_pixel,
-    test_color_overlay_panel_custom_background_overrides_default,
-    test_color_overlay_panel_overlapping_pixels_clip_to_one,
-    test_color_overlay_panel_mismatched_panels_and_colors_length_raises,
-    test_color_overlay_panel_empty_panels_raises,
-    test_color_overlay_panel_mismatched_n_frames_raises,
-    test_color_overlay_panel_mismatched_frame_shapes_raises,
-    test_animation_rgb_panel_renders_without_colorbar,
-    test_add_row_without_panels_raises,
-    test_animation_no_rows_raises,
-    test_animation_mismatched_n_frames_raises,
-    test_animation_mismatched_frame_labels_length_raises,
-]
-
-if __name__ == "__main__":
-    for t in TESTS:
-        t()
-        print(f"PASS: {t.__name__}")
-    print(f"\n全部 {len(TESTS)} 項通過")

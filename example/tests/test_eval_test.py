@@ -105,15 +105,3 @@ def test_evaluate_run_outputs_consistent():
     assert np.all((data["preds"] >= 0) & (data["preds"] < N_CLASSES))
     cm_rebuilt = _confusion_matrix(data["labels"], data["preds"], N_CLASSES)
     np.testing.assert_array_equal(cm_rebuilt, cm)
-
-
-TESTS = [
-    test_confusion_matrix_hand,
-    test_evaluate_run_outputs_consistent,
-]
-
-if __name__ == "__main__":
-    for t in TESTS:
-        t()
-        print(f"PASS: {t.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

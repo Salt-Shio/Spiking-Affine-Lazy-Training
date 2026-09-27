@@ -119,22 +119,3 @@ def test_bring_your_own_readout_through_the_primitive_is_not_blocked():
     g = jax.grad(loss)(W)
     assert g.shape == (2, 2)
     assert jnp.any(jnp.abs(g) > 1e-6)
-
-
-TESTS = [
-    test_membrane_regression_returns_v_final,
-    test_rate_returns_s_value_sum_and_hard_count_metric,
-    test_population_groups_are_contiguous_equal_partitions,
-    test_validate_membrane_requires_non_firing_output_layer,
-    test_validate_rate_requires_firing_output_layer,
-    test_validate_population_checks_group_layout,
-    test_decode_is_vmappable,
-    test_bring_your_own_readout_through_the_primitive_is_not_blocked,
-]
-
-
-if __name__ == "__main__":
-    for t in TESTS:
-        t()
-        print(f"PASS: {t.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

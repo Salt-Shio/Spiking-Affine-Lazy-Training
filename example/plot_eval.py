@@ -14,11 +14,6 @@ import argparse
 import os
 
 import matplotlib
-matplotlib.use("Agg")
-# 圖上的軸標籤是中文,matplotlib 預設字型(DejaVu Sans)沒有對應字符會變成
-# 缺字方框——系統裝的文泉驛正黑支援中文,指定當 fallback。
-matplotlib.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei", "DejaVu Sans"]
-matplotlib.rcParams["axes.unicode_minus"] = False
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
@@ -26,6 +21,7 @@ from matplotlib.colors import LinearSegmentedColormap
 
 from data.src.nmnist import CLASS_NAMES
 from example.utils import EVAL_DIRNAME
+from viz.style import apply_style
 
 # 循序色階(連續量值的 heatmap 用),跟 data/viz/nmnist.py 的 OFF_COLOR
 # 同一組色票(dataviz skill references/palette.md 的藍色 100->700 階),
@@ -65,6 +61,8 @@ def main() -> None:
     parser.add_argument("exp_dir", help="一次訓練的輸出目錄")
     parser.add_argument("--which", choices=("test", "val"), default="test")
     args = parser.parse_args()
+    matplotlib.use("Agg")
+    apply_style()
 
     yaml_path = os.path.join(args.exp_dir, EVAL_DIRNAME, f"{args.which}.yaml")
     with open(yaml_path, "r", encoding="utf-8") as f:

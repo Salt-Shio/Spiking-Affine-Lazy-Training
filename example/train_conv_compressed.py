@@ -30,7 +30,7 @@
   (效率門檻,不影響防震盪)。
 
 用法(config 路徑相對於 repo 根目錄,或給絕對路徑):
-  python -m example.train_conv_compressed configs/conv/compressed_baseline.yaml
+  python -m example.train_conv_compressed configs/conv/baseline.yaml
 """
 import argparse
 import datetime

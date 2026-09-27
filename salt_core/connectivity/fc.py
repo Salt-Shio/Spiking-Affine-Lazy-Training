@@ -65,7 +65,7 @@ def build_fc_queue(event_times: jax.Array, event_source_idx: jax.Array, W: jax.A
     # 自己的時間比——神經元的 m_last 初始值是 0。prepend=0 才能讓算出來的
     # 係數跟 docs/math/全連接forward訓練範例.md 第 4 節的手算數字對上。
     n_ms = jnp.diff(event_times, prepend=jnp.zeros(1, dtype=event_times.dtype))
-    n_real = normalize_real_events(n_real_events, n_out_neurons, n_total_events)
+    n_real = normalize_real_events(n_real_events, n_out_neurons)
     is_real = jnp.arange(n_total_events)[None, :] < n_real[:, None]
     delta_t = jnp.where(is_real, n_ms[None, :], 0.0)
     maps = create_affine_maps(delta_t, weights, tau)

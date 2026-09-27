@@ -88,6 +88,14 @@ def test_train_val_pools_disjoint_and_ratio():
     assert ds._train_val_pools() is ds._train_val_pools()
 
 
+def test_pool_size_counts_files():
+    """Train/ 60000 筆,val_fraction=0.1 切成 54000/6000;Test/ 10000 筆。"""
+    ds = _make_dataset()
+    assert ds.pool_size("train") == 54000
+    assert ds.pool_size("val") == 6000
+    assert ds.pool_size("test") == 10000
+
+
 def test_val_fraction_param_actually_changes_the_split():
     """val_fraction 是建構參數,不同的值要真的切出不同大小的 pool——確認它不是
     被忽略的裝飾品。"""
@@ -237,25 +245,3 @@ def test_build_split_n_samples_exceeds_pool_raises():
         assert False, "n_samples 超過 pool 大小應該要噴 ValueError"
     except ValueError:
         pass
-
-
-TESTS = [
-    test_decode_bin_file_matches_known_sample,
-    test_list_files_test_pool_count,
-    test_train_val_pools_disjoint_and_ratio,
-    test_val_fraction_param_actually_changes_the_split,
-    test_build_split_shapes_padding_and_n_real_events,
-    test_max_events_has_no_default_and_controls_array_width,
-    test_build_split_reproducible_and_seed_changes_selection,
-    test_build_split_train_val_test_are_disjoint_pools,
-    test_truncation_takes_earliest_events_not_random_or_latest,
-    test_build_split_actually_exercises_truncation_path,
-    test_build_split_n_samples_exceeds_pool_raises,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

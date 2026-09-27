@@ -58,7 +58,7 @@ root solver;單狀態模型沒有這個性質(上面的引理),不需要那整�
 
 | 資料夾 | 定位 |
 |---|---|
-| `salt_core/` | 核心運算,自成封閉系統。單狀態仿射 LIF、chunk 化 associative scan 前向 / 梯度、事件佇列建構、surrogate gradient、init_k 校準 |
+| `salt_core/` | 核心運算,自成封閉系統。單狀態仿射 LIF、chunk 化 associative scan 前向 / 梯度、事件佇列建構、surrogate gradient |
 | `data/` | N-MNIST 載入 + 視覺化,不依賴 `salt_core/` |
 | `example/` | 拿 `salt_core` + `data` 組一個實際能訓練的模型:conv 網路、訓練腳本、動態容量放大、評估。換資料集 / 換架構改這裡 |
 
@@ -71,6 +71,6 @@ root solver;單狀態模型沒有這個性質(上面的引理),不需要那整�
 
 ```
 pip install -e . --no-deps          # 依賴清單見 requirements.txt
-python -m example.train_conv_compressed configs/conv/compressed_baseline.yaml
+python -m example.train_conv_compressed configs/conv/baseline.yaml
 pytest
 ```

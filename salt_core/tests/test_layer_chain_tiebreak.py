@@ -127,16 +127,3 @@ def test_tiebreak_with_three_neurons_not_in_row_order():
     assert got_order == expected_order, (
         f"tie-break 應該照 spike_event_idx 遞增排序,預期 {expected_order}(B,C,A),"
         f"實際 {got_order}")
-
-
-TESTS = [
-    test_tiebreak_uses_spike_event_idx_not_neuron_order,
-    test_tiebreak_with_three_neurons_not_in_row_order,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

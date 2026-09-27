@@ -56,57 +56,6 @@ def unravel_conv_source(event_source_idx: jax.Array, H_in: int,
     return x, y, c
 
 
-def receptive_field_tap_count(x: jax.Array, y: jax.Array, S: int, P: int,
-                               H_out: int, W_out: int, K: int,
-                               n_real_events: jax.Array | int) -> jax.Array:
-    """每個空間輸出位置有幾筆「真事件」是它的合法 tap。純幾何——只看事件座標、
-    K/S/P、n_real_events,不看 channel / 權重 / tau(候選合不合法只看座標,見
-    docs/math/conv事件佇列建構推導.md 第 1、7 節)。回傳 shape (H_out*W_out,) int32,
-    OC 軸不影響空間合法性,所以只算空間、不含 oc。`n_real_events` 必填:沒有
-    padding 就傳事件總數(等於「所有事件都可能是合法 tap」)。
-
-    init_k 掃描的 receptive-field 正規化 firing rate、$L_1$ 佇列長度量測都用這個。
-    之前是拿全 1 權重跑一次 `build_conv_queue`、數 `b != 0` 反推——把重量級的
-    forward 建構器當幾何 oracle。
-    """
-    x = jnp.asarray(x, dtype=jnp.int32)
-    y = jnp.asarray(y, dtype=jnp.int32)
-    n_events = x.shape[0]
-    N = (K - 1) // S + 1
-    o_y, valid_y, _ = _axis_candidates(y, K, S, P, N, H_out)  # (n_events, N)
-    o_x, valid_x, _ = _axis_candidates(x, K, S, P, N, W_out)  # (n_events, N)
-    valid_2d = valid_y[:, :, None] & valid_x[:, None, :]        # (n_events, N, N)
-    is_real = jnp.arange(n_events) < jnp.asarray(n_real_events, dtype=jnp.int32)
-    valid_2d = valid_2d & is_real[:, None, None]
-
-    o_flat = o_y[:, :, None] * W_out + o_x[:, None, :]          # (n_events, N, N)
-    o_flat = jnp.where(valid_2d, o_flat, H_out * W_out).reshape(-1)  # 不合法標成越界
-    counts = jnp.zeros((H_out * W_out,), dtype=jnp.int32)
-    return counts.at[o_flat].add(valid_2d.reshape(-1).astype(jnp.int32), mode='drop')
-
-
-def conv_layer_receptive_field_firing_rate(spike_mask: jax.Array, x: jax.Array, y: jax.Array,
-                                            S: int, P: int, H_out: int, W_out: int, K: int,
-                                            OC: int, n_real_events: jax.Array | int
-                                            ) -> jax.Array:
-    """給定一次 forward 的 spike_mask,算「每個神經元 spike 數 / 自己真正的
-    感受野事件數」,只對感受野事件數 > 0 的神經元取平均(感受野事件數 0 代表
-    這個神經元這個樣本完全沒機會 fire,不是「fire 比例是 0」,排除掉才不會把
-    平均往下拉)。回傳純量。
-
-    spike_mask: shape (OC*H_out*W_out, max_steps)。感受野事件數是純空間量
-    (`receptive_field_tap_count`),tile 到 OC 個 channel 後跟 spike_mask 的
-    神經元軸對齊。
-    """
-    spatial = receptive_field_tap_count(x, y, S, P, H_out, W_out, K, n_real_events)
-    opportunity = jnp.tile(spatial, OC)  # (OC*H_out*W_out,)
-    spike_count = jnp.sum(spike_mask, axis=1)
-    has_opp = opportunity > 0
-    rate_per_neuron = jnp.where(has_opp, spike_count / jnp.maximum(opportunity, 1), 0.0)
-    return jnp.sum(rate_per_neuron) / jnp.maximum(jnp.sum(has_opp), 1)
-
-
-
 # ============================================================================
 # 壓縮版(任務 7 第二階段):每顆神經元只留自己的相關事件,不是全域事件數。
 # 對應推導見 docs/math/conv事件佇列壓縮版推導.md 全文,這裡的每個區塊都對應
@@ -178,12 +127,12 @@ def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: in
     GPU determinism 相關的 codegen bug(`--xla_gpu_deterministic_ops=true`
     開著、外層 batch `vmap` 時,梯度會算錯——forward 不受影響,純粹是
     backward 的 scatter-add 出錯,細節見 `docs/問題紀錄.md` 第八節、
-    `xla_repro/`)。改法:scatter 目標陣列的兩個維度都多開一格當「垃圾桶」
+    `archive/xla_repro/`)。改法:scatter 目標陣列的兩個維度都多開一格當「垃圾桶」
     (`n_out_spatial+1`、`max_queue_len+1`),不合法/溢出的候選全部指去
     垃圾桶座標——保證是合法範圍內的 index,scatter 從頭到尾不需要真的丟棄
     任何一次寫入;事後把垃圾桶那一整格切掉,效果跟原本完全一樣。跟
     `mode='drop'` 版本逐位元等價,已用多組測資(一般情況、全部合法、全部
-    不合法、L 溢出、空清單)驗證過,見 `xla_repro/verify_trash_row_equivalence.py`。
+    不合法、L 溢出、空清單)驗證過,見 `archive/xla_repro/verify_trash_row_equivalence.py`。
     """
     order = jnp.lexsort((j_flat, n_flat))
     sorted_n = n_flat[order]

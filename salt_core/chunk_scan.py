@@ -143,11 +143,11 @@ def _run_layer_scan(maps: AffineMap, v_th: float, chunk_size: int, max_steps: in
     是 `None`,且 graph 跟舊版逐位元相同(`trace` 是 Python 靜態 bool,
     `if trace` 分支在 trace 期被消掉)。
     """
-    n_out_neurons, n_total_events = maps.a.shape
+    n_out_neurons = maps.a.shape[0]
     # 統一成 (n_out_neurons,) int32:密集版傳純量(所有神經元同一個數)、
     # 壓縮版傳逐神經元陣列、沒傳代表整條都是真事件——正規化之後底下只處理
     # 陣列一種形式(見 core.normalize_real_events)。
-    n_real = normalize_real_events(n_real_events, n_out_neurons, n_total_events)
+    n_real = normalize_real_events(n_real_events, n_out_neurons)
     padded = _pad_queue(maps, chunk_size)
     gather = jax.vmap(lambda arr, idx: jnp.take(arr, idx, mode='clip'))
     chunk_idx_range = jnp.arange(chunk_size)

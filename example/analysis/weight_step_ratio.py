@@ -6,7 +6,7 @@
 放大倍率,不需要碰任何二階微分。
 
 用法:
-  python example/debug-test/weight_step_ratio.py <exp_dir_name>
+  python -m example.analysis.weight_step_ratio <exp_dir_name>
 """
 import argparse
 import glob

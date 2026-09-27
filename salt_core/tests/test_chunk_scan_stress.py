@@ -56,15 +56,3 @@ def test_multi_fire_matches_oracle_across_chunk_sizes():
             f"chunk_size={chunk_size}: got fires {got_fires}, expected {expected_fires}")
         assert abs(float(v_final[0]) - expected_v) < TOL, (
             f"chunk_size={chunk_size}: got v_final={float(v_final[0])}, expected {expected_v}")
-
-
-TESTS = [
-    test_multi_fire_matches_oracle_across_chunk_sizes,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

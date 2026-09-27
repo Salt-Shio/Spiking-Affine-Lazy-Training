@@ -3,9 +3,6 @@
 import math
 import os
 
-import matplotlib
-matplotlib.use("Agg")
-
 from viz.epoch_series import EpochSeriesPlot, read_epoch_series_csv
 
 
@@ -96,26 +93,3 @@ def test_render_static_csv_end_to_end(tmp_path):
 
     assert os.path.isfile(out_path)
     assert os.path.getsize(out_path) > 0
-
-
-TESTS = [
-    test_read_epoch_series_csv_parses_types,
-    test_render_ungrouped_creates_one_subplot_per_column,
-    test_render_grouped_overlays_lines_with_legend,
-    test_render_handles_inf_values_without_crashing,
-    test_render_empty_rows_raises,
-    test_render_static_csv_end_to_end,
-]
-
-if __name__ == "__main__":
-    import pathlib
-    import tempfile
-
-    for t in TESTS:
-        if "tmp_path" in t.__code__.co_varnames:
-            with tempfile.TemporaryDirectory() as d:
-                t(pathlib.Path(d))
-        else:
-            t()
-        print(f"PASS: {t.__name__}")
-    print(f"\n全部 {len(TESTS)} 項通過")

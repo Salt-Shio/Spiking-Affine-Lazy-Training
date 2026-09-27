@@ -122,17 +122,3 @@ def test_without_event_gain_gradient_is_zero():
     for j in range(3):
         assert_allclose(grad_W1[0, j], 0.0,
                          f"沒有 event_gain 時 d(v_final,q)/dW1[0,{j}] 應該恆為 0")
-
-
-TESTS = [
-    test_forward_value_matches_hand_calc,
-    test_cross_layer_gradient_matches_hand_calc,
-    test_without_event_gain_gradient_is_zero,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

@@ -65,7 +65,7 @@ def replay_sample(exp_dir: str, epoch: int, event_times, x, y, c, n_real_events)
     return run_network_traced(layers, in_stream, params)
 
 
-def _load_train_sample(run_record: dict, sample: int):
+def load_train_sample(run_record: dict, sample: int):
     """從 `run.yaml` 存的 config 快照重建同一份決定性 train split,取第
     `sample` 筆——跟訓練時 `dataset.build_split` 用的 seed/n_samples 完全對齊,
     才能保證重跑的是同一筆原始資料。"""
@@ -86,7 +86,7 @@ def main() -> None:
     args = parser.parse_args()
 
     run_record = load_run_record(args.exp_dir)
-    sample = _load_train_sample(run_record, args.sample)
+    sample = load_train_sample(run_record, args.sample)
     layers, params = load_epoch_weights(args.exp_dir, args.epoch)
     first = layers[0]
     in_stream = raw_events_to_stream(*sample, h_in=first.h_in, w_in=first.w_in)

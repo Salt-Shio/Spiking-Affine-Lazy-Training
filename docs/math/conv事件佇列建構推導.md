@@ -9,9 +9,8 @@
 >
 > 這份密集版推導**保留**:§0–§4 的連接結構($o,k$ 公式、扇出數 $N$、tap
 > 索引)、§6 攤平、§8 pad 座標、§9 neuron id ↔ (x,y,c) 還原這些**幾何**
-> 是壓縮版原封不動沿用的基礎(`_axis_candidates` / `unravel_conv_source` /
-> `receptive_field_tap_count` 都對應這裡的節次)。只有「把 tap 攤成密集陣列」
-> 這個最後的組裝步驟被壓縮版取代。閱讀時把 `build_conv_queue` 理解成
+> 是壓縮版原封不動沿用的基礎(`_axis_candidates` / `unravel_conv_source` 都對應
+> 這裡的節次)。只有「把 tap 攤成密集陣列」這個最後的組裝步驟被壓縮版取代。閱讀時把 `build_conv_queue` 理解成
 > 「密集組裝法的數學描述」,不是現存函式。
 
 延續 `docs/math/全連接forward訓練範例.md`(FC 連接結構、forward、訓練)與

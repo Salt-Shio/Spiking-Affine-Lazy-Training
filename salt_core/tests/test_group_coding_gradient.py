@@ -80,16 +80,3 @@ def test_group_coding_gradient_chunk_size_full():
     包含「同一權重被同一神經元的兩筆事件共用」這件事在 chunk 化窗口下
     也不會算錯。"""
     _check_grad_matches_reference(chunk_size=3)
-
-
-TESTS = [
-    test_group_coding_gradient_chunk_size_1,
-    test_group_coding_gradient_chunk_size_full,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")

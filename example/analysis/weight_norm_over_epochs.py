@@ -4,7 +4,7 @@
 爆炸點(epoch38→39、48→49、62→64、73→75)。
 
 用法:
-  python example/debug-test/weight_norm_over_epochs.py <exp_dir_name>
+  python -m example.analysis.weight_norm_over_epochs <exp_dir_name>
 """
 import argparse
 import glob

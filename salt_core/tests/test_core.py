@@ -254,31 +254,3 @@ def test_combine_associativity():
 
     assert_allclose(left_assoc.a, right_assoc.a, "combine 結合律: a")
     assert_allclose(left_assoc.b, right_assoc.b, "combine 結合律: b")
-
-
-TESTS = [
-    test_combine_matches_sequential_composition,
-    test_chunk_no_fire,
-    test_chunk_fire_at_first_event,
-    test_multi_chunk_worked_example,
-    test_process_event_int_matches_hand_computation_no_overflow_no_spike,
-    test_process_event_int_spike_resets_to_zero,
-    test_process_event_int_identity_skips_decay,
-    test_process_event_int_round_vs_truncate_differ,
-    test_process_event_int_negative_tie_rounds_toward_positive_infinity,
-    test_process_event_int_overflow_wraps_and_can_mask_a_true_spike,
-    test_process_event_int_saturate_clamps_and_keeps_true_spike,
-    test_process_event_int_no_threshold_never_fires_or_resets,
-    test_process_event_int_rejects_f_a_too_wide_for_wide_mul_shift,
-    test_process_event_int_rejects_register_width_too_wide_for_int32,
-    test_process_event_int_accepts_f_a_and_register_width_each_within_own_limit,
-    test_process_event_int_rejects_invalid_round_mode,
-    test_combine_associativity,
-]
-
-
-if __name__ == "__main__":
-    for test in TESTS:
-        test()
-        print(f"PASS: {test.__name__}")
-    print(f"\n全部 {len(TESTS)} 項測試通過")
