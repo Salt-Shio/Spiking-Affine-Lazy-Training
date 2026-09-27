@@ -4,7 +4,7 @@
    `v_final` 應該就是輸入的整數權重碼本身——純驗證佇列建構、權重 gather、
    dtype 轉型這條管線本身接對了。
 2. **接線正確性**:`FCLayer.forward` 走整數 backend 時內部的每一塊(佇列建構、
-   `apply_decay_table_int`、`chunk_scan.run_layer_forward_int`)都各自有單元
+   `apply_decay_table_int`、`quant.scan.run_layer`)都各自有單元
    測試,這裡驗證組裝起來的結果跟直接呼叫這些元件完全一致。
 3. **conv catch-up**:真 tap 之後的 catch-up 衰減要真的套用到 `v_final`。
 4. **跟訓練容量設定無關**:整數版每步一筆事件,不受 `ConvLayer.max_steps` 影響。
@@ -24,12 +24,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from salt_core.chunk_scan import run_layer_forward_int
-from salt_core.connectivity.fc import build_fc_structure, fc_float_values
+from salt_core.connectivity.fc import build_fc_structure, fc_weight_codes
 from salt_core.layer_chain import EventStream
 from salt_core.layers import ConvLayer, FCLayer, run_network
 from salt_core.quant.backend import QuantBackend, QuantizedLayerParams
-from salt_core.quantize import apply_decay_table_int, build_decay_table_int
+from salt_core.quant.codes import apply_decay_table_int, build_decay_table_int
+from salt_core.quant.scan import run_layer
 
 QUANT = QuantBackend()
 
@@ -83,7 +83,7 @@ def test_fc_forward_quantized_single_identity_event_matches_hand_computation():
 
 def test_fc_forward_quantized_matches_manual_assembly_of_trusted_primitives():
     """`FCLayer.forward` 走整數 backend 組裝起來的結果,跟直接呼叫
-    佇列建構/`apply_decay_table_int`/`run_layer_forward_int` 完全一致
+    佇列建構/`apply_decay_table_int`/`run_layer` 完全一致
     ——多筆事件、真的會查表衰減的案例(不是上面那個 identity 特例)。"""
     tau = 4.0
     layer = _fc_layer(tau)
@@ -95,11 +95,10 @@ def test_fc_forward_quantized_matches_manual_assembly_of_trusted_primitives():
 
     structure = build_fc_structure(in_stream.event_times, in_stream.event_source_idx,
                                    in_stream.n_real_events)
-    b = fc_float_values(structure, params.q, tau, in_stream.event_gain).b
-    a_int, is_identity = apply_decay_table_int(jnp.broadcast_to(structure.delta_t, b.shape),
+    q_int = fc_weight_codes(structure, params.q)
+    a_int, is_identity = apply_decay_table_int(jnp.broadcast_to(structure.delta_t, q_int.shape),
                                                params.decay_table_int)
-    q_int = b.astype(jnp.int32)
-    expected = run_layer_forward_int(a_int, is_identity, q_int, params.v_th_int,
+    expected = run_layer(a_int, is_identity, q_int, params.v_th_int,
                                      f_a=params.f_a, f_V=params.f_V, i_V=params.i_V)
 
     assert np.array_equal(np.asarray(result_q.v_final), np.asarray(expected.v_final))

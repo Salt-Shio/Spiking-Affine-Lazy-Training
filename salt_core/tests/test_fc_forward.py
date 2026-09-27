@@ -17,7 +17,7 @@
 import jax.numpy as jnp
 
 from salt_core.chunk_scan import run_layer_forward
-from salt_core.connectivity.fc import build_fc_structure, fc_float_values
+from salt_core.connectivity.fc import build_fc_structure, fc_float_values, fc_weight_codes
 
 TOL = 1e-4
 
@@ -86,3 +86,14 @@ def test_fc_structure_pad_positions_are_identity_with_zero_delta_t():
     assert list(structure.delta_t) == [1, 1, 0]
     assert float(maps.a[0, 2]) == 1.0
     assert float(maps.b[0, 2]) == 0.0
+
+
+def test_fc_weight_codes_are_int32_and_match_float_values_b():
+    """整數數值段直接取權重碼,值要跟浮點數值段的 b 一樣(pad 位置都是 0),dtype 是 int32。"""
+    event_times = jnp.array([1.0, 2.0, 1e12])
+    structure = build_fc_structure(event_times, jnp.array([0, 1, 0]), 2)
+    q = jnp.array([[5, -3], [2, 7]], dtype=jnp.int32)
+    codes = fc_weight_codes(structure, q)
+    assert codes.dtype == jnp.int32
+    assert codes.tolist() == [[5, -3, 0], [2, 7, 0]]
+    assert jnp.array_equal(codes, fc_float_values(structure, q, 4.0, None).b)

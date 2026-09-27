@@ -31,8 +31,10 @@ import jax.numpy as jnp
 from salt_core.backend import FLOAT
 from salt_core.capacity import Capacity, LayerDiag
 from salt_core.connectivity.conv import (ConvQueueStructure, build_conv_structure,
-                                          conv_float_values, tile_channels, unravel_conv_source)
-from salt_core.connectivity.fc import FCQueueStructure, build_fc_structure, fc_float_values
+                                          conv_float_values, conv_weight_codes, tile_channels,
+                                          unravel_conv_source)
+from salt_core.connectivity.fc import (FCQueueStructure, build_fc_structure, fc_float_values,
+                                        fc_weight_codes)
 from salt_core.core import AffineMap
 from salt_core.layer_chain import (EventStream, extract_output_events,
                                     extract_output_events_compressed)
@@ -83,6 +85,10 @@ class Layer(Protocol):
         """浮點數值段,a、b 形狀 (n_neurons, 佇列長度)。"""
         ...
 
+    def gather_weight_codes(self, structure, q: jax.Array) -> jax.Array:
+        """整數數值段:每欄的整數權重碼,int32,(n_neurons, 佇列長度),非真事件是 0。"""
+        ...
+
     def neuron_delta_t(self, structure) -> jax.Array:
         """逐神經元的 Δt,(n_neurons, 佇列長度)。"""
         ...
@@ -103,7 +109,7 @@ class Layer(Protocol):
 class LayerOutput(NamedTuple):
     """一層 forward 的輸出。"""
     stream: EventStream                  # 給下一層的輸出事件流
-    result: NamedTuple                   # 浮點是 LayerForwardResult,整數是 LayerForwardResultInt
+    result: NamedTuple                   # 浮點是 LayerForwardResult,整數是 QuantLayerResult
     diag: LayerDiag
     trace: LayerForwardTrace | None      # trace=True 才有
 
@@ -271,6 +277,10 @@ class ConvLayer:
         """浮點數值段,a、b 形狀 (n_neurons, L)。"""
         return conv_float_values(structure, w, self.tau, event_gain)
 
+    def gather_weight_codes(self, structure: ConvQueueStructure, q: jax.Array) -> jax.Array:
+        """整數數值段,int32,(n_neurons, L)。"""
+        return conv_weight_codes(structure, q)
+
     def neuron_delta_t(self, structure: ConvQueueStructure) -> jax.Array:
         """逐神經元的 Δt,(n_neurons, L)。"""
         return tile_channels(structure.delta_t, self.oc)
@@ -380,6 +390,10 @@ class FCLayer:
                      event_gain: jax.Array | None) -> AffineMap:
         """浮點數值段,a、b 形狀 (n_out, 輸入流長度)。"""
         return fc_float_values(structure, w, self.tau, event_gain)
+
+    def gather_weight_codes(self, structure: FCQueueStructure, q: jax.Array) -> jax.Array:
+        """整數數值段,int32,(n_out, 輸入流長度)。"""
+        return fc_weight_codes(structure, q)
 
     def neuron_delta_t(self, structure: FCQueueStructure) -> jax.Array:
         """逐神經元的 Δt,(n_out, 輸入流長度),每顆神經元都一樣。"""

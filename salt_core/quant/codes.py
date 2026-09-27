@@ -1,29 +1,9 @@
-"""量化 primitive,FPGA 部署三部曲(權重/剪枝/膜電位)第 1、3 步共用。
+"""量化用的整數碼:權重碼、衰減整數查表、整數門檻、i_V 位元數公式。都是離線算好、
+直接存進 FPGA 的常數,硬體不會執行這一步。推導見 docs/math/權重量化推導.md、
+docs/math/膜電位量化推導.md。
 
-分三群:
-
-- **權重量化(第 1 步)**:對稱、無 zero-point 的線性量化——`quantize_to_int`/
-  `fake_quantize_tensor`/`quantization_error`/`quantize_params`。推導見
-  docs/math/權重量化推導.md;方法決策見 docs/規格書.md「FPGA 部署:權重量化」。
-- **膜電位量化的離線常數(第 3 步)**:$a_k$ 衰減整數查表(`delta_t_max`/
-  `build_decay_table_int`/`apply_decay_table_int`)、整數門檻(`v_th_to_int`)。
-  這些是建表/建門檻,只做一次,不跑遞迴;逐事件的整數遞迴在
-  `core.process_event_int`/`chunk_scan.run_layer_forward_int`,用到的定點數
-  運算電路在 `salt_core/fixed_point.py`。
-- **$i_V$ 位元數公式(第 3 步)**:`iv_from_measurement`/`iv_layer`/`waste`。
-  推導見 docs/math/膜電位量化推導.md。
-
-浮點數換成整數碼(權重碼、門檻、查表碼)一律用 `round_half_away_from_zero`。
-這些都是離線算好直接存進 FPGA 的常數,硬體不會執行這一步。
-
-放 salt_core:都是純數值運算,不是這個專案專屬(`quantize_params` 額外需要知道
-`salt_core.layers` 的權重 axis 慣例:ConvLayer/FCLayer 的 `weight_shape` 都是
-axis 0 = 輸出 channel/neuron,但不碰 data/example),跟 `salt_core/dormant.py`
-同一個放置判準。
-
-權重量化目前只服務 PTQ(post-training,不重訓)。QAT 需要的
-straight-through estimator(`jax.custom_vjp`)還沒實作,見權重量化推導文件
-步驟 4。
+浮點數換成整數碼一律用 round_half_away_from_zero。逐事件的整數遞迴在
+quant.scan,用到的定點數運算電路在 quant.fixed_point。
 """
 import math
 
@@ -40,20 +20,20 @@ def max_weight_code(bits: int) -> int:
 def round_half_away_from_zero(x: jnp.ndarray) -> jnp.ndarray:
     """四捨五入,卡在正中間時往離零的方向(2.5→3、-2.5→-3),不是
     `jnp.round` 預設的逢五取偶(2.5→2)。只用在離線、一次性把浮點數換成
-    整數碼的場合;逐事件遞迴裡的移位捨入見 `fixed_point.round_shift`。"""
+    整數碼的場合;逐事件遞迴裡的移位捨入見 `quant.fixed_point.round_shift`。"""
     x = jnp.asarray(x)
     return jnp.sign(x) * jnp.floor(jnp.abs(x) + 0.5)
 
 
 # ============================================================================
-# 權重量化
+# 權重碼
 # ============================================================================
 
 def quantize_to_int(x: jnp.ndarray, bits: int, *, axis: int | None = None,
                     threshold: jnp.ndarray | float | None = None):
     """對稱線性量化,回傳 `(q, scale)`:`q` 是 int32 整數碼,`scale` 是量化
     步長 `Δ`(浮點)。`q * scale` 就是量化再反量化的值(見
-    `fake_quantize_tensor`)。
+    `quant.ptq.fake_quantize_tensor`)。
 
     `bits`:位元寬度,整數碼範圍 `{-max_weight_code(bits), ..., max_weight_code(bits)}`。
     `bits < 2` 無意義(至少要有正負兩格)。
@@ -87,72 +67,6 @@ def quantize_to_int(x: jnp.ndarray, bits: int, *, axis: int | None = None,
     x_clipped = jnp.clip(x, -threshold, threshold)
     q = round_half_away_from_zero(x_clipped / scale).astype(jnp.int32)
     return q, scale
-
-
-def fake_quantize_tensor(x: jnp.ndarray, bits: int, *, axis: int | None = None,
-                         threshold: jnp.ndarray | float | None = None):
-    """對稱線性量化再反量化(模擬量化誤差),不改變 shape。參數見
-    `quantize_to_int`。
-
-    回傳 `(x_hat, scale)`:`x_hat = q * scale` 是乘回物理尺度的浮點數,
-    可以直接餵給 `salt_core.layers` 的 forward 驗證 PTQ 準確率。整數碼 `q`
-    本身要用 `quantize_to_int`。
-    """
-    q, scale = quantize_to_int(x, bits, axis=axis, threshold=threshold)
-    return q * scale, scale
-
-
-def quantization_error(x: jnp.ndarray, x_hat: jnp.ndarray) -> dict:
-    """量化前後的誤差統計,純歸約,不管量化怎麼做的。
-
-    回傳 `{"mse": float, "max_abs_err": float, "sqnr_db": float}`。
-    `sqnr_db`(訊號功率對量化噪聲功率的比值,dB)是推導文件步驟 2 拿來比較
-    不同 clip threshold/bit width 的主要指標;`x`、`x_hat` 全等時 `mse=0`,
-    `sqnr_db` 回傳 `inf`。
-    """
-    x = jnp.asarray(x)
-    x_hat = jnp.asarray(x_hat)
-    err = x - x_hat
-    mse = float(jnp.mean(err ** 2))
-    max_abs_err = float(jnp.max(jnp.abs(err)))
-    signal_power = float(jnp.mean(x ** 2))
-    sqnr_db = float("inf") if mse <= 0.0 else 10.0 * float(jnp.log10(signal_power / mse))
-    return {"mse": mse, "max_abs_err": max_abs_err, "sqnr_db": sqnr_db}
-
-
-def percentile_abs_threshold(x: jnp.ndarray, percentile: float, axis: int | None):
-    """`|x|` 的 percentile 當 clip threshold。`axis=None` 對整個 tensor 取;
-    給定 `axis` 時,對其餘所有軸攤平後在該軸的每個位置各自取,回傳形狀跟
-    `fake_quantize_tensor` 的 `threshold` 參數(keepdims 廣播用)相容。
-    `percentile=100.0` 精確等於 `max(|x|)`,跟 `fake_quantize_tensor` 沒給
-    `threshold` 時的預設行為一致。
-    """
-    abs_x = jnp.abs(x)
-    if axis is None:
-        return jnp.percentile(abs_x, percentile)
-    moved = jnp.moveaxis(abs_x, axis, 0)
-    flat = moved.reshape(moved.shape[0], -1)
-    thresh = jnp.percentile(flat, percentile, axis=1)
-    shape = [1] * abs_x.ndim
-    shape[axis] = -1
-    return thresh.reshape(shape)
-
-
-def quantize_params(params: tuple, *, bits: int, per_channel: bool = True,
-                    clip_percentile: float = 100.0) -> tuple:
-    """整份權重(每層一個陣列的 tuple)套用 PTQ,回傳同形狀的 fake-quantized 權重。
-
-    per_channel: True 用 axis 0(輸出 channel/neuron)當量化軸,False 是 per-tensor。
-    clip_percentile: 截斷門檻取 |w| 的第幾百分位,100 等於 max-abs。
-    取捨見 docs/math/權重量化推導.md。
-    """
-    out = []
-    for w in params:
-        axis = 0 if per_channel else None
-        threshold = percentile_abs_threshold(w, clip_percentile, axis=axis)
-        w_hat, _scale = fake_quantize_tensor(w, bits, axis=axis, threshold=threshold)
-        out.append(w_hat)
-    return tuple(out)
 
 
 # ============================================================================

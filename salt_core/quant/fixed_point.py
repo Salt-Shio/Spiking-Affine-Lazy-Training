@@ -1,7 +1,7 @@
 """定點數運算電路的整數模擬:乘完之後的移位捨入、拆高低兩半的寬乘法、
 寫回暫存器時的溢位處理(繞回或飽和)。對應 FPGA 上膜電位暫存器 $\\tilde V$ 單步更新用到的
 電路(硬體運算式見 docs/math/膜電位量化推導.md「乘法後的捨入」節),
-唯一的正式呼叫端是 `core.process_event_int`。
+唯一的正式呼叫端是 `quant.scan.process_event`。
 
 **全程留在 int32,不開 `jax_enable_x64`**:這是全域設定,開了會讓
 `jax.lax.scan`/`jnp.argmax` 等地方的預設整數 dtype 變成 int64,訓練熱路徑

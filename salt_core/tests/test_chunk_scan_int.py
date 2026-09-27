@@ -1,13 +1,13 @@
-"""`run_layer_forward_int`/`run_layer_forward_int_traced`(整數版掃描)的驗證。
+"""`run_layer`/`run_layer_traced`(整數版掃描)的驗證。
 直接給 `a_int`/`is_identity`/`q_int`,不經過佇列建構,手算鏈式遞迴對答案。
 """
 
 import jax.numpy as jnp
 
-from salt_core.chunk_scan import run_layer_forward_int, run_layer_forward_int_traced
+from salt_core.quant.scan import run_layer, run_layer_traced
 
 
-def test_run_layer_forward_int_two_events_chained_matches_hand_computation():
+def test_run_layer_two_events_chained_matches_hand_computation():
     """單一神經元,兩筆事件鏈式遞迴。i_V=8,f_V=2,f_a=4。
 
     事件 0:is_identity=True(跳過衰減),q=5,f_V=2 => 0+5*4=20,無溢位。
@@ -18,14 +18,14 @@ def test_run_layer_forward_int_two_events_chained_matches_hand_computation():
     q_int = jnp.array([[5, 3]])
     v_th_int = jnp.array([100])
 
-    result = run_layer_forward_int(a_int, is_identity, q_int, v_th_int, f_a=4, f_V=2, i_V=8)
+    result = run_layer(a_int, is_identity, q_int, v_th_int, f_a=4, f_V=2, i_V=8)
 
     assert int(result.v_final[0]) == 27
     assert not bool(result.spike_mask[0, 0]) and not bool(result.spike_mask[0, 1])
     assert not bool(result.overflowed[0, 0]) and not bool(result.overflowed[0, 1])
 
 
-def test_run_layer_forward_int_applies_catchup_decay_after_last_real_tap():
+def test_run_layer_applies_catchup_decay_after_last_real_tap():
     """每一欄都照實套用,conv 的 catch-up 欄(真 tap 之後的純衰減)不能被當
     pad 跳過。tau=16、f_a=4、f_V=4,單顆神經元:
 
@@ -40,25 +40,25 @@ def test_run_layer_forward_int_applies_catchup_decay_after_last_real_tap():
     q_int = jnp.array([[5, 0, 0]])
     v_th_int = jnp.array([10 ** 5])
 
-    result = run_layer_forward_int(a_int, is_identity, q_int, v_th_int, f_a=4, f_V=4, i_V=16)
+    result = run_layer(a_int, is_identity, q_int, v_th_int, f_a=4, f_V=4, i_V=16)
 
     assert int(result.v_final[0]) == 65, "catch-up 欄的衰減要生效,不是停在 80"
 
 
-def test_run_layer_forward_int_scan_length_is_queue_length():
+def test_run_layer_scan_length_is_queue_length():
     """掃描長度等於佇列欄數,每欄一步,`spike_event_idx` 就是欄位索引。"""
     a_int = jnp.zeros((2, 3), dtype=jnp.int32)
     is_identity = jnp.ones((2, 3), dtype=bool)
     q_int = jnp.zeros((2, 3), dtype=jnp.int32)
 
-    result = run_layer_forward_int(a_int, is_identity, q_int, jnp.array(100), f_a=4, f_V=0, i_V=8)
+    result = run_layer(a_int, is_identity, q_int, jnp.array(100), f_a=4, f_V=0, i_V=8)
 
     assert result.spike_mask.shape == (2, 3)
     assert result.overflowed.shape == (2, 3)
     assert list(result.spike_event_idx[1]) == [0, 1, 2]
 
 
-def test_run_layer_forward_int_per_neuron_v_th_fire_and_reset():
+def test_run_layer_per_neuron_v_th_fire_and_reset():
     """兩顆神經元收到完全一樣的事件,各自的 v_th_int 不同——門檻低的那顆該
     fire 並硬重置成 0,門檻高的那顆不該 fire。"""
     a_int = jnp.array([[999], [999]])
@@ -66,7 +66,7 @@ def test_run_layer_forward_int_per_neuron_v_th_fire_and_reset():
     q_int = jnp.array([[20], [20]])   # f_V=0 時直接貢獻 20
     v_th_int = jnp.array([15, 25])
 
-    result = run_layer_forward_int(a_int, is_identity, q_int, v_th_int, f_a=4, f_V=0, i_V=8)
+    result = run_layer(a_int, is_identity, q_int, v_th_int, f_a=4, f_V=0, i_V=8)
 
     assert bool(result.spike_mask[0, 0]), "neuron0: 20>=15,應該 fire"
     assert int(result.v_final[0]) == 0, "fire 後硬重置成 0"
@@ -74,7 +74,7 @@ def test_run_layer_forward_int_per_neuron_v_th_fire_and_reset():
     assert int(result.v_final[1]) == 20
 
 
-def test_run_layer_forward_int_overflow_flag_set_and_propagates_to_v_final():
+def test_run_layer_overflow_flag_set_and_propagates_to_v_final():
     """i_V=4,f_V=0(總位元 4,範圍 [-8,7]),單一事件 q=9:0+9=9,超出範圍一格,
     繞回去是 9-16=-7,overflowed 應該是 True,v_final 反映繞回去之後的值。"""
     a_int = jnp.array([[999]])
@@ -82,21 +82,21 @@ def test_run_layer_forward_int_overflow_flag_set_and_propagates_to_v_final():
     q_int = jnp.array([[9]])
     v_th_int = jnp.array([100])
 
-    result = run_layer_forward_int(a_int, is_identity, q_int, v_th_int, f_a=4, f_V=0, i_V=4)
+    result = run_layer(a_int, is_identity, q_int, v_th_int, f_a=4, f_V=0, i_V=4)
 
     assert bool(result.overflowed[0, 0])
     assert int(result.v_final[0]) == -7
     assert not bool(result.spike_mask[0, 0])
 
 
-def test_run_layer_forward_int_traced_matches_untraced_and_last_v_step_is_v_final():
+def test_run_layer_traced_matches_untraced_and_last_v_step_is_v_final():
     a_int = jnp.array([[999, 12]])
     is_identity = jnp.array([[True, False]])
     q_int = jnp.array([[5, 3]])
     v_th_int = jnp.array([100])
 
-    untraced = run_layer_forward_int(a_int, is_identity, q_int, v_th_int, f_a=4, f_V=2, i_V=8)
-    traced, v_steps = run_layer_forward_int_traced(a_int, is_identity, q_int, v_th_int,
+    untraced = run_layer(a_int, is_identity, q_int, v_th_int, f_a=4, f_V=2, i_V=8)
+    traced, v_steps = run_layer_traced(a_int, is_identity, q_int, v_th_int,
                                                     f_a=4, f_V=2, i_V=8)
 
     assert int(traced.v_final[0]) == int(untraced.v_final[0])

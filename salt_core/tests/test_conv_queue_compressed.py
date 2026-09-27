@@ -22,7 +22,7 @@ import numpy as np
 from salt_core.chunk_scan import run_layer_forward
 from salt_core.connectivity.conv import (ConvQueueStructure, _compress_candidates,
                                           _delta_t_three_regimes, build_conv_structure,
-                                          conv_float_values, tile_channels)
+                                          conv_float_values, conv_weight_codes, tile_channels)
 from salt_core.tests._reference import dense_conv_affine_map, finite_diff_grad
 
 TOL = 1e-6
@@ -673,3 +673,23 @@ def test_compressed_event_gain_gradient_matches_dense():
     grad_compressed = jax.grad(compressed_loss)(event_gain0)
     assert bool(jnp.allclose(grad_ref, grad_compressed, atol=_GRAD_TOL)), \
         (grad_ref, grad_compressed)
+
+
+def test_conv_weight_codes_are_int32_and_match_float_values_b():
+    """整數數值段直接取權重碼,值要跟浮點數值段的 b 一樣(非真 tap 都是 0),dtype 是 int32。
+    隨機事件、OC=2,L 取 3 讓部分神經元有 catch-up/identity 欄、部分放不下。"""
+    k_t, k_xy, k_q = jax.random.split(jax.random.PRNGKey(3), 3)
+    n_events = 20
+    event_times = jnp.sort(jax.random.randint(k_t, (n_events,), 0, 100).astype(jnp.float32))
+    kx, ky_ = jax.random.split(k_xy)
+    x = jax.random.randint(kx, (n_events,), 0, 5)
+    y = jax.random.randint(ky_, (n_events,), 0, 5)
+    c = jnp.zeros(n_events, dtype=jnp.int32)
+    q = jax.random.randint(k_q, (2, 1, K, K), -7, 8).astype(jnp.int32)
+
+    structure = build_conv_structure(event_times, x, y, c, K, S, P, H_OUT, W_OUT, 3, n_events)
+    codes = conv_weight_codes(structure, q)
+
+    assert codes.dtype == jnp.int32
+    assert codes.shape == (2 * H_OUT * W_OUT, 3)
+    assert jnp.array_equal(codes, conv_float_values(structure, q, TAU, None).b)

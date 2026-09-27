@@ -1,5 +1,6 @@
 """FC 層的事件佇列建構,分兩段:結構段(build_fc_structure)只看事件,算 Δt;
-數值段(fc_float_values)用權重算出仿射映射。推導見 docs/math/全連接forward訓練範例.md。
+數值段用權重算出仿射映射(fc_float_values)或取出整數權重碼(fc_weight_codes)。
+推導見 docs/math/全連接forward訓練範例.md。
 """
 from typing import NamedTuple
 
@@ -47,3 +48,13 @@ def fc_float_values(structure: FCQueueStructure, w: jax.Array, tau: float,
     maps = create_affine_maps(structure.delta_t, weights, tau)
     maps = AffineMap(a=jnp.broadcast_to(maps.a[None, :], maps.b.shape), b=maps.b)
     return mask_pad_events(maps, structure.n_real_events)
+
+
+def fc_weight_codes(structure: FCQueueStructure, q: jax.Array) -> jax.Array:
+    """FC 佇列的整數數值段:每筆事件的整數權重碼 q[:, 來源],pad 位置是 0。
+
+    q: (n_out, n_in) 整數權重碼。
+    回傳 int32,形狀 (n_out, n_events)。
+    """
+    is_real = jnp.arange(structure.delta_t.shape[0]) < structure.n_real_events
+    return jnp.where(is_real[None, :], q[:, structure.source_idx], 0).astype(jnp.int32)

@@ -7,19 +7,14 @@
 - 幫每個神經元建構事件佇列(全連接/conv 的連接關係,屬於後續任務)
 - chunk 與 chunk 之間的序列迴圈(屬於訓練迴圈,後續任務)
 
-提供兩種單步運算:
-- `process_chunk`:浮點,給定一個已排序、已切好的 chunk 怎麼算,訓練跟
-  浮點推論用。
-- `process_event_int`:整數,一次一筆事件,模擬 FPGA 膜電位暫存器的更新
-  (膜電位量化,見 docs/math/膜電位量化推導.md)。整數運算電路本身在
-  `salt_core/fixed_point.py`。
+單步運算 `process_chunk`:給定一個已排序、已切好的 chunk 怎麼算,訓練跟浮點
+推論用。整數版的單步更新在 `salt_core/quant/scan.py`。
 """
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
-from salt_core.fixed_point import OverflowMode, RoundMode, fit_to_bits, wide_mul_shift
 from salt_core.surrogate import atan_spike
 
 
@@ -146,59 +141,3 @@ def process_chunk(v0: jax.Array, maps: AffineMap, v_th: float,
 
     return ChunkForwardResult(v_final=v_final, is_spiked=any_spiked, spike_idx=spike_idx,
                                v_sequence=v_sequence, s_sequence=s_sequence)
-
-
-# ============================================================================
-# 整數單步運算(膜電位量化模擬)
-# ============================================================================
-
-class EventStepResultInt(NamedTuple):
-    """`process_event_int` 的回傳:一筆事件更新完之後的整數膜電位狀態。"""
-    v_final: jax.Array     # 這筆事件之後的膜電位(int32,spike 時已硬重置為 0)
-    is_spiked: jax.Array   # bool
-    overflowed: jax.Array  # bool,寫回之前的真實值有沒有超出 i_V+f_V 位元
-
-
-def process_event_int(v0_int: jax.Array, a_int: jax.Array, is_identity: jax.Array,
-                      q_int: jax.Array, v_th_int: jax.Array | None, *, f_a: int, f_V: int,
-                      i_V: int, round_mode: RoundMode | str = RoundMode.ROUND,
-                      overflow_mode: OverflowMode | str = OverflowMode.WRAP
-                      ) -> EventStepResultInt:
-    """整數單一事件更新,對應 $\\tilde V_k=r(a_k\\tilde V_{k-1})+q_k$。
-
-    暫存器值是 $\\tilde V\\cdot2^{f_V}$ 的整數;`a_int` 是 Q0.`f_a` 的衰減碼;
-    `q_int` 是權重整數碼,加進暫存器前左移 `f_V` 位。全程只有整數運算,
-    沒有 $s_c$、沒有浮點除法。一次只處理一筆事件,因為硬體每筆事件更新後
-    就立刻捨入。沒有 surrogate gradient,直接硬判斷 `>=`、硬重置成 0。
-
-    `a_int`/`is_identity` 來自 `quantize.apply_decay_table_int`:
-    `is_identity=True`(Δt=0)時跳過衰減,`decayed` 直接等於 `v0_int`。
-
-    `v_th_int=None` 代表這層不 fire(例如膜電位回歸的輸出層):不做 fire
-    判斷、不重置,暫存器一路累積。
-
-    溢位照 `overflow_mode` 處理(`fixed_point.fit_to_bits`,預設繞回,定案
-    理由見 docs/math/膜電位量化推導.md「溢位政策」節):`overflowed` 只回報
-    有沒有發生,`v_final` 是寫回之後的值。fire 判斷比的也是寫回之後的值,
-    因為硬體比較電路讀到的就是暫存器裡的位元。
-
-    位元寬度限制:`f_a <= fixed_point.MAX_SHIFT_BITS`、
-    `i_V + f_V <= fixed_point.MAX_REGISTER_BITS`,超過時由
-    `fixed_point` 的 primitive raise `ValueError`(理由見該模組說明)。
-    """
-    v0_int = jnp.asarray(v0_int, dtype=jnp.int32)
-    a_int = jnp.asarray(a_int, dtype=jnp.int32)
-    q_int = jnp.asarray(q_int, dtype=jnp.int32)
-
-    decayed_active = wide_mul_shift(a_int, v0_int, shift_bits=f_a, round_mode=round_mode)
-    decayed = jnp.where(is_identity, v0_int, decayed_active)
-    v_unfitted = decayed + q_int * (1 << f_V)
-    fitted, overflowed = fit_to_bits(v_unfitted, total_bits=i_V + f_V,
-                                     overflow_mode=overflow_mode)
-
-    if v_th_int is None:
-        return EventStepResultInt(v_final=fitted, is_spiked=jnp.zeros_like(fitted, dtype=bool),
-                                  overflowed=overflowed)
-    is_spiked = fitted >= jnp.asarray(v_th_int, dtype=jnp.int32)
-    v_final = jnp.where(is_spiked, jnp.zeros_like(fitted), fitted)
-    return EventStepResultInt(v_final=v_final, is_spiked=is_spiked, overflowed=overflowed)

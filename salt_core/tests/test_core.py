@@ -5,14 +5,14 @@
    (驗證平行掃描沒有算錯,不是換一種方式重新定義正確性)。
 2. process_chunk 的 spike 偵測/reset,對照 docs/math/單狀態仿射平行掃描推導.md
    跟 docs/TODO.md 裡手算過的具體數字例子逐項核對。
-3. process_event_int(整數單步更新)的衰減捨入、溢位繞回/飽和、fire/reset,手算對答案。
+3. process_event(整數單步更新)的衰減捨入、溢位繞回/飽和、fire/reset,手算對答案。
 不含佇列建構,事件的 (N, w) 都是測試裡直接給定的假資料。
 """
 
 import jax.numpy as jnp
 
-from salt_core.core import (AffineMap, combine, create_affine_maps, process_chunk,
-                            process_event_int)
+from salt_core.core import AffineMap, combine, create_affine_maps, process_chunk
+from salt_core.quant.scan import process_event
 
 TOL = 1e-6
 
@@ -121,7 +121,7 @@ def test_multi_chunk_worked_example():
     assert_allclose(second.v_final, 0.9, "event3 後的最終 V")
 
 
-def test_process_event_int_matches_hand_computation_no_overflow_no_spike():
+def test_process_event_matches_hand_computation_no_overflow_no_spike():
     """i_V=8,f_V=2(總位元 10,範圍 [-512,511]),f_a=4。a_int=12(對應
     build_decay_table_int(4,4.0) 的第一項,即 Δt=1 時 0.75 的整數碼),
     v0_int=40(=10.0 in 2^-2 格),q_int=5。
@@ -129,55 +129,55 @@ def test_process_event_int_matches_hand_computation_no_overflow_no_spike():
     decayed=12*40/16=480/16=30(整除,沒有捨入)。繞回之前的值
     30+5*4=50,在 10 位元範圍內不溢位。
     v_th_int=100 > 50,不 fire。"""
-    result = process_event_int(v0_int=40, a_int=12, is_identity=False, q_int=5,
+    result = process_event(v0_int=40, a_int=12, is_identity=False, q_int=5,
                                 v_th_int=100, f_a=4, f_V=2, i_V=8)
     assert int(result.v_final) == 50
     assert not bool(result.is_spiked)
     assert not bool(result.overflowed)
 
 
-def test_process_event_int_spike_resets_to_zero():
+def test_process_event_spike_resets_to_zero():
     """跟上面同一組數字,只把 v_th_int 降到 40(<=50),應該 fire 並硬重置成 0。"""
-    result = process_event_int(v0_int=40, a_int=12, is_identity=False, q_int=5,
+    result = process_event(v0_int=40, a_int=12, is_identity=False, q_int=5,
                                 v_th_int=40, f_a=4, f_V=2, i_V=8)
     assert bool(result.is_spiked)
     assert int(result.v_final) == 0
 
 
-def test_process_event_int_identity_skips_decay():
+def test_process_event_identity_skips_decay():
     """is_identity=True(Δt=0)時完全跳過衰減,a_int 的值(這裡故意給一個不合理
     的數字 999)不該影響結果:decayed 應該就是 v0_int=17 本身。
     q_int=3,f_V=2 => 貢獻 3*4=12,17+12=29。"""
-    result = process_event_int(v0_int=17, a_int=999, is_identity=True, q_int=3,
+    result = process_event(v0_int=17, a_int=999, is_identity=True, q_int=3,
                                 v_th_int=100, f_a=4, f_V=2, i_V=8)
     assert int(result.v_final) == 29
     assert not bool(result.overflowed)
 
 
-def test_process_event_int_round_vs_truncate_differ():
+def test_process_event_round_vs_truncate_differ():
     """v0_int=7, a_int=1, f_a=2:7/4=1.75,round 進到 2、truncate(算術右移,
     floor)捨到 1。q_int=0 隔離掉權重貢獻,只看捨入差異。"""
-    rounded = process_event_int(v0_int=7, a_int=1, is_identity=False, q_int=0,
+    rounded = process_event(v0_int=7, a_int=1, is_identity=False, q_int=0,
                                 v_th_int=100, f_a=2, f_V=0, i_V=8, round_mode="round")
-    truncated = process_event_int(v0_int=7, a_int=1, is_identity=False, q_int=0,
+    truncated = process_event(v0_int=7, a_int=1, is_identity=False, q_int=0,
                                    v_th_int=100, f_a=2, f_V=0, i_V=8, round_mode="truncate")
     assert int(rounded.v_final) == 2
     assert int(truncated.v_final) == 1
 
 
-def test_process_event_int_negative_tie_rounds_toward_positive_infinity():
+def test_process_event_negative_tie_rounds_toward_positive_infinity():
     """兩補數捨入慣例:負數卡在正中間時 round 往正無窮、truncate 往負無窮。
     v0_int=-6, a_int=1, f_a=2:-6/4=-1.5,round 是 (-6+2)>>2=-1,
     truncate 是 -6>>2=-2。"""
-    rounded = process_event_int(v0_int=-6, a_int=1, is_identity=False, q_int=0,
+    rounded = process_event(v0_int=-6, a_int=1, is_identity=False, q_int=0,
                                 v_th_int=100, f_a=2, f_V=0, i_V=8, round_mode="round")
-    truncated = process_event_int(v0_int=-6, a_int=1, is_identity=False, q_int=0,
+    truncated = process_event(v0_int=-6, a_int=1, is_identity=False, q_int=0,
                                    v_th_int=100, f_a=2, f_V=0, i_V=8, round_mode="truncate")
     assert int(rounded.v_final) == -1
     assert int(truncated.v_final) == -2
 
 
-def test_process_event_int_overflow_wraps_and_can_mask_a_true_spike():
+def test_process_event_overflow_wraps_and_can_mask_a_true_spike():
     """i_V=4,f_V=0(總位元 4,範圍 [-8,7])。is_identity=True 跳過衰減,
     v0_int=7(已經是這個寬度能存的最大值)+ q_int=1 => 真實值是 8,超出範圍
     一格,兩補數繞回去是 8-16=-8(手算:8=0b1000 當成 4 位元有號數,
@@ -186,35 +186,35 @@ def test_process_event_int_overflow_wraps_and_can_mask_a_true_spike():
     v_th_int=5:如果比較的是繞回去之前的真實值 8,理應 fire(8>=5);但硬體
     暫存器只留得住繞回去之後的 -8,fire 判斷讀到的是 -8,不會 fire——這是
     選錯 i_V 會讓 fire 判斷跟著出錯的具體例子,不是純理論疑慮。"""
-    result = process_event_int(v0_int=7, a_int=999, is_identity=True, q_int=1,
+    result = process_event(v0_int=7, a_int=999, is_identity=True, q_int=1,
                                 v_th_int=5, f_a=4, f_V=0, i_V=4)
     assert bool(result.overflowed)
     assert int(result.v_final) == -8
     assert not bool(result.is_spiked), "繞回去之後的 -8 讀不到 fire,即使真實值 8 本來會 fire"
 
 
-def test_process_event_int_saturate_clamps_and_keeps_true_spike():
+def test_process_event_saturate_clamps_and_keeps_true_spike():
     """跟上一個測試同一組數字,改成飽和:真實值 8 夾到 7,不會翻號,
     7>=5 照樣 fire;overflowed 一樣回報 True。"""
-    result = process_event_int(v0_int=7, a_int=999, is_identity=True, q_int=1,
+    result = process_event(v0_int=7, a_int=999, is_identity=True, q_int=1,
                                 v_th_int=5, f_a=4, f_V=0, i_V=4, overflow_mode="saturate")
     assert bool(result.overflowed)
     assert bool(result.is_spiked)
     assert int(result.v_final) == 0, "fire 後硬重置成 0"
 
 
-def test_process_event_int_no_threshold_never_fires_or_resets():
+def test_process_event_no_threshold_never_fires_or_resets():
     """v_th_int=None 代表這層不 fire:值再大也不 fire、不重置,一路累積。"""
-    result = process_event_int(v0_int=100, a_int=999, is_identity=True, q_int=50,
+    result = process_event(v0_int=100, a_int=999, is_identity=True, q_int=50,
                                 v_th_int=None, f_a=4, f_V=0, i_V=16)
     assert not bool(result.is_spiked)
     assert int(result.v_final) == 150
 
 
-def test_process_event_int_accepts_f_a_and_register_width_each_within_own_limit():
+def test_process_event_accepts_f_a_and_register_width_each_within_own_limit():
     """f_a 跟 i_V+f_V 各自在自己的上限內就接受,三者加總不受限:
     f_a=15、i_V+f_V=30,加總 45。"""
-    result = process_event_int(v0_int=100, a_int=1, is_identity=False, q_int=1,
+    result = process_event(v0_int=100, a_int=1, is_identity=False, q_int=1,
                                 v_th_int=10 ** 8, f_a=15, f_V=14, i_V=16)
     assert not bool(result.overflowed)
 

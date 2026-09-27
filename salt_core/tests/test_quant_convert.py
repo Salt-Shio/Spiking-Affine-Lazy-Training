@@ -8,7 +8,7 @@ from salt_core.layers import ConvLayer, FCLayer, run_network
 from salt_core.quant.backend import QuantBackend
 from salt_core.quant.convert import (LayerQuantSpec, build_quantized_params, iv_per_channel,
                                      weight_codes)
-from salt_core.quantize import build_decay_table_int
+from salt_core.quant.codes import build_decay_table_int
 
 # conv:2 channel、每 channel 2x2 = 4 顆神經元;FC:8 -> 2
 CONV = ConvLayer(name="conv", ic=2, h_in=2, w_in=2, oc=2, k=1, s=1, p=0, init_k=5.0,

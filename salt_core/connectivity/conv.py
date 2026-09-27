@@ -1,6 +1,6 @@
 """Conv 層的事件佇列建構,分兩段:結構段(build_conv_structure)只看事件,
-決定每個空間位置收哪些事件、Δt、kernel 位置;數值段(conv_float_values)用權重
-算出仿射映射。推導見 docs/math/conv事件佇列建構推導.md、
+決定每個空間位置收哪些事件、Δt、kernel 位置;數值段用權重算出仿射映射
+(conv_float_values)或取出整數權重碼(conv_weight_codes)。推導見 docs/math/conv事件佇列建構推導.md、
 docs/math/conv事件佇列壓縮版推導.md。
 """
 from typing import NamedTuple
@@ -233,6 +233,18 @@ def build_conv_structure(event_times: jax.Array, x: jax.Array, y: jax.Array, c: 
                               n_input_events=n_input_events)
 
 
+def _gather_taps(structure: ConvQueueStructure, w: jax.Array) -> jax.Array:
+    """每個 (oc, 空間位置, 欄) 的 kernel 位置對應的權重,(oc, n_spatial, L),dtype 同 w。"""
+    return jax.vmap(
+        lambda oc_w: oc_w[structure.tap_c, structure.tap_ky, structure.tap_kx])(w)
+
+
+def _real_tap_mask(structure: ConvQueueStructure) -> jax.Array:
+    """(n_spatial, L) bool,真 tap 的欄位是 True。"""
+    max_queue_len = structure.delta_t.shape[1]
+    return jnp.arange(max_queue_len)[None, :] < structure.n_real_events[:, None]
+
+
 def conv_float_values(structure: ConvQueueStructure, w: jax.Array, tau: float,
                       event_gain: jax.Array | None) -> AffineMap:
     """conv 佇列的浮點數值段:a = (1 - 1/tau) ** delta_t,b = 權重 * event_gain,非真 tap 的 b 是 0。
@@ -244,16 +256,27 @@ def conv_float_values(structure: ConvQueueStructure, w: jax.Array, tau: float,
     """
     oc = w.shape[0]
     n_spatial, max_queue_len = structure.delta_t.shape
-    weight_vals = jax.vmap(
-        lambda oc_w: oc_w[structure.tap_c, structure.tap_ky, structure.tap_kx])(w)  # (oc, n_spatial, L)
+    weight_vals = _gather_taps(structure, w)  # (oc, n_spatial, L)
     if event_gain is not None:
         event_j = jnp.minimum(structure.local_to_global_j, structure.n_input_events - 1)
         gain = jnp.asarray(event_gain, dtype=weight_vals.dtype)[event_j]
         weight_vals = weight_vals * gain[None, :, :]
-    is_real = jnp.arange(max_queue_len)[None, :] < structure.n_real_events[:, None]
-    b = jnp.where(is_real[None, :, :], weight_vals, 0.0).reshape(oc * n_spatial, max_queue_len)
+    b = jnp.where(_real_tap_mask(structure)[None, :, :], weight_vals, 0.0).reshape(
+        oc * n_spatial, max_queue_len)
     maps = create_affine_maps(structure.delta_t, b, tau)
     return AffineMap(a=tile_channels(maps.a, oc), b=maps.b)
+
+
+def conv_weight_codes(structure: ConvQueueStructure, q: jax.Array) -> jax.Array:
+    """conv 佇列的整數數值段:每欄的整數權重碼,非真 tap 是 0。
+
+    q: (oc, ic, k, k) 整數權重碼。
+    回傳 int32,形狀 (oc*n_spatial, L),神經元編號同 conv_float_values。
+    """
+    oc = q.shape[0]
+    n_spatial, max_queue_len = structure.delta_t.shape
+    codes = jnp.where(_real_tap_mask(structure)[None, :, :], _gather_taps(structure, q), 0)
+    return codes.astype(jnp.int32).reshape(oc * n_spatial, max_queue_len)
 
 
 def tile_channels(values: jax.Array, oc: int) -> jax.Array:

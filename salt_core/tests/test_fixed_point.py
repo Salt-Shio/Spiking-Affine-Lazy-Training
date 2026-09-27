@@ -1,4 +1,4 @@
-"""salt_core/fixed_point.py(定點數運算電路的整數模擬)的測試。
+"""salt_core/quant/fixed_point.py(定點數運算電路的整數模擬)的測試。
 
 捨入慣例是直接對兩補數有號數運算(docs/問題紀錄.md 第十八節):
 round 是先加半格再算術右移,truncate 是直接算術右移(floor)。
@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from salt_core.fixed_point import (MAX_REGISTER_BITS, MAX_SHIFT_BITS, OverflowMode, RoundMode,
+from salt_core.quant.fixed_point import (MAX_REGISTER_BITS, MAX_SHIFT_BITS, OverflowMode, RoundMode,
                                    fit_to_bits, round_shift, wide_mul_shift)
 
 

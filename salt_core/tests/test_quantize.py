@@ -1,4 +1,4 @@
-"""salt_core/quantize.py 的測試。推導見 docs/math/權重量化推導.md、
+"""salt_core/quant/codes.py、salt_core/quant/ptq.py 的測試。推導見 docs/math/權重量化推導.md、
 docs/math/膜電位量化推導.md。
 
 - A~C 權重量化:`fake_quantize_tensor`/`quantize_to_int`(round-trip 誤差有界、
@@ -16,11 +16,11 @@ import numpy as np
 import pytest
 
 from salt_core.layers import ConvLayer, FCLayer
-from salt_core.quantize import (apply_decay_table_int, build_decay_table_int, delta_t_max,
-                                fake_quantize_tensor, iv_from_measurement, iv_layer,
-                                max_weight_code, quantization_error, quantize_params,
-                                quantize_to_int, round_half_away_from_zero, v_th_to_int,
-                                waste)
+from salt_core.quant.codes import (apply_decay_table_int, build_decay_table_int, delta_t_max,
+                                   iv_from_measurement, iv_layer, max_weight_code,
+                                   quantize_to_int, round_half_away_from_zero, v_th_to_int,
+                                   waste)
+from salt_core.quant.ptq import fake_quantize_tensor, quantization_error, quantize_params
 
 TOL = 1e-5
 

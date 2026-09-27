@@ -8,11 +8,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from salt_core.fixed_point import OverflowMode
 from salt_core.quant.backend import QuantizedLayerParams
-from salt_core.quantize import (build_decay_table_int, iv_from_measurement, iv_layer,
-                                max_weight_code, percentile_abs_threshold, quantize_to_int,
-                                v_th_to_int)
+from salt_core.quant.codes import (build_decay_table_int, iv_from_measurement, iv_layer,
+                                   max_weight_code, quantize_to_int, v_th_to_int)
+from salt_core.quant.fixed_point import OverflowMode
+from salt_core.quant.ptq import percentile_abs_threshold
 
 
 class LayerQuantSpec(NamedTuple):

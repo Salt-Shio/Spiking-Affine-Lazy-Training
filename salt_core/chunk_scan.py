@@ -5,18 +5,14 @@ docs/math/單狀態仿射平行掃描推導.md 第 5 節、Bullet Trains
 snn/dynamics.py 的 run_events_scan/associative_scan_step,但拿掉了求根跟
 delay/sort_idx 那些跟這個專案無關的複雜度。
 
-`run_layer_forward_int`/`run_layer_forward_int_traced` 是整數版(膜電位量化
-模擬):chunk_size 恆為 1,逐事件呼叫 `core.process_event_int`。
+整數版掃描(膜電位量化模擬)在 `salt_core/quant/scan.py`。
 """
-import functools
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
-from salt_core.core import (AffineMap, normalize_real_events, process_chunk,
-                            process_event_int)
-from salt_core.fixed_point import OverflowMode, RoundMode
+from salt_core.core import AffineMap, normalize_real_events, process_chunk
 
 
 class LayerForwardResult(NamedTuple):
@@ -195,100 +191,3 @@ def _run_layer_scan(maps: AffineMap, v_th: float, chunk_size: int, max_steps: in
         return result, None, None
     v_step, pointer_step = ys[4], ys[5]
     return result, v_step.T, pointer_step.T
-
-
-# ============================================================================
-# 整數版掃描(膜電位量化模擬)
-# ============================================================================
-
-class LayerForwardResultInt(NamedTuple):
-    """一層跑完一次整數版 forward 的輸出(chunk_size 恆為 1)。沒有
-    `s_value`/`s_spike`:這條路沒有 surrogate gradient,rate coding 要用的話
-    直接對 `spike_mask` 加總。`L` 是佇列長度,第 `t` 步處理佇列第 `t` 欄。
-    """
-    spike_mask: jax.Array       # shape (n_out_neurons, L) bool
-    spike_event_idx: jax.Array  # shape (n_out_neurons, L) int32,就是佇列自己的欄位索引
-                                 # (跟 LayerForwardResult 同一個局部 index 慣例)
-    v_final: jax.Array          # shape (n_out_neurons,) 暫存器值 int32;
-                                 # QuantBackend.readout 換過之後是物理尺度 float32
-    overflowed: jax.Array       # shape (n_out_neurons, L) bool,每一步寫回暫存器
-                                 # 之前的真實值有沒有超出 i_V+f_V 位元
-
-
-def run_layer_forward_int(a_int: jax.Array, is_identity: jax.Array, q_int: jax.Array,
-                          v_th_int: jax.Array | None, *, f_a: int, f_V: int, i_V: int,
-                          round_mode: RoundMode | str = RoundMode.ROUND,
-                          overflow_mode: OverflowMode | str = OverflowMode.WRAP
-                          ) -> LayerForwardResultInt:
-    """整數版掃描:每一步只處理一筆事件(硬體每筆事件更新後就立刻捨入),
-    所以第 `t` 步就是佇列第 `t` 欄,掃描長度等於佇列長度 `a_int.shape[1]`,
-    不需要浮點版那套滑動視窗跟 pointer。
-
-    `a_int`/`is_identity`/`q_int`:shape `(n_out_neurons, L)`,呼叫端先用
-    `quantize.apply_decay_table_int` 查好表、準備好權重整數碼(這個函式只跑
-    遞迴)。**每一欄都照實套用**,不看真事件數:佇列裡不是真事件的位置,
-    佇列建構那一步就要做成 identity(Δt=0、權重 0),conv 的 catch-up 欄則是
-    真的要衰減(見 `connectivity.conv.build_conv_structure`、
-    `connectivity.fc.build_fc_structure`)。
-
-    `v_th_int`:純量或 shape `(n_out_neurons,)`;`None` 代表這層不 fire。
-    `f_a`/`f_V`/`i_V`/`round_mode`/`overflow_mode` 整層共用,原樣交給
-    `core.process_event_int`。
-    """
-    result, _v_steps = _run_layer_scan_int(a_int, is_identity, q_int, v_th_int,
-                                           f_a=f_a, f_V=f_V, i_V=i_V, round_mode=round_mode,
-                                           overflow_mode=overflow_mode, trace=False)
-    return result
-
-
-def run_layer_forward_int_traced(a_int: jax.Array, is_identity: jax.Array, q_int: jax.Array,
-                                 v_th_int: jax.Array | None, *, f_a: int, f_V: int, i_V: int,
-                                 round_mode: RoundMode | str = RoundMode.ROUND,
-                                 overflow_mode: OverflowMode | str = OverflowMode.WRAP
-                                 ) -> tuple[LayerForwardResultInt, jax.Array]:
-    """跟 `run_layer_forward_int` 跑一模一樣的掃描,額外回傳每步(寫回之後)
-    的暫存器值 `v_steps`,shape `(n_out_neurons, L)`,最後一欄等於
-    `result.v_final`。溢位驗證要看逐步值:神經元可能中途衝到峰值再衰減下來,
-    只看 v_final 會漏掉。
-    """
-    return _run_layer_scan_int(a_int, is_identity, q_int, v_th_int,
-                               f_a=f_a, f_V=f_V, i_V=i_V, round_mode=round_mode,
-                               overflow_mode=overflow_mode, trace=True)
-
-
-def _run_layer_scan_int(a_int: jax.Array, is_identity: jax.Array, q_int: jax.Array,
-                        v_th_int: jax.Array | None, *, f_a: int, f_V: int, i_V: int,
-                        round_mode: RoundMode | str, overflow_mode: OverflowMode | str,
-                        trace: bool):
-    """`run_layer_forward_int`/`run_layer_forward_int_traced` 共用的 scan
-    內核。回傳 `(LayerForwardResultInt, v_steps)`;`trace=False` 時後者是
-    `None`。"""
-    n_out_neurons, queue_len = a_int.shape
-    # None(不 fire)是沒有 leaf 的 pytree,vmap 直接原樣傳給 process_event_int
-    v_th_arr = (None if v_th_int is None else
-                jnp.broadcast_to(jnp.asarray(v_th_int, dtype=jnp.int32), (n_out_neurons,)))
-    step_fn = functools.partial(process_event_int, f_a=f_a, f_V=f_V, i_V=i_V,
-                                round_mode=round_mode, overflow_mode=overflow_mode)
-    vmapped_step = jax.vmap(step_fn)
-
-    def step(v, t):
-        step_result = vmapped_step(v, a_int[:, t], is_identity[:, t], q_int[:, t], v_th_arr)
-        # scan 會把每一步的 ys 疊成陣列回傳給外面,step 自己不讀它
-        ys = (step_result.is_spiked, step_result.overflowed)
-        if trace:
-            ys = ys + (step_result.v_final,)
-        return step_result.v_final, ys
-
-    v_final, ys = jax.lax.scan(step, jnp.zeros(n_out_neurons, dtype=jnp.int32),
-                               jnp.arange(queue_len))
-    spike_mask, overflowed = ys[0], ys[1]
-
-    # scan 的疊代軸在最前面,shape 是 (L, n_out_neurons),轉成
-    # (n_out_neurons, L) 給呼叫端用
-    spike_event_idx = jnp.broadcast_to(jnp.arange(queue_len), (n_out_neurons, queue_len))
-    result = LayerForwardResultInt(spike_mask=spike_mask.T, spike_event_idx=spike_event_idx,
-                                   v_final=v_final, overflowed=overflowed.T)
-    if not trace:
-        return result, None
-    v_steps = ys[2]
-    return result, v_steps.T

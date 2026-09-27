@@ -1,8 +1,8 @@
 """backend:一層 forward 裡「算數值段 + 掃描」這一段怎麼做。層負責建結構、抽輸出流、
 診斷,中間交給 backend。浮點版在這裡,整數版在 salt_core/quant/backend.py。
 
-backend 只透過層提供的方法讀佇列:float_values、neuron_delta_t、neuron_n_real、
-scan_steps,不 import layers。
+backend 只透過層提供的方法讀佇列:float_values、gather_weight_codes、neuron_delta_t、
+neuron_n_real、scan_steps,不 import layers。
 """
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -16,7 +16,7 @@ from salt_core.core import spike_step_upper_bound
 
 class ScanOutput(NamedTuple):
     """backend.scan 的回傳。"""
-    result: NamedTuple            # 浮點是 LayerForwardResult,整數是 LayerForwardResultInt
+    result: NamedTuple            # 浮點是 LayerForwardResult,整數是 QuantLayerResult
     spike_gain: jax.Array         # (n_neurons, 步數),下一層的 event_gain
     steps_needed: jax.Array       # int32 純量,這筆樣本需要的掃描步數;整數版不用步數上限,是 0
     v_steps: jax.Array | None     # (n_neurons, 步數) 每步結束的膜電位,trace=True 才有
