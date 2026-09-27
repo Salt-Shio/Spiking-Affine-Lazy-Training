@@ -1,4 +1,4 @@
-"""ConvNetCompressed 訓練 entrypoint。
+"""壓縮版 conv SNN 的訓練 entrypoint。
 
 這支腳本比一般訓練多的東西,是所有壓縮容量旋鈕的**動態放大**機制(完整設計
 見 docs/math/conv事件佇列壓縮版推導.md 第 7.2 節):
@@ -52,14 +52,13 @@ from data.src.nmnist import NMNISTDataset
 from salt_core.capacity import grown_to_fit, reduce_over_batch, shrunk_to_observed
 from salt_core.layers import ConvLayer
 from example.checkpoint import Checkpointer
-from salt_core.dormant import dormant_report
+from example.dormant import dormant_report
 from example.metrics_log import MetricsLog
-from example.models.conv_net import (ConvNetCompressed, build_decoder, build_growth_policies,
-                                     build_network)
+from example.models.conv_net import build_decoder, build_growth_policies, build_network
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR, REPO_ROOT, resolve_config
 from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, capacity_changes, describe_growth,
                            get_git_commit_hash, make_evaluate, save_params_npz,
-                           set_seed, weight_snapshot_path)
+                           set_seed, split_raw_events, take_raw_events, weight_snapshot_path)
 
 
 def load_config(path: str) -> dict:
@@ -127,11 +126,10 @@ def _cross_entropy_loss(scores: jax.Array, batch_labels_onehot: jax.Array,
     return optax.softmax_cross_entropy(scores, batch_labels_onehot)
 
 
-def make_train_step(net, optimizer, decoder, score_cap: float | None = None):
-    def loss_fn(params, batch_event_times, batch_x, batch_y, batch_c, batch_n_real,
-                batch_labels_onehot):
-        result, diagnostics = net.apply_batched(params, batch_event_times, batch_x, batch_y,
-                                                 batch_c, batch_n_real)
+def make_train_step(network, optimizer, decoder, score_cap: float | None = None):
+    def loss_fn(params, raw_batch, batch_labels_onehot):
+        output = network.apply_batched(params, raw_batch)
+        result, diagnostics = output.last, output.diags
         # 解碼器把最後一層的 LayerForwardResult 讀成分數(膜電位回歸 = v_final、
         # 頻率/群體 = s_value 加總),網路本身不挑 readout。dec_metrics 是這個
         # 編碼特定的純量(可空,膜電位回歸就是空的)。這次單獨測試,weight_decay
@@ -144,15 +142,12 @@ def make_train_step(net, optimizer, decoder, score_cap: float | None = None):
         return loss, (reduced, reduced_metrics)
 
     @jax.jit
-    def train_step(params, opt_state, batch_event_times, batch_x, batch_y, batch_c,
-                    batch_n_real, batch_labels_onehot):
+    def train_step(params, opt_state, raw_batch, batch_labels_onehot):
         (loss, (reduced_diags, reduced_metrics)), grad = jax.value_and_grad(
-            loss_fn, has_aux=True)(
-            params, batch_event_times, batch_x, batch_y, batch_c, batch_n_real,
-            batch_labels_onehot)
-        # grad 是對齊 net.layers 的 tuple(pytree),按層名報範數。
+            loss_fn, has_aux=True)(params, raw_batch, batch_labels_onehot)
+        # grad 是對齊 network.layers 的 tuple(pytree),按層名報範數。
         grad_norms = {layer.name: jnp.linalg.norm(g)
-                      for layer, g in zip(net.layers, grad)}
+                      for layer, g in zip(network.layers, grad)}
         updates, opt_state = optimizer.update(grad, opt_state, params)
         params = optax.apply_updates(params, updates)
         return params, opt_state, loss, reduced_diags, reduced_metrics, grad_norms
@@ -184,9 +179,9 @@ class EpochsOutcome(NamedTuple):
                                # 共用同一個欄位混在一起。
 
 
-def run_epochs(*, layers, policies, train_step, evaluate, params, opt_state,
+def run_epochs(*, network, policies, train_step, evaluate, params, opt_state,
                shuffle_key, start_epoch: int, total_epochs: int,
-               train_split, val_split, batch_size: int, probe_batch,
+               train_split, train_raw, val_split, batch_size: int, probe, dormant_names,
                metrics_log, checkpointer, best: Best,
                weights_dir: str | None = None, weight_snapshot_every: int = 0,
                max_steps_reestimate_every: int = 1) -> EpochsOutcome:
@@ -212,6 +207,7 @@ def run_epochs(*, layers, policies, train_step, evaluate, params, opt_state,
     每個成功 epoch:val 評估 → 更新 `best` → `metrics_log.finish_epoch` →
     `checkpointer.save` → 權重快照(`weight_snapshot_every>0` 才存)→ 縮小檢查。
     """
+    layers = list(network.layers)
     n_train = train_split.labels.shape[0]
     n_batches = max(1, n_train // batch_size)
 
@@ -226,9 +222,8 @@ def run_epochs(*, layers, policies, train_step, evaluate, params, opt_state,
             idx = perm[b * batch_size:(b + 1) * batch_size]
             (new_params, new_opt_state, loss, reduced_diags, reduced_metrics,
              grad_norms) = train_step(
-                params, opt_state, train_split.event_times[idx], train_split.x[idx],
-                train_split.y[idx], train_split.c[idx],
-                train_split.n_real_events[idx], train_split.labels_onehot[idx])
+                params, opt_state, take_raw_events(train_raw, idx),
+                train_split.labels_onehot[idx])
 
             # 出界偵測:任何一層要長大,就作廢這個 batch、回報給外圈。
             grown = grown_to_fit(layers, policies, reduced_diags)
@@ -254,7 +249,8 @@ def run_epochs(*, layers, policies, train_step, evaluate, params, opt_state,
         val_accuracy, _val_loss, _, val_regrows = evaluate(params, val_split)
         if val_accuracy > best.val_accuracy:
             best = Best(params=params, val_accuracy=val_accuracy, epoch=epoch)
-        dormant, dormant_regrows = dormant_report(layers, params, probe_batch, policies)
+        dormant, dormant_regrows = dormant_report(network, params, probe, policies,
+                                                  layer_names=dormant_names)
         if dormant_regrows:
             print(f"[dormant 出界] epoch={epoch}: 放大探測用容量重算 {dormant_regrows} 次")
         metrics_log.finish_epoch(epoch=epoch, val_accuracy=val_accuracy, layers=layers,
@@ -320,12 +316,13 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
     # example.models.conv_net.build_network)。動態放大 = 用 grown_to_fit 重建這個
     # list,跨 while 迴圈迭代持續累積(層名不變)。init_k 是每層必填欄位(不校準,
     # 委定值見 docs/問題紀錄.md §12),config 沒填會在 build_network 這一步就報錯。
-    layers = build_network(model_cfg)
+    network = build_network(model_cfg)
+    layers = list(network.layers)
     # 層名在動態放大縮小時不變,policies 建一次就好
     policies = build_growth_policies(model_cfg, layers)
 
     layer_names = [layer.name for layer in layers]
-    # dormant 統計只算 conv 隱藏層(salt_core.dormant 的挑層規則)
+    # dormant 統計只算 conv 隱藏層
     dormant_names = [layer.name for layer in layers if isinstance(layer, ConvLayer)]
 
     # 輸出編碼:把最後一層的 LayerForwardResult 讀成分數。跟最後一層的門檻
@@ -337,11 +334,10 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
 
     batch_size = min(train_cfg["batch_size"], data_cfg["train_size"])
 
-    # dormant score(salt_core/dormant.py)每個 epoch 在這批固定樣本上量,跨 epoch 可比。
+    train_raw = split_raw_events(train_split)
+    # dormant score(example/dormant.py)每個 epoch 在這批固定樣本上量,跨 epoch 可比。
     n_probe = min(128, data_cfg["train_size"])
-    probe_batch = (train_split.event_times[:n_probe], train_split.x[:n_probe],
-                   train_split.y[:n_probe], train_split.c[:n_probe],
-                   train_split.n_real_events[:n_probe])
+    probe = take_raw_events(train_raw, slice(0, n_probe))
 
     exp_dir = _make_exp_dir(run_name, exp_root)
 
@@ -364,7 +360,7 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
     # 「跑 epoch」本身完全在 run_epochs 裡,不知道長大這回事。
     best = Best(params=None, val_accuracy=-1.0, epoch=-1)
     while True:
-        net = ConvNetCompressed(layers)
+        net = network.replace_layers(layers)
         # 優化器組裝(`weight_decay`/`grad_clip_norm`)見 `_build_optimizer`。
         # label_smoothing 已撤除,不要再用(§8.3 討論)。
         optimizer = _build_optimizer(train_cfg, data_cfg, batch_size)
@@ -384,14 +380,14 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
             start_epoch = ckpt_epoch + 1
 
         outcome = run_epochs(
-            layers=layers, policies=policies,
+            network=net, policies=policies,
             train_step=make_train_step(
                 net, optimizer, decoder, score_cap=train_cfg.get("score_cap")),
             evaluate=make_evaluate(net, decoder, eval_batch_size=batch_size, policies=policies),
             params=params, opt_state=opt_state, shuffle_key=shuffle_key,
             start_epoch=start_epoch, total_epochs=train_cfg["epochs"],
-            train_split=train_split, val_split=val_split, batch_size=batch_size,
-            probe_batch=probe_batch,
+            train_split=train_split, train_raw=train_raw, val_split=val_split,
+            batch_size=batch_size, probe=probe, dormant_names=dormant_names,
             metrics_log=metrics_log, checkpointer=checkpointer, best=best,
             weights_dir=weights_dir, weight_snapshot_every=weight_snapshot_every,
             max_steps_reestimate_every=int(train_cfg.get("max_steps_reestimate_every", 1)))

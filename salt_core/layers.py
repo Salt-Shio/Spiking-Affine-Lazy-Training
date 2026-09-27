@@ -21,7 +21,6 @@
 - 容量旋鈕動態放大縮小 = `with_capacity` 換出一個新的靜態層物件(觸發一次
   重編譯),公式見 `salt_core.capacity`。
 """
-import math
 from dataclasses import dataclass, replace
 from typing import NamedTuple, Protocol
 
@@ -138,7 +137,7 @@ class ConvLayer:
     `oc`,`h_in`/`w_in` 要等於上一層的 `h_out`/`w_out`——組層 list 的時候
     Python 層級檢查一次(就是 PyTorch 要你自己對齊 channel 的那個檢查)。
     第一層的「上一層」是虛擬輸入網格 `(ic, h_in, w_in)`,由呼叫端把原始事件
-    ravel 成扁平編號餵進來(見 `raw_events_to_stream`)。
+    ravel 成扁平編號餵進來(見 `salt_core.network.Network.input_stream`)。
 
     輸出面尺寸 `h_out` / `w_out` **不是欄位**,是從 `h_in` / `k` / `s` / `p`
     算的 property(floor 模式、無 dilation:`(h_in + 2p - k)//s + 1`)——沒有
@@ -412,77 +411,3 @@ class FCLayer:
     def with_chunk_size(self, chunk_size: int) -> "FCLayer":
         """換 chunk_size。掃描步數每次從輸入流長度現算,沒有其他欄位要跟著改。"""
         return replace(self, chunk_size=chunk_size)
-
-
-def check_layer_connections(layers) -> None:
-    """檢查相鄰兩層接得起來。
-
-    下一層吃空間輸入(input_shape 有三維)時,上一層的 output_shape 要完全相同;
-    吃攤平輸入(input_shape 只有一維)時,元素總數要相同。
-    接不上時 raise ValueError,訊息寫出是哪兩層、各自的形狀。
-    """
-    for prev, nxt in zip(layers, layers[1:]):
-        out_shape, in_shape = tuple(prev.output_shape), tuple(nxt.input_shape)
-        if len(in_shape) == 1:
-            connected = math.prod(out_shape) == in_shape[0]
-        else:
-            connected = out_shape == in_shape
-        if connected:
-            continue
-        if len(out_shape) < len(in_shape):
-            raise ValueError(f"{prev.name} 的輸出 {out_shape} 沒有空間形狀,"
-                             f"不能接吃空間輸入的 {nxt.name}(輸入 {in_shape})")
-        raise ValueError(f"{prev.name} 的輸出 {out_shape} 接不上 {nxt.name} 的輸入 {in_shape}")
-
-
-def raw_events_to_stream(event_times: jax.Array, x: jax.Array, y: jax.Array,
-                          c: jax.Array, n_real_events: jax.Array,
-                          h_in: int, w_in: int) -> EventStream:
-    """把資料端原生的 (event_times, x, y, c, n_real_events) 包成一條標準事件流,
-    餵給第一層。`event_source_idx` ravel 進虛擬輸入網格 `(C_in, h_in, w_in)`,
-    第一層再用同一組 `h_in`/`w_in` 還原——來回是整數運算、成本可忽略,換到
-    「每個 conv 層的 forward 長得一模一樣,沒有第一層特例」。`event_gain` 全 1
-    (原始輸入沒有上游可微分增益)。"""
-    source_idx = c * (h_in * w_in) + y * w_in + x
-    return EventStream(
-        event_times=event_times,
-        event_source_idx=source_idx.astype(jnp.int32),
-        event_gain=jnp.ones_like(jnp.asarray(event_times, dtype=jnp.float32)),
-        n_real_events=jnp.asarray(n_real_events, dtype=jnp.int32))
-
-
-class NetworkOutput(NamedTuple):
-    """run_network 的輸出,每個欄位每層一個,對齊 layers。"""
-    results: tuple        # 每層的 LayerOutput.result
-    diags: tuple          # 每層的 LayerDiag
-    traces: tuple | None  # trace=True 才有,已經 stop_gradient
-
-    @property
-    def last(self):
-        """最後一層的結果,給解碼器。"""
-        return self.results[-1]
-
-
-def run_network(layers, weights, input_stream: EventStream, *, backend=FLOAT,
-                trace: bool = False) -> NetworkOutput:
-    """一列 layer 串起來跑:每層的輸出流餵給下一層。
-
-    layers: 一列符合 Layer 約定的物件(靜態,jax.jit 下當閉包捕捉)。
-    weights: 對齊 layers 的每層參數;浮點 backend 是權重,整數 backend 是
-        QuantizedLayerParams。
-    trace: True 時收每層逐步軌跡。
-    相鄰層接不上時 raise ValueError。
-    """
-    check_layer_connections(layers)
-    stream = input_stream
-    outputs = []
-    for layer, params in zip(layers, weights):
-        output = layer.forward(params, stream, backend=backend, trace=trace)
-        outputs.append(output)
-        stream = output.stream
-    traces = None
-    if trace:
-        traces = jax.tree_util.tree_map(jax.lax.stop_gradient,
-                                        tuple(output.trace for output in outputs))
-    return NetworkOutput(results=tuple(output.result for output in outputs),
-                         diags=tuple(output.diag for output in outputs), traces=traces)

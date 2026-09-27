@@ -21,38 +21,40 @@ import optax
 
 from data.src.nmnist import NMNISTDataset
 from example.metrics_log import KNOB_COLUMNS
-from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
+from example.models.conv_net import build_decoder, build_network
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
 from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, load_params_npz,
-                           load_run_record, weight_snapshot_path)
+                           load_run_record, take_raw_events, split_raw_events,
+                           weight_snapshot_path)
 from salt_core.capacity import Capacity
 
 
-def _rebuild_layers_at_epoch(run_record: dict, exp_dir: str, epoch: int) -> list:
-    """跟 `example.utils.rebuild_layers`的差別:那個函式還原的是**整個 run
+def _rebuild_network_at_epoch(run_record: dict, exp_dir: str, epoch: int):
+    """跟 `example.utils.rebuild_network`的差別:那個函式還原的是**整個 run
     結束時**的最終容量(`run.yaml` 的 `final_capacity`),但 `max_steps`/
     `max_out_spikes` 訓練中途可能縮小過(`GrowthPolicy.shrunk`,見
     docs/問題紀錄.md §十五 踩過的坑)——要重建
     「某個中途 epoch 當下」的權重,必須用那個 epoch **當下**的容量,不能用
     run 結束時的容量(可能已經比當下小,會把還沒縮小前的真實輸出/掃描步數
     截斷)。這裡改成直接讀 `metrics.csv` 裡對應 epoch 那一列的容量欄位。"""
-    layers = build_network(run_record["config"]["model"])
+    network = build_network(run_record["config"]["model"])
     metrics_path = os.path.join(exp_dir, TRAIN_DIRNAME, "metrics.csv")
     with open(metrics_path, newline="", encoding="utf-8") as f:
         rows = {int(row["epoch"]): row for row in csv.DictReader(f)}
     row = rows[epoch]
-    return [layer if layer.capacity is None else layer.with_capacity(Capacity(**{
-                knob: int(row[f"{layer.name}_{KNOB_COLUMNS[knob].capacity}"])
-                for knob in layer.capacity}))
-            for layer in layers]
+    return network.replace_layers(
+        [layer if layer.capacity is None else layer.with_capacity(Capacity(**{
+            knob: int(row[f"{layer.name}_{KNOB_COLUMNS[knob].capacity}"])
+            for knob in layer.capacity}))
+         for layer in network.layers])
 
 
-def _load_layers_and_params(exp_dir: str, snapshot_epoch: int):
+def _load_network_and_params(exp_dir: str, snapshot_epoch: int):
     run_record = load_run_record(exp_dir)
-    layers = _rebuild_layers_at_epoch(run_record, exp_dir, snapshot_epoch)
+    network = _rebuild_network_at_epoch(run_record, exp_dir, snapshot_epoch)
     weights_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
-    params = load_params_npz(weight_snapshot_path(weights_dir, snapshot_epoch), layers)
-    return run_record, layers, params
+    params = load_params_npz(weight_snapshot_path(weights_dir, snapshot_epoch), network.layers)
+    return run_record, network, params
 
 
 def _rebuild_train_split(run_record: dict):
@@ -74,28 +76,27 @@ def _epoch_permutation(seed: int, n_train: int, target_epoch: int) -> np.ndarray
     return np.asarray(perm)
 
 
-def per_sample_forward(run_record: dict, layers: list, params: tuple, split,
+def per_sample_forward(run_record: dict, network, params: tuple, split,
                        batch_size: int = 20):
     """對整個 train split 分批 forward(分批純粹省記憶體,跟訓練 batch_size
     無關),回傳每筆樣本的 loss、預測類別、每層 spike 數(shape 皆
     `(n_samples,)`/`{層名: (n_samples,)}`)。"""
-    net = ConvNetCompressed(layers)
+    layers = network.layers
     decoder = build_decoder(run_record["config"]["model"], layers)
     n = split.labels.shape[0]
+    raw = split_raw_events(split)
 
     @jax.jit
-    def _fwd(params, event_times, x, y, c, n_real):
-        result, diags = net.apply_batched(params, event_times, x, y, c, n_real)
-        scores, _ = jax.vmap(decoder.decode)(result)
-        return scores, diags
+    def _fwd(params, raw_batch):
+        output = network.apply_batched(params, raw_batch)
+        scores, _ = jax.vmap(decoder.decode)(output.last)
+        return scores, output.diags
 
     all_loss, all_pred = [], []
     all_spikes = {layer.name: [] for layer in layers}
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
-        scores, diags = _fwd(params, split.event_times[start:end], split.x[start:end],
-                             split.y[start:end], split.c[start:end],
-                             split.n_real_events[start:end])
+        scores, diags = _fwd(params, take_raw_events(raw, slice(start, end)))
         loss = optax.softmax_cross_entropy(scores, split.labels_onehot[start:end])
         all_loss.append(np.asarray(loss))
         all_pred.append(np.asarray(jnp.argmax(scores, axis=1)))
@@ -118,13 +119,13 @@ def main() -> None:
     args = parser.parse_args()
 
     exp_dir = os.path.join(EXPERIMENTS_DIR, args.exp_dir_name)
-    run_record, layers, params = _load_layers_and_params(exp_dir, args.snapshot_epoch)
+    run_record, network, params = _load_network_and_params(exp_dir, args.snapshot_epoch)
     train_cfg = run_record["config"]["train"]
     split = _rebuild_train_split(run_record)
     n_train = split.labels.shape[0]
 
     print(f"epoch{args.snapshot_epoch} 快照,對整個 train split({n_train} 筆)做 forward...")
-    loss, pred, spikes = per_sample_forward(run_record, layers, params, split)
+    loss, pred, spikes = per_sample_forward(run_record, network, params, split)
     correct = (pred == np.asarray(split.labels))
 
     print(f"\n=== train split 在 epoch{args.snapshot_epoch} 快照下的 loss 分布 ===")

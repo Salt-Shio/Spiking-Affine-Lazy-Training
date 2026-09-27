@@ -1,19 +1,18 @@
 """從訓練 yaml 組出一個壓縮版 conv SNN。
 
-實際運算全部在 `salt_core.layers`(`ConvLayer` / `FCLayer` / `run_network`)。
+實際運算全部在 `salt_core`(`ConvLayer` / `FCLayer` / `Network`)。
 這個檔案是 `src`(開發者)這端的組裝碼,做三件事:
 
 - `build_network(model_cfg)`:讀 model config 的 `input_shape` + `layers`
-  (一列 layer entry),照 `salt_core` 的 layer 約定把層物件串出來。`ic` 串接、
+  (一列 layer entry),照 `salt_core` 的 layer 約定把層物件串出來,包成 `Network`。`ic` 串接、
   空間尺寸的往下傳(`h_out` / `w_out` 是 `ConvLayer` 自己的 property)、FC 的
   `n_in` 全部由這裡推導,yaml 不必填。**網路形狀完全由 config 決定,這個
   檔案沒有寫死的幾何。**
 - `build_decoder(model_cfg, layers)`:從 model config 的 `decoder` 建輸出
   解碼器(膜電位回歸 / 頻率 / 群體),把最後一層的 `LayerForwardResult` 讀成
   預測分數。網路本身不挑 readout,見 `salt_core.decoder`。
-- `ConvNetCompressed`:把資料端原生的 `(event_times, x, y, c, n_real)` 包成
-  標準事件流餵進去、回傳 `(最後一層 LayerForwardResult, [LayerDiag, ...])`;
-  `init` 逐層生權重(回一個對齊 layer list 的 weight tuple)。
+- `build_growth_policies(model_cfg, layers)`:同一份 layer entry 裡的容量放大縮小
+  倍率、門檻,建成每層的 `GrowthPolicy`。
 
 佇列長度 `L`、輸出 spike 上界 `max_out_spikes` 都是「起始猜測 + 訓練中偵測
 出界就放大」(見 docs/math/conv事件佇列壓縮版推導.md 第 7.2 節、
@@ -24,12 +23,11 @@
 """
 import dataclasses
 
-import jax
-
 from salt_core.capacity import GrowthPolicy
 from salt_core.decoder import (MembraneRegressionDecoder, PopulationDecoder,
                                 RateDecoder)
-from salt_core.layers import ConvLayer, FCLayer, raw_events_to_stream, run_network
+from salt_core.layers import ConvLayer, FCLayer
+from salt_core.network import Network
 
 from data.src.nmnist import CLASS_NAMES
 
@@ -37,8 +35,7 @@ from data.src.nmnist import CLASS_NAMES
 # 給 build_decoder 的群體分組用。
 N_CLASSES = len(CLASS_NAMES)
 
-__all__ = ["N_CLASSES", "build_network", "build_growth_policies", "build_decoder",
-           "ConvNetCompressed"]
+__all__ = ["N_CLASSES", "build_network", "build_growth_policies", "build_decoder"]
 
 # layer entry 裡這些 key 轉型後才傳給層類別(yaml 的 `1.0e9` 之類會被 parse
 # 成字串——PyYAML 遵 YAML 1.1,指數要 `1.0e+9` 才算 float)。不認得的 key
@@ -65,8 +62,8 @@ def _coerce_layer_opts(e: dict) -> dict:
     return out
 
 
-def build_network(model_cfg: dict) -> list:
-    """`cfg["model"]` 這個 dict -> 一列 layer 物件。
+def build_network(model_cfg: dict) -> Network:
+    """`cfg["model"]` 這個 dict -> `Network`(輸入網格 + 一列 layer 物件)。
 
     需要:
       - `input_shape`: `[C, H, W]`,虛擬輸入網格。
@@ -120,13 +117,13 @@ def build_network(model_cfg: dict) -> list:
 
     if not layers:
         raise ValueError("model config 的 layers 是空的")
-    return layers
+    return Network(input_shape=model_cfg["input_shape"], layers=layers)
 
 
 def build_growth_policies(model_cfg: dict, layers: list) -> dict:
     """有容量的層各一個 GrowthPolicy,回傳 {層名: GrowthPolicy}。
 
-    layers: build_network(model_cfg) 的結果,跟 model_cfg["layers"] 一一對齊。
+    layers: build_network(model_cfg).layers,跟 model_cfg["layers"] 一一對齊。
     倍率、門檻讀 layer entry 裡的同名 key,沒填吃 GrowthPolicy 的預設。
     """
     return {layer.name: GrowthPolicy(**{key: float(entry[key])
@@ -154,62 +151,3 @@ def build_decoder(model_cfg: dict, layers: list):
     raise ValueError(
         f"未知的 decoder 種類:{kind!r}"
         f"(可用:membrane_regression / rate / population)")
-
-
-class ConvNetCompressed:
-    """一列 layer 串成的壓縮版 conv SNN。實際運算在 `salt_core.layers.run_network`,
-    這個 class 是「資料端事件格式 -> 標準事件流」的薄殼。
-
-    forward:把原始事件包成標準事件流 -> `run_network` 一列層跑完 -> 回傳
-    **最後一層的原始 `LayerForwardResult`**(不自己挑 v_final;怎麼把它讀成
-    預測分數是解碼器的事,見 `salt_core.decoder` / `build_decoder`),連同
-    每層 `LayerDiag`(spike 數 / firing rate / L 出界訊號 / 輸出上界出界訊號)。
-    動態放大 = 用 `salt_core.capacity.grown_to_fit` 重建 layer list 再
-    `ConvNetCompressed(新 layers)`,見 train_conv_compressed.py。
-
-    權重:`init` 回一個對齊 `self.layers` 的 tuple(一層一份陣列),就是餵給
-    `run_network` / `jax.grad` 的東西——沒有寫死欄位的 NamedTuple。
-    """
-
-    def __init__(self, layers: list):
-        self.layers = layers
-
-    def init(self, key: jax.Array) -> tuple:
-        keys = jax.random.split(key, len(self.layers))
-        return tuple(layer.init_weight(k) for layer, k in zip(self.layers, keys))
-
-    def apply(self, params: tuple, event_times: jax.Array, x: jax.Array,
-              y: jax.Array, c: jax.Array, n_real_events: jax.Array):
-        """單一樣本 forward。回傳 (最後一層 `LayerForwardResult`,
-        [每層 LayerDiag])。分數 / logits 由呼叫端的解碼器從 `LayerForwardResult`
-        讀出(見 `build_decoder`)。"""
-        first = self.layers[0]
-        in_stream = raw_events_to_stream(event_times, x, y, c, n_real_events,
-                                          h_in=first.h_in, w_in=first.w_in)
-        output = run_network(self.layers, params, in_stream)
-        return output.last, output.diags
-
-    def apply_batched(self, params: tuple, batch_event_times: jax.Array,
-                       batch_x: jax.Array, batch_y: jax.Array, batch_c: jax.Array,
-                       batch_n_real_events: jax.Array):
-        """對一批樣本 vmap `apply`。回傳 (批次化的 `LayerForwardResult`,
-        [批次化的 LayerDiag, ...])。"""
-        # 2026-09-18:曾經因為 determinism flag 開著時「外層 batch vmap」
-        # 讓壓縮版 conv 佇列建構的梯度算錯,暫時改用 lax.map 繞過(見
-        # docs/問題紀錄.md 第八節)——後來定位到真正根因是
-        # `_compress_candidates` 用 `mode='drop'` scatter 處理不合法/溢出
-        # 候選,踩到 XLA 一個 GPU determinism codegen bug,已經在
-        # `salt_core/connectivity/conv.py::_compress_candidates` 改用「垃圾桶」
-        # 寫法修掉(不用 mode='drop',邏輯驗證見 archive/xla_repro/verify_trash_row_equivalence.py),
-        # 換回 vmap(比 lax.map 快,batch=8 時量過差距達 10 倍)。
-        # lax.map 版本(修法生效前的暫時繞法)保留在下面當註解,不要刪除。
-        return jax.vmap(self.apply, in_axes=(None, 0, 0, 0, 0, 0))(
-            params, batch_event_times, batch_x, batch_y, batch_c, batch_n_real_events)
-        # def _apply_one(args):
-        #     event_times, x, y, c, n_real_events = args
-        #     return self.apply(params, event_times, x, y, c, n_real_events)
-        #
-        # return jax.lax.map(
-        #     _apply_one,
-        #     (batch_event_times, batch_x, batch_y, batch_c, batch_n_real_events),
-        # )

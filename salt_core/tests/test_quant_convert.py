@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from salt_core.layer_chain import EventStream
-from salt_core.layers import ConvLayer, FCLayer, run_network
+from salt_core.layers import ConvLayer, FCLayer
+from salt_core.network import run_network
 from salt_core.quant.backend import QuantBackend
 from salt_core.quant.convert import (LayerQuantSpec, build_quantized_params, iv_per_channel,
                                      weight_codes)

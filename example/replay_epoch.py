@@ -23,29 +23,28 @@ import os
 from data.src.nmnist import NMNISTDataset
 from example.paths import DATASET_ROOT
 from example.utils import (WEIGHTS_DIRNAME, load_params_npz, load_run_record,
-                           rebuild_layers, weight_snapshot_path)
-from salt_core.layers import raw_events_to_stream, run_network
+                           rebuild_network, weight_snapshot_path)
+from salt_core.network import Network, RawEvents
 from salt_core.monitor import summarize_trace_scalars
 
 
-def load_epoch_weights(exp_dir: str, epoch: int) -> tuple[list, tuple]:
-    """回傳 `(chunk_size=1 的 layers, 那個 epoch 存的權重)`。"""
+def load_epoch_weights(exp_dir: str, epoch: int) -> tuple[Network, tuple]:
+    """回傳 `(每層 chunk_size=1 的 Network, 那個 epoch 存的權重)`。"""
     run_record = load_run_record(exp_dir)
-    layers = [layer.with_chunk_size(1) for layer in rebuild_layers(run_record)]
+    network = rebuild_network(run_record)
+    network = network.replace_layers([layer.with_chunk_size(1) for layer in network.layers])
     weights_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
-    params = load_params_npz(weight_snapshot_path(weights_dir, epoch), layers)
-    return layers, params
+    params = load_params_npz(weight_snapshot_path(weights_dir, epoch), network.layers)
+    return network, params
 
 
 def replay_sample(exp_dir: str, epoch: int, event_times, x, y, c, n_real_events) -> list:
     """給一筆原始樣本(跟訓練資料同格式的
     `(event_times, x, y, c, n_real_events)`),回傳每層的 `LayerForwardTrace`
     (`chunk_size=1`,逐事件精確)。"""
-    layers, params = load_epoch_weights(exp_dir, epoch)
-    first = layers[0]
-    in_stream = raw_events_to_stream(event_times, x, y, c, n_real_events,
-                                      h_in=first.h_in, w_in=first.w_in)
-    return list(run_network(layers, params, in_stream, trace=True).traces)
+    network, params = load_epoch_weights(exp_dir, epoch)
+    raw = RawEvents.checked(event_times, x, y, c, n_real_events)
+    return list(network.apply(params, raw, trace=True).traces)
 
 
 def load_train_sample(run_record: dict, sample: int):
@@ -70,13 +69,11 @@ def main() -> None:
 
     run_record = load_run_record(args.exp_dir)
     sample = load_train_sample(run_record, args.sample)
-    layers, params = load_epoch_weights(args.exp_dir, args.epoch)
-    first = layers[0]
-    in_stream = raw_events_to_stream(*sample, h_in=first.h_in, w_in=first.w_in)
-    traces = run_network(layers, params, in_stream, trace=True).traces
+    network, params = load_epoch_weights(args.exp_dir, args.epoch)
+    traces = network.apply(params, RawEvents.checked(*sample), trace=True).traces
 
     print(f"epoch={args.epoch} sample={args.sample}(chunk_size 全部強制為 1,逐事件精確)\n")
-    for layer, trace in zip(layers, traces):
+    for layer, trace in zip(network.layers, traces):
         stats = summarize_trace_scalars(trace)
         print(f"[{layer.name}]  ({stats['n']}, {stats['steps']})  "
               f"總 spike={stats['total_spikes']}  有 fire={stats['fired'].size}/{stats['n']}  "

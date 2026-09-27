@@ -27,7 +27,7 @@ def main() -> None:
 
     exp_dir = os.path.join(EXPERIMENTS_DIR, args.exp_dir_name)
     run_record = load_run_record(exp_dir)
-    layers = build_network(run_record["config"]["model"])
+    layers = build_network(run_record["config"]["model"]).layers
     names = [layer.name for layer in layers]
 
     weights_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)

@@ -26,7 +26,8 @@ import pytest
 
 from salt_core.connectivity.fc import build_fc_structure, fc_weight_codes
 from salt_core.layer_chain import EventStream
-from salt_core.layers import ConvLayer, FCLayer, run_network
+from salt_core.layers import ConvLayer, FCLayer
+from salt_core.network import run_network
 from salt_core.quant.backend import QuantBackend, QuantizedLayerParams
 from salt_core.quant.codes import apply_decay_table_int, build_decay_table_int
 from salt_core.quant.scan import run_layer

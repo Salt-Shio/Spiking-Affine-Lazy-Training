@@ -6,11 +6,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from data.src.nmnist import NMNISTSplit
-from example.models.conv_net import ConvNetCompressed
 from example.utils import make_evaluate
 from salt_core.decoder import MembraneRegressionDecoder
-from salt_core.tests._small_network import (init_params, raw_batch, small_layers, small_policies,
-                                             with_conv_knob)
+from salt_core.network import Network
+from salt_core.tests._small_network import (INPUT_SHAPE, init_params, raw_batch, small_layers,
+                                             small_policies, with_conv_knob)
 
 N_SAMPLES = 6
 EVAL_BATCH = 3
@@ -18,6 +18,7 @@ EVAL_BATCH = 3
 
 def _split() -> NMNISTSplit:
     et, x, y, c, nr = raw_batch(seed=4, n_samples=N_SAMPLES)
+    et = jnp.floor(et)  # make_evaluate 會檢查時間是整數毫秒
     labels = jax.random.randint(jax.random.PRNGKey(5), (N_SAMPLES,), 0, 10)
     return NMNISTSplit(event_times=et, x=x, y=y, c=c, n_real_events=nr, labels=labels,
                        labels_onehot=jax.nn.one_hot(labels, 10))
@@ -29,8 +30,8 @@ def _generous_case():
     layers = small_layers()
     params = init_params(layers, seed=3)
     split = _split()
-    evaluate = make_evaluate(ConvNetCompressed(layers), MembraneRegressionDecoder(), EVAL_BATCH,
-                             small_policies(layers))
+    evaluate = make_evaluate(Network(INPUT_SHAPE, layers), MembraneRegressionDecoder(),
+                             EVAL_BATCH, small_policies(layers))
     return layers, params, split, evaluate(params, split)
 
 
@@ -42,7 +43,7 @@ def test_generous_capacity_does_not_regrow():
 def test_overflow_regrows_and_matches_generous():
     layers, params, split, (acc, loss, preds, _) = _generous_case()
     small = with_conv_knob(layers, "L", 1)
-    net = ConvNetCompressed(small)
+    net = Network(INPUT_SHAPE, small)
     evaluate = make_evaluate(net, MembraneRegressionDecoder(), EVAL_BATCH, small_policies(small))
 
     got_acc, got_loss, got_preds, regrows = evaluate(params, split)
@@ -53,4 +54,4 @@ def test_overflow_regrows_and_matches_generous():
 
     # 放大後的容量留給下一次呼叫;net 自己的容量不變
     assert evaluate(params, split)[3] == 0
-    assert net.layers == small
+    assert net.layers == tuple(small)

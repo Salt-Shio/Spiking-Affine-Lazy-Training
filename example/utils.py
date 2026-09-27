@@ -9,10 +9,11 @@
 - `save_params_npz`/`load_params_npz`:`params.npz`/`best_params.npz` 的
   寫讀,key = 層名——訓練那邊寫、eval_test 這邊讀,約定只靠人記得對齊,
   現在收進同一份函式。
-- `load_run_record`/`rebuild_layers`/`load_run_params`:從 `exp_dir` 重建
-  一次訓練 run 的 layers/params,原本是 `eval_test.py` 私有的
-  `_load_run_record`/`_rebuild_layers`/`_load_params`,現在給任何要重建
-  layer 幾何/權重的呼叫端共用(例如逐 epoch 重跑 traced forward 的分析工具)。
+- `load_run_record`/`rebuild_network`/`load_run_params`:從 `exp_dir` 重建
+  一次訓練 run 的網路/params,給任何要重建幾何/權重的呼叫端共用(例如逐 epoch
+  重跑 traced forward 的分析工具)。
+- `split_raw_events`/`take_raw_events`:資料端的 split 轉成檢查過的 `RawEvents`、
+  從裡面取一批(`data/` 不依賴 `salt_core`,轉換寫在這裡)。
 - `weight_snapshot_path`:`experiments/<run>/weights/epoch_XXX.npz` 的命名
   慣例——訓練那邊(`train_conv_compressed.py`)週期性寫,事後分析工具讀,
   兩邊靠這個函式對齊路徑,不是各自重複拼字串。
@@ -35,8 +36,9 @@ import optax
 import yaml
 
 from salt_core.capacity import Capacity, grown_to_fit_batch, reduce_over_batch
+from salt_core.network import Network, RawEvents
 
-from example.models.conv_net import ConvNetCompressed, build_network
+from example.models.conv_net import build_network
 
 TRAIN_DIRNAME = "train"
 WEIGHTS_DIRNAME = "weights"
@@ -100,15 +102,26 @@ def load_run_record(exp_dir: str) -> dict:
         return yaml.safe_load(f)
 
 
-def rebuild_layers(run_record: dict) -> list:
-    """從 `run.yaml` 重建 layer list:形狀吃 config 快照,有容量的層換成訓練結束時的
-    容量(`final_capacity`)。init_k 不用套——重建出來的 layers 只用來讀取幾何/
-    評估權重,不重新初始化。"""
-    layers = build_network(run_record["config"]["model"])
+def rebuild_network(run_record: dict) -> Network:
+    """從 `run.yaml` 重建網路:形狀吃 config 快照,有容量的層換成訓練結束時的
+    容量(`final_capacity`)。只用來讀取幾何/評估權重,不重新初始化。"""
+    network = build_network(run_record["config"]["model"])
     final_capacity = run_record.get("final_capacity", {})
-    return [layer.with_capacity(Capacity(**final_capacity[layer.name]))
-            if layer.capacity is not None and layer.name in final_capacity else layer
-            for layer in layers]
+    return network.replace_layers(
+        [layer.with_capacity(Capacity(**final_capacity[layer.name]))
+         if layer.capacity is not None and layer.name in final_capacity else layer
+         for layer in network.layers])
+
+
+def split_raw_events(split) -> RawEvents:
+    """資料端 split 的事件欄位包成 RawEvents(leading axis = 樣本數),包之前檢查時間。
+    時間不合法時 raise ValueError(見 RawEvents.checked)。"""
+    return RawEvents.checked(split.event_times, split.x, split.y, split.c, split.n_real_events)
+
+
+def take_raw_events(raw: RawEvents, idx) -> RawEvents:
+    """從一批 RawEvents 取出 idx(index 陣列或 slice)那幾筆。"""
+    return jax.tree_util.tree_map(lambda a: a[idx], raw)
 
 
 def load_run_params(exp_dir: str, layers: list, which_params: str) -> tuple:
@@ -138,38 +151,36 @@ def describe_growth(old_layers: list, new_layers: list, reduced_diags: list) -> 
             for i, knob, old, new in capacity_changes(old_layers, new_layers)]
 
 
-def _make_scores_fn(layers: list, decoder):
-    net = ConvNetCompressed(layers)
-
+def _make_scores_fn(network: Network, decoder):
     @jax.jit
-    def scores_fn(params, event_times, x, y, c, n_real):
-        result, diags = net.apply_batched(params, event_times, x, y, c, n_real)
-        scores, _ = jax.vmap(decoder.decode)(result)
-        return scores, diags
+    def scores_fn(params, raw_batch: RawEvents):
+        output = network.apply_batched(params, raw_batch)
+        scores, _ = jax.vmap(decoder.decode)(output.last)
+        return scores, output.diags
 
     return scores_fn
 
 
-def make_evaluate(net, decoder, eval_batch_size: int, policies: dict):
+def make_evaluate(network: Network, decoder, eval_batch_size: int, policies: dict):
     """回傳 evaluate(params, split) -> (accuracy, loss, preds, capacity_regrows)。
 
-    分批 vmap 算 scores。某個 batch 容量出界時,照 policies(層名 -> GrowthPolicy)
-    放大評估用的容量、重算那個 batch,capacity_regrows 是這次呼叫重算的次數。
-    放大後的容量留給之後的呼叫,net 本身的容量不變。
+    分批 vmap 算 scores。某個 batch 容量出界時,照
+    policies(層名 -> GrowthPolicy)放大評估用的容量、重算那個 batch,capacity_regrows
+    是這次呼叫重算的次數。放大後的容量留給之後的呼叫,network 本身的容量不變。
     """
-    layers = net.layers
-    scores_fn = _make_scores_fn(layers, decoder)
+    layers = network.layers
+    scores_fn = _make_scores_fn(network, decoder)
 
     def evaluate(params, split):
         nonlocal layers, scores_fn
+        raw = split_raw_events(split)
         n = split.labels.shape[0]
         scores_parts = []
         regrows = 0
         for start in range(0, n, eval_batch_size):
             end = min(start + eval_batch_size, n)
-            batch = (split.event_times[start:end], split.x[start:end], split.y[start:end],
-                     split.c[start:end], split.n_real_events[start:end])
-            scores, diags = scores_fn(params, *batch)
+            batch = take_raw_events(raw, slice(start, end))
+            scores, diags = scores_fn(params, batch)
             grown = grown_to_fit_batch(layers, policies, diags)
             while grown is not layers:
                 print(f"[評估出界] batch={start // eval_batch_size}: 放大評估容量重算")
@@ -177,9 +188,9 @@ def make_evaluate(net, decoder, eval_batch_size: int, policies: dict):
                 for line in describe_growth(layers, grown, reduced):
                     print(f"  {line}")
                 layers = grown
-                scores_fn = _make_scores_fn(layers, decoder)
+                scores_fn = _make_scores_fn(network.replace_layers(layers), decoder)
                 regrows += 1
-                scores, diags = scores_fn(params, *batch)
+                scores, diags = scores_fn(params, batch)
                 grown = grown_to_fit_batch(layers, policies, diags)
             scores_parts.append(scores)
         scores = jnp.concatenate(scores_parts)

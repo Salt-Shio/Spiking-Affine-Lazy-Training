@@ -1,11 +1,11 @@
-"""salt_core/layers.py 的 check_layer_connections:相鄰兩層接不上時 raise。"""
+"""salt_core/network.py 的連接檢查:相鄰兩層、輸入網格跟第一層接不上時 raise。"""
 from dataclasses import replace
 
 import pytest
 
-from salt_core.dormant import dormant_report
 from salt_core.backend import FLOAT
-from salt_core.layers import ConvLayer, FCLayer, check_layer_connections, run_network
+from salt_core.layers import ConvLayer, FCLayer
+from salt_core.network import Network, check_layer_connections, run_network
 from salt_core.quant.backend import QuantBackend
 
 # 2x8x8 -> 4x8x8 -> 4x4x4(攤平 64)-> FC 10
@@ -54,6 +54,11 @@ def test_run_network_checks_connections(backend, trace):
         run_network([CONV1, replace(CONV2, ic=3)], None, None, backend=backend, trace=trace)
 
 
-def test_dormant_report_checks_connections():
+def test_network_checks_layer_connections():
     with pytest.raises(ValueError, match="conv1.*conv2"):
-        dormant_report([CONV1, replace(CONV2, ic=3)], None, None, None)
+        Network((2, 8, 8), [CONV1, replace(CONV2, ic=3)])
+
+
+def test_network_checks_input_shape_against_first_layer():
+    with pytest.raises(ValueError, match="輸入.*conv1"):
+        Network((3, 8, 8), [CONV1, CONV2])

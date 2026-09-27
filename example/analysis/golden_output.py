@@ -18,15 +18,17 @@ import sys
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import yaml
 
 from data.src.nmnist import NMNISTDataset
-from example.models.conv_net import ConvNetCompressed, build_decoder, build_growth_policies
+from example.models.conv_net import build_decoder, build_growth_policies
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
-from example.utils import load_run_params, load_run_record, rebuild_layers
+from example.utils import (load_run_params, load_run_record, rebuild_network, split_raw_events,
+                           take_raw_events)
 from salt_core.capacity import Capacity, LayerDiag, grown_to_fit
-from salt_core.layers import raw_events_to_stream, run_network
+from salt_core.network import Network
 from salt_core.quant.backend import QuantBackend
 from salt_core.quant.calibrate import merge_v_ranges, v_abs_max_per_channel, v_range_per_channel
 from salt_core.quant.convert import LayerQuantSpec, build_quantized_params
@@ -42,18 +44,18 @@ QUANT_CALIBRATION_SAMPLES = 50
 
 
 def load_run():
-    """回傳 (layers, decoder, params, val_split, batch_size),全部照那次 run 的設定。"""
+    """回傳 (network, decoder, params, val_split, batch_size),全部照那次 run 的設定。"""
     run_record = load_run_record(str(RUN_DIR))
     data_cfg = run_record["config"]["data"]
-    layers = rebuild_layers(run_record)
-    decoder = build_decoder(run_record["config"]["model"], layers)
-    decoder.validate(layers[-1])
-    params = load_run_params(str(RUN_DIR), layers, "best")
+    network = rebuild_network(run_record)
+    decoder = build_decoder(run_record["config"]["model"], network.layers)
+    decoder.validate(network.layers[-1])
+    params = load_run_params(str(RUN_DIR), network.layers, "best")
     dataset = NMNISTDataset(DATASET_ROOT, max_events=int(data_cfg["max_events"]))
     split = dataset.build_split(seed=int(data_cfg["seed_val"]),
                                 n_samples=int(data_cfg["val_size"]), which="val")
     batch_size = int(run_record["config"]["train"]["batch_size"])
-    return layers, decoder, params, split, batch_size
+    return network, decoder, params, split, batch_size
 
 
 def capacity_of(layers: list) -> dict:
@@ -61,30 +63,28 @@ def capacity_of(layers: list) -> dict:
     return {layer.name: dict(layer.capacity) for layer in layers if layer.capacity is not None}
 
 
-def with_capacity(layers: list, capacity: dict) -> list:
-    return [layer.with_capacity(Capacity(**capacity[layer.name])) if layer.name in capacity
-            else layer for layer in layers]
+def with_capacity(network: Network, capacity: dict) -> Network:
+    return network.replace_layers(
+        [layer.with_capacity(Capacity(**capacity[layer.name])) if layer.name in capacity
+         else layer for layer in network.layers])
 
 
-def forward_split(layers, decoder, params, split, batch_size: int) -> dict:
+def forward_split(network: Network, decoder, params, split, batch_size: int) -> dict:
     """整個 split 分批跑 forward。回傳:v_final (N, n_class)、preds (N,)、
     spike_count (N, n_layers)、needed {層名: {旋鈕: (N,)}}。
     """
-    net = ConvNetCompressed(layers)
-
     @jax.jit
-    def run_batch(weights, event_times, x, y, c, n_real):
-        result, diags = net.apply_batched(weights, event_times, x, y, c, n_real)
-        scores, _ = jax.vmap(decoder.decode)(result)
-        return scores, diags
+    def run_batch(weights, raw_batch):
+        output = network.apply_batched(weights, raw_batch)
+        scores, _ = jax.vmap(decoder.decode)(output.last)
+        return scores, output.diags
 
+    raw = split_raw_events(split)
     parts = []
     n = split.labels.shape[0]
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
-        scores, diags = run_batch(params, split.event_times[start:end], split.x[start:end],
-                                  split.y[start:end], split.c[start:end],
-                                  split.n_real_events[start:end])
+        scores, diags = run_batch(params, take_raw_events(raw, slice(start, end)))
         parts.append((np.asarray(scores),
                       np.stack([np.asarray(d.spike_count) for d in diags], axis=1),
                       [jax.tree_util.tree_map(np.asarray, d.needed) for d in diags]))
@@ -93,7 +93,7 @@ def forward_split(layers, decoder, params, split, batch_size: int) -> dict:
             "spike_count": np.concatenate([p[1] for p in parts]),
             "needed": {layer.name: {knob: np.concatenate([p[2][i][knob] for p in parts])
                                     for knob in parts[0][2][i]}
-                       for i, layer in enumerate(layers)}}
+                       for i, layer in enumerate(network.layers)}}
 
 
 def overflow_report(layers: list, out: dict) -> dict:
@@ -123,14 +123,16 @@ def accuracy(out: dict, labels: np.ndarray) -> float:
 
 
 def save() -> None:
-    layers, decoder, params, split, batch_size = load_run()
+    network, decoder, params, split, batch_size = load_run()
+    layers = network.layers
     labels = np.asarray(split.labels)
-    run_out = forward_split(layers, decoder, params, split, batch_size)
+    run_out = forward_split(network, decoder, params, split, batch_size)
     run_overflow = overflow_report(layers, run_out)
-    golden_layers, golden_out, n_regrow = layers, run_out, 0
-    while overflow_report(golden_layers, golden_out):
-        golden_layers = grown_layers(golden_layers, golden_out)
-        golden_out = forward_split(golden_layers, decoder, params, split, batch_size)
+    golden_network, golden_out, n_regrow = network, run_out, 0
+    while overflow_report(golden_network.layers, golden_out):
+        golden_network = golden_network.replace_layers(
+            grown_layers(golden_network.layers, golden_out))
+        golden_out = forward_split(golden_network, decoder, params, split, batch_size)
         n_regrow += 1
 
     GOLDEN_DIR.mkdir(exist_ok=True)
@@ -140,7 +142,7 @@ def save() -> None:
     report = {
         "layer_names": [layer.name for layer in layers],
         "run_capacity": capacity_of(layers),
-        "golden_capacity": capacity_of(golden_layers),
+        "golden_capacity": capacity_of(golden_network.layers),
         "n_regrow": n_regrow,
         "run_overflow_samples": run_overflow,
         "run_accuracy": accuracy(run_out, labels),
@@ -161,9 +163,9 @@ def compare() -> int:
     with open(GOLDEN_DIR / "report.yaml", "r", encoding="utf-8") as f:
         report = yaml.safe_load(f)
     golden = np.load(GOLDEN_DIR / "golden.npz")
-    layers, decoder, params, split, batch_size = load_run()
-    layers = with_capacity(layers, report["golden_capacity"])
-    out = forward_split(layers, decoder, params, split, batch_size)
+    network, decoder, params, split, batch_size = load_run()
+    network = with_capacity(network, report["golden_capacity"])
+    out = forward_split(network, decoder, params, split, batch_size)
 
     pred_diff = np.nonzero(out["preds"] != golden["preds"])[0]
     spike_diff = np.nonzero(np.any(out["spike_count"] != golden["spike_count"], axis=1))[0]
@@ -178,61 +180,67 @@ def compare() -> int:
     return int(bool(pred_diff.size or spike_diff.size or v_diff.size))
 
 
-def split_sample(split, i: int) -> tuple:
-    return (split.event_times[i], split.x[i], split.y[i], split.c[i], split.n_real_events[i])
-
-
-def sample_stream(layers: list, split, i: int):
-    first = layers[0]
-    return raw_events_to_stream(*split_sample(split, i), h_in=first.h_in, w_in=first.w_in)
-
-
-def build_golden_quant_params(layers: list, params, split) -> list:
-    """照 QUANT_SPEC 算每層的量化參數,M 用 split 前 QUANT_CALIBRATION_SAMPLES 筆量。"""
-    per_sample = [v_range_per_channel(layers, run_network(
-                      layers, params, sample_stream(layers, split, i), trace=True).traces)
+def build_golden_quant_params(network: Network, params, split) -> list:
+    """照 QUANT_SPEC 算每層的量化參數,M 用 split 前 QUANT_CALIBRATION_SAMPLES 筆逐筆量。"""
+    raw = split_raw_events(split)
+    per_sample = [v_range_per_channel(network.layers, network.apply(
+                      params, take_raw_events(raw, i), trace=True).traces)
                   for i in range(QUANT_CALIBRATION_SAMPLES)]
     v_abs_max = v_abs_max_per_channel(merge_v_ranges(per_sample))
     spec = LayerQuantSpec(bits=QUANT_SPEC["bits"], f_a=QUANT_SPEC["f_a"], f_V=QUANT_SPEC["f_V"],
                           overflow_mode=QUANT_SPEC["overflow_mode"])
-    specs = [spec] * (len(layers) - 1) + [spec._replace(fires=False)]
-    return build_quantized_params(layers, params, specs, v_abs_max)
+    specs = [spec] * (len(network.layers) - 1) + [spec._replace(fires=False)]
+    return build_quantized_params(network.layers, params, specs, v_abs_max)
 
 
-def quant_forward_split(layers: list, decoder, quant_params: list, split) -> dict:
-    """整個 split 逐筆跑量化版 forward。回傳 numpy 陣列:v_final_int (N, n_class)、
+def quant_forward_split(network: Network, decoder, quant_params: list, split,
+                        batch_size: int) -> dict:
+    """整個 split 分批跑量化版 forward。回傳 numpy 陣列:v_final_int (N, n_class)、
     preds (N,),spike_count、truncated、overflowed 各 (N, n_layers)。"""
     backend = QuantBackend(round_mode=QUANT_SPEC["round_mode"])
-    rows = []
-    for i in range(split.labels.shape[0]):
-        out = run_network(layers, quant_params, sample_stream(layers, split, i), backend=backend)
-        scores, _ = decoder.decode(backend.readout(out.last, quant_params[-1]))
-        rows.append({
-            "v_final_int": np.asarray(out.last.v_final),
-            "preds": int(np.argmax(np.asarray(scores))),
-            "spike_count": [int(np.asarray(r.spike_mask).sum()) for r in out.results],
-            "truncated": [layer.capacity is not None and not bool(layer.capacity.fits(d))
-                          for layer, d in zip(layers, out.diags)],
-            "overflowed": [bool(np.asarray(r.overflowed).any()) for r in out.results],
-        })
-    return {key: np.array([row[key] for row in rows]) for key in rows[0]}
+
+    # 量化參數含 Python 整數(f_a、f_V、i_V),當 jit 的常數,不當引數傳。
+    @jax.jit
+    def run_batch(raw_batch):
+        output = network.apply_batched(quant_params, raw_batch, backend=backend)
+        scores, _ = jax.vmap(decoder.decode)(backend.readout(output.last, quant_params[-1]))
+        n = scores.shape[0]
+        truncated = [jnp.zeros(n, dtype=bool) if layer.capacity is None
+                     else ~layer.capacity.fits(diag)
+                     for layer, diag in zip(network.layers, output.diags)]
+        return {"v_final_int": output.last.v_final,
+                "preds": jnp.argmax(scores, axis=1),
+                "spike_count": jnp.stack([jnp.sum(r.spike_mask, axis=(1, 2))
+                                          for r in output.results], axis=1),
+                "truncated": jnp.stack(truncated, axis=1),
+                "overflowed": jnp.stack([jnp.any(r.overflowed, axis=(1, 2))
+                                         for r in output.results], axis=1)}
+
+    raw = split_raw_events(split)
+    n = split.labels.shape[0]
+    parts = [jax.tree_util.tree_map(np.asarray,
+                                    run_batch(take_raw_events(raw, slice(start, start + batch_size))))
+             for start in range(0, n, batch_size)]
+    return {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
 
 
 def load_quant_run() -> tuple:
-    """回傳 (layers, decoder, quant_params, split)。容量用 save 記下的,chunk_size 改 1。"""
+    """回傳 (network, decoder, quant_params, split, batch_size)。容量用 save 記下的,
+    chunk_size 改 1。"""
     with open(GOLDEN_DIR / "report.yaml", "r", encoding="utf-8") as f:
         report = yaml.safe_load(f)
-    layers, decoder, params, split, _batch_size = load_run()
-    layers = [layer.with_chunk_size(1) for layer in with_capacity(layers, report["golden_capacity"])]
-    return layers, decoder, build_golden_quant_params(layers, params, split), split
+    network, decoder, params, split, batch_size = load_run()
+    network = with_capacity(network, report["golden_capacity"])
+    network = network.replace_layers([layer.with_chunk_size(1) for layer in network.layers])
+    return network, decoder, build_golden_quant_params(network, params, split), split, batch_size
 
 
 def save_quant() -> None:
-    layers, decoder, quant_params, split = load_quant_run()
-    out = quant_forward_split(layers, decoder, quant_params, split)
+    network, decoder, quant_params, split, batch_size = load_quant_run()
+    out = quant_forward_split(network, decoder, quant_params, split, batch_size)
     labels = np.asarray(split.labels)
     np.savez(GOLDEN_DIR / "golden_quant.npz", labels=labels, **out)
-    names = [layer.name for layer in layers]
+    names = [layer.name for layer in network.layers]
     report = {
         "spec": QUANT_SPEC,
         "calibration_samples": QUANT_CALIBRATION_SAMPLES,
@@ -252,9 +260,9 @@ def compare_quant() -> int:
     with open(GOLDEN_DIR / "report_quant.yaml", "r", encoding="utf-8") as f:
         report = yaml.safe_load(f)
     golden = np.load(GOLDEN_DIR / "golden_quant.npz")
-    layers, decoder, quant_params, split = load_quant_run()
-    i_V = {layer.name: p.i_V for layer, p in zip(layers, quant_params)}
-    out = quant_forward_split(layers, decoder, quant_params, split)
+    network, decoder, quant_params, split, batch_size = load_quant_run()
+    i_V = {layer.name: p.i_V for layer, p in zip(network.layers, quant_params)}
+    out = quant_forward_split(network, decoder, quant_params, split, batch_size)
 
     print(f"accuracy {accuracy(out, golden['labels']):.4f}(黃金輸出 {report['accuracy']:.4f})")
     print(f"i_V {i_V}(黃金輸出 {report['i_V']})")

@@ -31,11 +31,10 @@ import numpy as np
 import yaml
 
 from data.src.nmnist import NMNISTDataset
-from example.models.conv_net import (N_CLASSES, ConvNetCompressed, build_decoder,
-                                     build_growth_policies)
+from example.models.conv_net import N_CLASSES, build_decoder, build_growth_policies
 from example.paths import DATASET_ROOT
 from example.utils import (EVAL_DIRNAME, load_run_params, load_run_record,
-                           make_evaluate, rebuild_layers)
+                           make_evaluate, rebuild_network)
 
 
 def _confusion_matrix(labels: np.ndarray, preds: np.ndarray, n_classes: int) -> np.ndarray:
@@ -51,8 +50,8 @@ def evaluate_run(exp_dir: str, which: str, n_samples: int | None,
     model_cfg = run_record["config"]["model"]
     data_cfg = run_record["config"]["data"]
 
-    layers = rebuild_layers(run_record)
-    net = ConvNetCompressed(layers)
+    network = rebuild_network(run_record)
+    layers = network.layers
     decoder = build_decoder(model_cfg, layers)
     decoder.validate(layers[-1])
     params = load_run_params(exp_dir, layers, which_params)
@@ -63,7 +62,7 @@ def evaluate_run(exp_dir: str, which: str, n_samples: int | None,
     split = dataset.build_split(seed=seed, n_samples=n_samples, which=which)
 
     eval_batch_size = int(run_record["config"]["train"]["batch_size"])
-    evaluate = make_evaluate(net, decoder, eval_batch_size,
+    evaluate = make_evaluate(network, decoder, eval_batch_size,
                              build_growth_policies(model_cfg, layers))
     accuracy, loss, preds, capacity_regrows = evaluate(params, split)
     labels = np.asarray(split.labels)

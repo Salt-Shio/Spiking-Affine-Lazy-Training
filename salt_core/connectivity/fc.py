@@ -42,7 +42,8 @@ def fc_float_values(structure: FCQueueStructure, w: jax.Array, tau: float,
         理由見 docs/問題紀錄.md。None 等於全 1。
     回傳 AffineMap,a、b 形狀 (n_out, n_events);pad 位置是 a=1、b=0。
     """
-    weights = w[:, structure.source_idx]
+    # w 可能是 numpy 陣列(例如從 npz 讀進來、當 jit 常數),numpy 不能用 traced index 取值。
+    weights = jnp.asarray(w)[:, structure.source_idx]
     if event_gain is not None:
         weights = weights * jnp.asarray(event_gain, dtype=weights.dtype)[None, :]
     maps = create_affine_maps(structure.delta_t, weights, tau)
@@ -57,4 +58,4 @@ def fc_weight_codes(structure: FCQueueStructure, q: jax.Array) -> jax.Array:
     回傳 int32,形狀 (n_out, n_events)。
     """
     is_real = jnp.arange(structure.delta_t.shape[0]) < structure.n_real_events
-    return jnp.where(is_real[None, :], q[:, structure.source_idx], 0).astype(jnp.int32)
+    return jnp.where(is_real[None, :], jnp.asarray(q)[:, structure.source_idx], 0).astype(jnp.int32)

@@ -604,7 +604,7 @@ def test_compressed_matches_dense_spike_details_and_gradient_when_neuron_fires()
 
 # ============================================================================
 # 第四類:段 4 補上的 event_gain 支援(段 1 當時刻意排除,因為 conv1 直接吃
-# 原始事件、沒有上游層)。ConvNetCompressed 的 conv2 靠 event_gain 把 conv1
+# 原始事件、沒有上游層)。網路的 conv2 靠 event_gain 把 conv1
 # 的 s_spike 乘進來,重新接通對 w_conv1 的跨層梯度路徑。以「密集版
 # build_conv_queue(event_gain=g) 已驗證過」當基準,比對壓縮版帶同一個 g。
 # ============================================================================

@@ -27,10 +27,10 @@ from data.src.nmnist import NMNISTDataset
 from salt_core.connectivity.conv import _axis_candidates, unravel_conv_source
 from salt_core.layer_chain import EventStream
 from salt_core.capacity import GrowthPolicy, grown_to_fit, grown_to_fit_batch, reduce_over_batch
-from salt_core.layers import raw_events_to_stream
-from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
+from example.models.conv_net import build_decoder, build_network
 from example.paths import DATASET_ROOT, resolve_config
 from example.train_conv_compressed import load_config
+from example.utils import split_raw_events
 
 # 掃描的 init_k;√3 = Lee 變異數保持、8/64 = 舊 firing-rate 準則。
 INIT_KS = (math.sqrt(3.0), 3.0, 5.0, 8.0, 64.0)
@@ -179,16 +179,15 @@ def _load_layers_and_stream(n_samples: int):
     cfg = load_config(str(resolve_config("configs/conv/baseline.yaml")))
     model_cfg = cfg["model"]
     data_cfg = cfg["data"]
-    layers = build_network(model_cfg)
+    network = build_network(model_cfg)
+    layers = list(network.layers)
 
     ds = NMNISTDataset(DATASET_ROOT, max_events=data_cfg["max_events"])
     split = ds.build_split(seed=data_cfg["seed_train"],
                            n_samples=max(n_samples, data_cfg["train_size"]),
                            which="train")
     sl = jax.tree_util.tree_map(lambda a: a[:n_samples], split)
-    first = layers[0]
-    stream = jax.vmap(raw_events_to_stream, in_axes=(0, 0, 0, 0, 0, None, None))(
-        sl.event_times, sl.x, sl.y, sl.c, sl.n_real_events, first.h_in, first.w_in)
+    stream = jax.vmap(network.input_stream)(split_raw_events(sl))
     return model_cfg, layers, split, sl, stream
 
 
@@ -314,15 +313,15 @@ def _print_v3(rows: list[dict]) -> None:
 # ----------------------------------------------------------------------------
 # V4:‖∂L/∂W‖ 逐層對 init_k
 # ----------------------------------------------------------------------------
-def _fit_network(layers, params, sl):
-    """整個網路的容量放大到放得下這批樣本為止,回傳放得下的層。"""
+def _fit_network(network, params, raw):
+    """整個網路的容量放大到放得下這批樣本為止,回傳放得下的網路。"""
+    layers = network.layers
+    policies = {layer.name: FIT_POLICY for layer in layers if layer.capacity is not None}
     while True:
-        _result, diags = ConvNetCompressed(layers).apply_batched(
-            params, sl.event_times, sl.x, sl.y, sl.c, sl.n_real_events)
-        policies = {layer.name: FIT_POLICY for layer in layers if layer.capacity is not None}
+        diags = network.replace_layers(layers).apply_batched(params, raw).diags
         grown = grown_to_fit_batch(layers, policies, diags)
         if grown is layers:
-            return layers
+            return network.replace_layers(layers)
         layers = grown
 
 
@@ -330,17 +329,17 @@ def run_v4(n_samples: int = 16) -> list[dict]:
     model_cfg, layers, _split, sl, _stream = _load_layers_and_stream(n_samples)
     decoder = build_decoder(model_cfg, layers)
     labels_oh = sl.labels_onehot
+    raw = split_raw_events(sl)
+    network = build_network(model_cfg)
 
     def loss_fn(params, net):
-        result, _diags = net.apply_batched(params, sl.event_times, sl.x, sl.y,
-                                            sl.c, sl.n_real_events)
-        scores, _ = jax.vmap(decoder.decode)(result)
+        scores, _ = jax.vmap(decoder.decode)(net.apply_batched(params, raw).last)
         return jnp.mean(optax.softmax_cross_entropy(scores, labels_oh))
 
     rows = []
     for init_k in INIT_KS:
         params = _weights_for(layers, {"conv1": init_k, "conv2": init_k})
-        net = ConvNetCompressed(_fit_network(layers, params, sl))
+        net = _fit_network(network, params, raw)
         loss, grad = jax.value_and_grad(loss_fn)(params, net)
         gn = {layer.name: float(jnp.linalg.norm(g)) for layer, g in zip(layers, grad)}
         rows.append(dict(init_k=init_k, loss=float(loss), **gn))

@@ -21,7 +21,8 @@ import numpy as np
 
 from salt_core.chunk_scan import run_layer_forward, run_layer_forward_traced
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.layers import ConvLayer, FCLayer, raw_events_to_stream, run_network
+from salt_core.layers import ConvLayer, FCLayer
+from salt_core.network import Network, RawEvents, run_network
 from salt_core.monitor import (LayerForwardTrace, resolve_ms_compressed,
                                 resolve_ms_dense, summarize_trace_scalars)
 
@@ -64,8 +65,8 @@ def _raw_batch(key, n_samples, max_len, h_in, w_in, ic):
 
 
 def _stream0(batch, layer0):
-    et, x, y, c, nr = (v[0] for v in batch)
-    return raw_events_to_stream(et, x, y, c, nr, layer0.h_in, layer0.w_in)
+    raw = RawEvents(*(v[0] for v in batch))
+    return Network(layer0.input_shape, [layer0]).input_stream(raw)
 
 
 # ============================================================================

@@ -1,3 +1,3 @@
-"""模型 package。目前只有 `conv_net.py` 的 `ConvNetCompressed` 一個模型,
-訓練 entrypoint 直接 import 它,不經過 registry。
+"""模型 package。`conv_net.py` 從 yaml 的 model config 組出 `Network`、解碼器、
+容量放大縮小策略,訓練 entrypoint 直接 import,不經過 registry。
 """
