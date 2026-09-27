@@ -55,9 +55,9 @@ from salt_core.dormant import dormant_report
 from example.metrics_log import MetricsLog
 from example.models.conv_net import ConvNetCompressed, build_decoder, build_network
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR, REPO_ROOT, resolve_config
-from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, get_git_commit_hash,
-                           make_evaluate, save_params_npz, set_seed,
-                           weight_snapshot_path)
+from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, describe_growth,
+                           get_git_commit_hash, make_evaluate, save_params_npz,
+                           set_seed, weight_snapshot_path)
 
 
 def load_config(path: str) -> dict:
@@ -174,25 +174,6 @@ def _grow_layers(layers: list, reduced_diags: list) -> list:
     return [layer.grown_to_fit(diag) for layer, diag in zip(layers, reduced_diags)]
 
 
-def _describe_growth(old_layers: list, new_layers: list, reduced_diags: list) -> list[str]:
-    """哪些層的哪些容量旋鈕從多少放大到多少(附這個 batch 觀察到的真實值),
-    一個旋鈕一行,給呼叫端縮排印出來/測試解析。格式:
-    `conv2 L 32->2100(觀察 1401)`。"""
-    lines = []
-    for old, new, d in zip(old_layers, new_layers, reduced_diags):
-        if old is new or not isinstance(old, ConvLayer):
-            continue
-        if new.L != old.L:
-            lines.append(f"{old.name} L {old.L}->{new.L}(觀察 {int(d.max_real_queue)})")
-        if new.max_out_spikes != old.max_out_spikes:
-            lines.append(f"{old.name} max_out {old.max_out_spikes}->{new.max_out_spikes}"
-                          f"(觀察 {int(d.n_out_spikes)})")
-        if new.max_steps != old.max_steps:
-            lines.append(f"{old.name} max_steps {old.max_steps}->{new.max_steps}"
-                          f"(觀察 {int(d.min_steps_needed)})")
-    return lines
-
-
 def _shrink_layers(layers: list, epoch_min_steps_needed: dict,
                     epoch_n_out_spikes: dict) -> list:
     """對每一層問一次 `shrink_max_steps` + `shrink_max_out_spikes`,回傳新的
@@ -210,7 +191,7 @@ def _shrink_layers(layers: list, epoch_min_steps_needed: dict,
 
 
 def _describe_shrink(old_layers: list, new_layers: list) -> list[str]:
-    """跟 `_describe_growth` 對應,一個旋鈕一行,格式:`conv1 max_steps
+    """跟 `describe_growth` 對應,一個旋鈕一行,格式:`conv1 max_steps
     200->134`。"""
     lines = []
     for old, new in zip(old_layers, new_layers):
@@ -294,7 +275,7 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
                 where = (f"退回 checkpoint(epoch={checkpointer.last_epoch})"
                          if checkpointer.exists() else "還沒有 checkpoint,退回訓練最初始狀態")
                 print(f"[出界] epoch={epoch} batch={b}: {where}")
-                for line in _describe_growth(layers, grown, reduced_diags):
+                for line in describe_growth(layers, grown, reduced_diags):
                     print(f"  {line}")
                 return EpochsOutcome(overflowed=True, grown_layers=grown,
                                       final_params=params, best=best)
@@ -310,12 +291,15 @@ def run_epochs(*, layers, train_step, evaluate, params, opt_state,
                                       grad_norms=grad_norms,
                                       decoder_metrics=reduced_metrics)
 
-        val_accuracy, _val_loss, _ = evaluate(params, val_split)
+        val_accuracy, _val_loss, _, val_regrows = evaluate(params, val_split)
         if val_accuracy > best.val_accuracy:
             best = Best(params=params, val_accuracy=val_accuracy, epoch=epoch)
-        dormant = dormant_report(layers, params, probe_batch)
+        dormant, dormant_regrows = dormant_report(layers, params, probe_batch)
+        if dormant_regrows:
+            print(f"[dormant 出界] epoch={epoch}: 放大探測用容量重算 {dormant_regrows} 次")
         metrics_log.finish_epoch(epoch=epoch, val_accuracy=val_accuracy, layers=layers,
-                                  dormant=dormant)
+                                  dormant=dormant, val_capacity_regrows=val_regrows,
+                                  dormant_capacity_regrows=dormant_regrows)
         checkpointer.save(params=params, opt_state=opt_state,
                           shuffle_key=shuffle_key, epoch=epoch)
 

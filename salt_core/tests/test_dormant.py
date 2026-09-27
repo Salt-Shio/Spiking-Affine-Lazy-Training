@@ -7,12 +7,16 @@
 - `dormant_report`(逐層跑 forward + 分 chunk 累加):用小規模合成資料,確認
   接線 —— 只收 conv 層、輸出格式、分 chunk == 單一大批、跟手動歸約一致。
 """
+import functools
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from salt_core.dormant import dormant_report, dormant_score
 from salt_core.layers import ConvLayer, FCLayer, raw_events_to_stream
+from salt_core.tests._small_network import (init_params, raw_batch, small_layers,
+                                             synthetic_raw_batch, with_conv_knob)
 
 TOL = 1e-5
 
@@ -30,26 +34,6 @@ def _layers():
 def _params(layers, seed=0):
     keys = jax.random.split(jax.random.PRNGKey(seed), len(layers))
     return tuple(layer.init_weight(k) for layer, k in zip(layers, keys))
-
-
-def _synthetic_raw_batch(key, n_samples, max_len, h_in, w_in, ic):
-    ks = jax.random.split(key, n_samples * 4)
-    et = jnp.zeros((n_samples, max_len), dtype=jnp.float32)
-    xs = jnp.zeros((n_samples, max_len), dtype=jnp.int32)
-    ys = jnp.zeros((n_samples, max_len), dtype=jnp.int32)
-    cs = jnp.zeros((n_samples, max_len), dtype=jnp.int32)
-    nr = []
-    for i in range(n_samples):
-        kt, kx, ky, kc = ks[4 * i:4 * i + 4]
-        n = max_len - (i % 3)
-        t = jnp.sort(jax.random.uniform(kt, (n,), minval=1.0, maxval=30.0))
-        et = et.at[i, :n].set(t)
-        et = et.at[i, n:].set(t[-1])
-        xs = xs.at[i, :n].set(jax.random.randint(kx, (n,), 0, w_in))
-        ys = ys.at[i, :n].set(jax.random.randint(ky, (n,), 0, h_in))
-        cs = cs.at[i, :n].set(jax.random.randint(kc, (n,), 0, ic))
-        nr.append(n)
-    return et, xs, ys, cs, jnp.array(nr, dtype=jnp.int32)
 
 
 # ============================================================================
@@ -92,9 +76,9 @@ def test_dormant_score_tau_is_inclusive_and_monotone():
 def test_dormant_report_only_conv_layers_and_valid_shape():
     layers = _layers()
     params = _params(layers)
-    batch = _synthetic_raw_batch(jax.random.PRNGKey(1), n_samples=6, max_len=20,
+    batch = synthetic_raw_batch(jax.random.PRNGKey(1), n_samples=6, max_len=20,
                                   h_in=34, w_in=34, ic=2)
-    report = dormant_report(layers, params, batch, chunk=4)
+    report, _ = dormant_report(layers, params, batch, chunk=4)
 
     assert set(report) == {"conv1", "conv2"}, "FC 輸出層不該出現"
     for r in report.values():
@@ -105,10 +89,10 @@ def test_dormant_report_chunking_is_invariant():
     """分 chunk 累加 == 一次全批。"""
     layers = _layers()
     params = _params(layers, seed=2)
-    batch = _synthetic_raw_batch(jax.random.PRNGKey(3), n_samples=6, max_len=20,
+    batch = synthetic_raw_batch(jax.random.PRNGKey(3), n_samples=6, max_len=20,
                                   h_in=34, w_in=34, ic=2)
-    one = dormant_report(layers, params, batch, chunk=6)
-    many = dormant_report(layers, params, batch, chunk=2)
+    one, _ = dormant_report(layers, params, batch, chunk=6)
+    many, _ = dormant_report(layers, params, batch, chunk=2)
     for name in one:
         assert abs(one[name]["dormant_frac"] - many[name]["dormant_frac"]) < TOL
 
@@ -118,7 +102,7 @@ def test_dormant_report_matches_manual_reduction():
     layers = _layers()
     params = _params(layers, seed=4)
     n = 6
-    batch = _synthetic_raw_batch(jax.random.PRNGKey(5), n_samples=n, max_len=20,
+    batch = synthetic_raw_batch(jax.random.PRNGKey(5), n_samples=n, max_len=20,
                                   h_in=34, w_in=34, ic=2)
     et, x, y, c, nr = batch
     conv1 = layers[0]
@@ -131,16 +115,16 @@ def test_dormant_report_matches_manual_reduction():
     per_sample = jax.vmap(one)(et, x, y, c, nr)          # (n, n_neurons)
     activity = np.asarray(jnp.mean(per_sample, axis=0))
     expect = dormant_score(activity, tau=0.1)
-    got = dormant_report(layers, params, batch, chunk=4)["conv1"]
+    got = dormant_report(layers, params, batch, chunk=4)[0]["conv1"]
     assert abs(got["dormant_frac"] - expect["dormant_frac"]) < TOL
 
 
 def test_dormant_report_s_value_activity_runs():
     layers = _layers()
     params = _params(layers, seed=6)
-    batch = _synthetic_raw_batch(jax.random.PRNGKey(7), n_samples=4, max_len=18,
+    batch = synthetic_raw_batch(jax.random.PRNGKey(7), n_samples=4, max_len=18,
                                   h_in=34, w_in=34, ic=2)
-    report = dormant_report(layers, params, batch, activity="s_value", chunk=2)
+    report, _ = dormant_report(layers, params, batch, activity="s_value", chunk=2)
     assert set(report) == {"conv1", "conv2"}
     for r in report.values():
         assert 0.0 <= r["dormant_frac"] <= 1.0
@@ -149,7 +133,7 @@ def test_dormant_report_s_value_activity_runs():
 def test_dormant_report_rejects_bad_activity():
     layers = _layers()
     params = _params(layers)
-    batch = _synthetic_raw_batch(jax.random.PRNGKey(8), n_samples=2, max_len=12,
+    batch = synthetic_raw_batch(jax.random.PRNGKey(8), n_samples=2, max_len=12,
                                   h_in=34, w_in=34, ic=2)
     try:
         dormant_report(layers, params, batch, activity="spikes")
@@ -157,6 +141,41 @@ def test_dormant_report_rejects_bad_activity():
         pass
     else:
         raise AssertionError("activity 打錯字應該 raise ValueError")
+
+
+# ============================================================================
+# C. dormant_report:容量出界時放大重算
+# ============================================================================
+
+@functools.cache
+def _generous_case():
+    """給足容量的小網路:(layers, params, batch, dormant_report 結果)。"""
+    layers = small_layers()
+    params = init_params(layers, seed=3)
+    batch = raw_batch(seed=4)
+    return layers, params, batch, dormant_report(layers, params, batch, chunk=3)
+
+
+def _assert_regrow_matches_generous(knob: str):
+    """每個 conv 層的 knob 設成 1:要重算,結果跟一開始就給足容量相同。"""
+    layers, params, batch, (expect, generous_regrows) = _generous_case()
+    got, regrows = dormant_report(with_conv_knob(layers, knob, 1), params, batch, chunk=3)
+    assert generous_regrows == 0
+    assert regrows > 0
+    for name in expect:
+        assert abs(got[name]["dormant_frac"] - expect[name]["dormant_frac"]) < TOL
+
+
+def test_dormant_report_regrows_on_queue_overflow():
+    _assert_regrow_matches_generous("L")
+
+
+def test_dormant_report_regrows_on_output_spike_overflow():
+    _assert_regrow_matches_generous("max_out_spikes")
+
+
+def test_dormant_report_regrows_on_scan_step_overflow():
+    _assert_regrow_matches_generous("max_steps")
 
 
 TESTS = [
@@ -169,6 +188,9 @@ TESTS = [
     test_dormant_report_matches_manual_reduction,
     test_dormant_report_s_value_activity_runs,
     test_dormant_report_rejects_bad_activity,
+    test_dormant_report_regrows_on_queue_overflow,
+    test_dormant_report_regrows_on_output_spike_overflow,
+    test_dormant_report_regrows_on_scan_step_overflow,
 ]
 
 

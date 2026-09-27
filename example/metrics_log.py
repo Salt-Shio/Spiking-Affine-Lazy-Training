@@ -63,6 +63,7 @@ class MetricsLog:
             self._grad[name].append(float(g))
 
     def finish_epoch(self, *, epoch: int, val_accuracy: float, layers: list,
+                     val_capacity_regrows: int, dormant_capacity_regrows: int,
                      dormant: dict | None = None) -> None:
         """組這個 epoch 的 row(欄位順序:epoch/loss/val → 逐 conv 容量+用量 →
         逐層 firing rate → 逐層 grad norm → 逐 conv dormant 指標 → 解碼器指標),
@@ -70,9 +71,11 @@ class MetricsLog:
 
         `dormant`:{conv_layer_name: {"dormant_frac": float}}(見
         salt_core/dormant.py),沒傳則對應欄位填 nan。
+        val_capacity_regrows / dormant_capacity_regrows:val 評估、dormant 統計
+        因為容量出界重算的次數。
         """
         row = {"epoch": epoch, "train_loss": float(np.mean(self._losses)),
-               "val_accuracy": val_accuracy}
+               "val_accuracy": val_accuracy, "val_capacity_regrows": val_capacity_regrows}
         for layer in layers:
             if not isinstance(layer, ConvLayer):
                 continue
@@ -89,6 +92,7 @@ class MetricsLog:
         d = dormant or {}
         for name in self._conv_names:
             row[f"{name}_dormant_frac"] = float(d.get(name, {}).get("dormant_frac", float("nan")))
+        row["dormant_capacity_regrows"] = dormant_capacity_regrows
         for k, vals in self._dec.items():
             row[f"decoder_{k}"] = float(np.mean(vals))
         self._rows.append(row)

@@ -66,7 +66,7 @@ def evaluate_run(exp_dir: str, which: str, n_samples: int | None,
     eval_batch_size = int(data_cfg.get("batch_size")
                           or run_record["config"]["train"]["batch_size"])
     evaluate = make_evaluate(net, decoder, eval_batch_size)
-    accuracy, loss, preds = evaluate(params, split)
+    accuracy, loss, preds, capacity_regrows = evaluate(params, split)
     labels = np.asarray(split.labels)
     confusion_matrix = _confusion_matrix(labels, preds, N_CLASSES)
 
@@ -81,6 +81,7 @@ def evaluate_run(exp_dir: str, which: str, n_samples: int | None,
         "params": which_params,
         "accuracy": accuracy,
         "loss": loss,
+        "capacity_regrows": capacity_regrows,
         "confusion_matrix": confusion_matrix.tolist(),
         "git_commit": run_record.get("git_commit", ""),
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),

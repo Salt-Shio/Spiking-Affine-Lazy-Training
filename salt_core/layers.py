@@ -81,6 +81,8 @@ class Layer(Protocol):
     """一個 layer 的對外約定(純文件用途,`run_network` 靠 duck typing)。
     `run_network` 只需要底下這幾樣,不管是 conv 還是 FC。"""
     name: str
+    input_shape: tuple    # 吃空間輸入時是 (channel, 高, 寬),吃攤平輸入時是 (n,)
+    output_shape: tuple   # 同上,這層輸出的形狀
 
     def init_weight(self, key: jax.Array) -> jax.Array:
         """這一層的權重張量(形狀 / fan_in / init_k 都是層自己的知識)。"""
@@ -278,6 +280,14 @@ class ConvLayer:
     @property
     def n_neurons(self) -> int:
         return self.oc * self.h_out * self.w_out
+
+    @property
+    def input_shape(self) -> tuple:
+        return (self.ic, self.h_in, self.w_in)
+
+    @property
+    def output_shape(self) -> tuple:
+        return (self.oc, self.h_out, self.w_out)
 
     @property
     def fan_in(self) -> int:
@@ -516,6 +526,14 @@ class FCLayer:
         return self.n_out
 
     @property
+    def input_shape(self) -> tuple:
+        return (self.n_in,)
+
+    @property
+    def output_shape(self) -> tuple:
+        return (self.n_out,)
+
+    @property
     def fan_in(self) -> int:
         return self.n_in
 
@@ -623,6 +641,49 @@ class FCLayer:
         return self
 
 
+def check_layer_connections(layers) -> None:
+    """檢查相鄰兩層接得起來。
+
+    下一層吃空間輸入(input_shape 有三維)時,上一層的 output_shape 要完全相同;
+    吃攤平輸入(input_shape 只有一維)時,元素總數要相同。
+    接不上時 raise ValueError,訊息寫出是哪兩層、各自的形狀。
+    """
+    for prev, nxt in zip(layers, layers[1:]):
+        out_shape, in_shape = tuple(prev.output_shape), tuple(nxt.input_shape)
+        if len(in_shape) == 1:
+            connected = math.prod(out_shape) == in_shape[0]
+        else:
+            connected = out_shape == in_shape
+        if connected:
+            continue
+        if len(out_shape) < len(in_shape):
+            raise ValueError(f"{prev.name} 的輸出 {out_shape} 沒有空間形狀,"
+                             f"不能接吃空間輸入的 {nxt.name}(輸入 {in_shape})")
+        raise ValueError(f"{prev.name} 的輸出 {out_shape} 接不上 {nxt.name} 的輸入 {in_shape}")
+
+
+def max_over_batch(diag: LayerDiag) -> LayerDiag:
+    """一個 batch 的逐筆 LayerDiag(每個欄位 shape (B,))每個欄位取最大值。
+
+    給容量判斷用:只要有一筆超過容量,這個 batch 就放不下。
+    """
+    return LayerDiag(*(jnp.max(field) for field in diag))
+
+
+def grown_to_fit_batch(layers: list, batch_diags: list) -> list:
+    """一列層放不放得下一個 batch;放不下的層換成放大過的版本。
+
+    batch_diags: 對齊 layers 的逐筆 LayerDiag(每個欄位 shape (B,))。
+    每層看 batch 裡最需要容量的那一筆,放大公式是各層的 grown_to_fit。
+    全部放得下時回傳傳進來的同一個 list 物件。
+    """
+    grown = [layer.grown_to_fit(max_over_batch(diag))
+             for layer, diag in zip(layers, batch_diags)]
+    if all(new is old for new, old in zip(grown, layers)):
+        return layers
+    return grown
+
+
 def raw_events_to_stream(event_times: jax.Array, x: jax.Array, y: jax.Array,
                           c: jax.Array, n_real_events: jax.Array,
                           h_in: int, w_in: int) -> EventStream:
@@ -650,6 +711,7 @@ def run_network(layers, input_stream: EventStream, weights):
     加 pooling / residual / 新 layer 型別 = 照 `Layer` 約定寫一個新層物件,
     這支函式一行不用改。
     """
+    check_layer_connections(layers)
     stream = input_stream
     result = None
     diags = []
@@ -667,6 +729,7 @@ def run_network_traced(layers, input_stream: EventStream, weights):
     大一截、另編一個函式,不織進 `train_step`、不參與 grad。呼叫端拿它 dump
     `.npz` 看自訂 decoder / 動力學。
     """
+    check_layer_connections(layers)
     stream = input_stream
     traces = []
     for layer, w in zip(layers, weights):
@@ -691,6 +754,7 @@ def run_network_quantized(layers, input_stream: EventStream,
       整數值,用 `run_network_quantized_traced`。
     - `diags`:每層的 `LayerDiagInt`,任何一個旗標為 True 時這組結果不能用。
     """
+    check_layer_connections(layers)
     stream = input_stream
     result = None
     diags = []
@@ -708,6 +772,7 @@ def run_network_quantized_traced(layers, input_stream: EventStream,
     `result.v_final`/`v_steps` 都是暫存器裡的整數值(沒有換回物理尺度)。
     為什麼溢位驗證要逐步值,見 `ConvLayer.forward_quantized_traced`。參數同
     `run_network_quantized`。"""
+    check_layer_connections(layers)
     stream = input_stream
     traces = []
     for layer, params in zip(layers, quant_params):

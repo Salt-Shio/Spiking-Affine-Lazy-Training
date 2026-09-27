@@ -5,7 +5,7 @@
 刻了一份幾乎一樣的東西,收在這裡單一來源:
 
 - `make_evaluate`:分批 vmap 算 scores、導出 accuracy/loss/preds,兩邊本來
-  各刻一份。
+  各刻一份。`describe_growth` 是它跟訓練共用的容量放大訊息格式。
 - `save_params_npz`/`load_params_npz`:`params.npz`/`best_params.npz` 的
   寫讀,key = 層名——訓練那邊寫、eval_test 這邊讀,約定只靠人記得對齊,
   現在收進同一份函式。
@@ -35,9 +35,9 @@ import numpy as np
 import optax
 import yaml
 
-from salt_core.layers import ConvLayer
+from salt_core.layers import ConvLayer, grown_to_fit_batch, max_over_batch
 
-from example.models.conv_net import build_network
+from example.models.conv_net import ConvNetCompressed, build_network
 
 TRAIN_DIRNAME = "train"
 WEIGHTS_DIRNAME = "weights"
@@ -126,35 +126,75 @@ def load_run_params(exp_dir: str, layers: list, which_params: str) -> tuple:
     return load_params_npz(os.path.join(exp_dir, TRAIN_DIRNAME, fname), layers)
 
 
-def make_evaluate(net, decoder, eval_batch_size: int):
-    """分批 vmap 算 scores,一次導出 `(accuracy, loss, preds)`。FC 輸出層仍是
-    密集版 `build_fc_queue`,記憶體隨 vmap 樣本數線性長,不能整個 split 一次
-    vmap,分批的理由跟訓練熱路徑的其他分批迴圈(`dormant_report`/
-    `calibration_measure`)一樣。
+def describe_growth(old_layers: list, new_layers: list, reduced_diags: list) -> list[str]:
+    """哪些層的哪些容量旋鈕從多少放大到多少,一個旋鈕一行。
 
-    訓練期(`run_epochs` 每個 epoch 對 val split 的檢查)跟事後評估
-    (`eval_test.py` 對 test/val split 的一次性評估)共用這一份——兩邊要的
-    計算完全一樣,只差呼叫端要不要用 `loss`/`preds`;訓練那邊現在也免費多拿到
-    一個 val loss,只是目前沒有欄位記它。
+    reduced_diags: 對齊層的 LayerDiag,欄位是這個 batch 的最大值。
+    格式:conv2 L 32->2100(觀察 1401)。
     """
+    lines = []
+    for old, new, d in zip(old_layers, new_layers, reduced_diags):
+        if old is new or not isinstance(old, ConvLayer):
+            continue
+        if new.L != old.L:
+            lines.append(f"{old.name} L {old.L}->{new.L}(觀察 {int(d.max_real_queue)})")
+        if new.max_out_spikes != old.max_out_spikes:
+            lines.append(f"{old.name} max_out {old.max_out_spikes}->{new.max_out_spikes}"
+                          f"(觀察 {int(d.n_out_spikes)})")
+        if new.max_steps != old.max_steps:
+            lines.append(f"{old.name} max_steps {old.max_steps}->{new.max_steps}"
+                          f"(觀察 {int(d.min_steps_needed)})")
+    return lines
+
+
+def _make_scores_fn(layers: list, decoder):
+    net = ConvNetCompressed(layers)
+
     @jax.jit
-    def _scores(params, event_times, x, y, c, n_real):
-        result, _ = net.apply_batched(params, event_times, x, y, c, n_real)
+    def scores_fn(params, event_times, x, y, c, n_real):
+        result, diags = net.apply_batched(params, event_times, x, y, c, n_real)
         scores, _ = jax.vmap(decoder.decode)(result)
-        return scores
+        return scores, diags
+
+    return scores_fn
+
+
+def make_evaluate(net, decoder, eval_batch_size: int):
+    """回傳 evaluate(params, split) -> (accuracy, loss, preds, capacity_regrows)。
+
+    分批 vmap 算 scores。某個 batch 容量出界時,放大評估用的容量、重算那個
+    batch,capacity_regrows 是這次呼叫重算的次數。放大後的容量留給之後的呼叫,
+    net 本身的容量不變。
+    """
+    layers = net.layers
+    scores_fn = _make_scores_fn(layers, decoder)
 
     def evaluate(params, split):
+        nonlocal layers, scores_fn
         n = split.labels.shape[0]
         scores_parts = []
+        regrows = 0
         for start in range(0, n, eval_batch_size):
             end = min(start + eval_batch_size, n)
-            scores_parts.append(_scores(
-                params, split.event_times[start:end], split.x[start:end],
-                split.y[start:end], split.c[start:end], split.n_real_events[start:end]))
+            batch = (split.event_times[start:end], split.x[start:end], split.y[start:end],
+                     split.c[start:end], split.n_real_events[start:end])
+            scores, diags = scores_fn(params, *batch)
+            grown = grown_to_fit_batch(layers, diags)
+            while grown is not layers:
+                print(f"[評估出界] batch={start // eval_batch_size}: 放大評估容量重算")
+                reduced = [max_over_batch(d) for d in diags]
+                for line in describe_growth(layers, grown, reduced):
+                    print(f"  {line}")
+                layers = grown
+                scores_fn = _make_scores_fn(layers, decoder)
+                regrows += 1
+                scores, diags = scores_fn(params, *batch)
+                grown = grown_to_fit_batch(layers, diags)
+            scores_parts.append(scores)
         scores = jnp.concatenate(scores_parts)
         preds = jnp.argmax(scores, axis=1)
         loss = float(jnp.mean(optax.softmax_cross_entropy(scores, split.labels_onehot)))
         accuracy = float(jnp.mean((preds == split.labels).astype(jnp.float32)))
-        return accuracy, loss, np.asarray(preds)
+        return accuracy, loss, np.asarray(preds), regrows
 
     return evaluate

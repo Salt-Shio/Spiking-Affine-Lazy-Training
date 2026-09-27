@@ -146,7 +146,7 @@ def _parse_overflows(stdout: str) -> list[dict]:
     `epoch`/`batch`/`had_checkpoint` 跟一個 `knobs` list:每個被放大的旋鈕的
     (layer, knob, old, new, observed)。`[出界]` 那行只有 epoch/batch/是否退
     checkpoint,底下每個被放大的旋鈕各自縮排一行(見
-    `train_conv_compressed._describe_growth`)。"""
+    `example.utils.describe_growth`)。"""
     out = []
     for m in _OVERFLOW_BLOCK_RE.finditer(stdout):
         epoch, batch, where, knob_block = int(m.group(1)), int(m.group(2)), m.group(3), m.group(4)

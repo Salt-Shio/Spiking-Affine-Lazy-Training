@@ -16,14 +16,15 @@ docs/math/初始權重尺度推導.md 步驟 7。
 
 放 salt_core:活動分布是 SNN 通用除錯量,不是 example 專屬;ReDo(訓練中
 回收休眠神經元)也靠 `dormant_score` 挑回收對象。這裡自己逐層跑 forward
-收逐神經元活動,不碰 `LayerDiag`、不碰訓練熱路徑(見 docs/監測規格.md §5)。
+收逐神經元活動,LayerDiag 只拿來判斷容量出界,不碰訓練熱路徑(見 docs/監測規格.md §5)。
 只依賴 salt_core.layers,不碰 data / example。
 """
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from salt_core.layers import ConvLayer, raw_events_to_stream
+from salt_core.layers import (ConvLayer, check_layer_connections, grown_to_fit_batch,
+                              raw_events_to_stream)
 
 
 def dormant_score(activity, *, tau: float = 0.1) -> dict:
@@ -46,38 +47,25 @@ def dormant_score(activity, *, tau: float = 0.1) -> dict:
     }
 
 
-def _per_neuron_activity(layers, params, in_stream, *, use_s_value: bool) -> dict:
-    """逐層跑 `layer.forward`(鏡射 salt_core.layers.run_network),保留每個
-    ConvLayer 的逐神經元活動量。回傳 {conv_layer_name: (n_neurons,) 陣列}。
+def _per_neuron_activity(layers, params, in_stream, *, use_s_value: bool):
+    """逐層跑 forward,回傳 ({conv 層名: (n_neurons,) 活動量}, 每層 LayerDiag list)。
 
-    `use_s_value=False`:`sum(spike_mask, axis=1)`(每樣本 spike 數)。
-    `use_s_value=True`:`sum(s_value, axis=1)`(連續版)。
+    use_s_value=False 時活動量是 sum(spike_mask, axis=1),True 時是 sum(s_value, axis=1)。
     """
     stream = in_stream
-    out = {}
+    activity = {}
+    diags = []
     for layer, w in zip(layers, params):
-        stream, result, _diag = layer.forward(w, stream)
+        stream, result, diag = layer.forward(w, stream)
+        diags.append(diag)
         if isinstance(layer, ConvLayer):
             per_step = result.s_value if use_s_value else result.spike_mask
-            out[layer.name] = jnp.sum(per_step, axis=1)
-    return out
+            activity[layer.name] = jnp.sum(per_step, axis=1)
+    return activity, diags
 
 
-def dormant_report(layers, params, probe_batch, *, tau: float = 0.1,
-                   activity: str = "spike", chunk: int = 16) -> dict:
-    """在固定探測批次上量每個 conv 隱藏層的 dormant 統計。
-
-    probe_batch: (event_times, x, y, c, n_real_events),leading axis = 樣本數。
-    分 chunk 做 vmap forward(避免整批一次建構壓縮佇列 OOM)。
-
-    回傳 {conv_layer_name: {"dormant_frac": float}}。
-    """
-    if activity not in ("spike", "s_value"):
-        raise ValueError(f"activity 必須是 'spike' 或 's_value',給的是 {activity!r}")
-    use_s_value = activity == "s_value"
-    et, x, y, c, nr = probe_batch
+def _make_chunk_activity(layers, use_s_value: bool):
     first = layers[0]
-    n = int(et.shape[0])
 
     @jax.jit
     def chunk_activity(p, e, xx, yy, cc, rr):
@@ -86,11 +74,41 @@ def dormant_report(layers, params, probe_batch, *, tau: float = 0.1,
         return jax.vmap(lambda s: _per_neuron_activity(
             layers, p, s, use_s_value=use_s_value))(streams)
 
+    return chunk_activity
+
+
+def dormant_report(layers, params, probe_batch, *, tau: float = 0.1,
+                   activity: str = "spike", chunk: int = 16) -> tuple[dict, int]:
+    """在固定探測批次上量每個 conv 隱藏層的 dormant 統計。
+
+    probe_batch: (event_times, x, y, c, n_real_events),leading axis = 樣本數。
+    分 chunk 做 vmap forward(避免整批一次建構壓縮佇列 OOM)。某個 chunk 容量
+    出界時,放大容量重算那個 chunk;放大只在這次呼叫內有效。
+
+    回傳 ({conv_layer_name: {"dormant_frac": float}}, 重算次數)。
+    activity 不是 "spike" 或 "s_value",或層接不起來時 raise ValueError。
+    """
+    if activity not in ("spike", "s_value"):
+        raise ValueError(f"activity 必須是 'spike' 或 's_value',給的是 {activity!r}")
+    check_layer_connections(layers)
+    use_s_value = activity == "s_value"
+    et, x, y, c, nr = probe_batch
+    n = int(et.shape[0])
+    chunk_activity = _make_chunk_activity(layers, use_s_value)
+    regrows = 0
+
     totals: dict | None = None
     for lo in range(0, n, chunk):
         hi = min(lo + chunk, n)
-        acts = chunk_activity(params, et[lo:hi], x[lo:hi], y[lo:hi],
-                              c[lo:hi], nr[lo:hi])
+        chunk_args = (et[lo:hi], x[lo:hi], y[lo:hi], c[lo:hi], nr[lo:hi])
+        acts, diags = chunk_activity(params, *chunk_args)
+        grown = grown_to_fit_batch(layers, diags)
+        while grown is not layers:
+            layers = grown
+            chunk_activity = _make_chunk_activity(layers, use_s_value)
+            regrows += 1
+            acts, diags = chunk_activity(params, *chunk_args)
+            grown = grown_to_fit_batch(layers, diags)
         acts = {k: np.asarray(jnp.sum(v, axis=0)) for k, v in acts.items()}
         totals = acts if totals is None else {k: totals[k] + acts[k] for k in totals}
 
@@ -98,4 +116,4 @@ def dormant_report(layers, params, probe_batch, *, tau: float = 0.1,
     for name, tot in (totals or {}).items():
         stats = dormant_score(np.abs(tot) / n, tau=tau)
         report[name] = {"dormant_frac": stats["dormant_frac"]}
-    return report
+    return report, regrows
