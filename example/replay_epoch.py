@@ -2,7 +2,7 @@
 
 `docs/監測規格.md`「事後精確重現」的決定(2026-09-13):不再存
 `summary.npz`/`full_epoch_XXX.npz`。理由:forward 的計算結果跟 `chunk_size`
-無關(逐位元相同,見 `salt_core/core.py`)——`chunk_size>1` 時,一個 scan 步
+無關(逐位元相同,見 `salt_core/float/affine.py`)——`chunk_size>1` 時,一個 scan 步
 會把最多 `chunk_size` 筆真實事件的 `(a,b)` 仿射映射一次合成掉,trace 只留得住
 「這步開始的第一筆事件時間」+「合成完的結果」,中間那幾筆各自的時間/貢獻
 在合成的當下就已經不可逆地混在一起,無法事後從結果反推。
@@ -25,7 +25,7 @@ from example.paths import DATASET_ROOT
 from example.utils import WEIGHTS_DIRNAME, load_run_record, weight_snapshot_path
 from salt_core.io import load_weights
 from salt_core.network import Network, RawEvents
-from salt_core.monitor import summarize_trace_scalars
+from salt_core.trace import summarize_trace_scalars
 
 
 def load_epoch_weights(exp_dir: str, epoch: int) -> tuple[Network, tuple]:

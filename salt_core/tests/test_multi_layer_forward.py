@@ -1,10 +1,10 @@
-"""驗證 layer_chain.extract_output_events 把 layer1 的輸出接成 layer2 的輸入,
+"""驗證 stream.extract_output_events 把 layer1 的輸出接成 layer2 的輸入,
 兩層串起來的數字算對。
 
-layer_chain.extract_output_events 是純 JAX 實作,回傳固定長度(n_source_neurons*
+stream.extract_output_events 是純 JAX 實作,回傳固定長度(n_source_neurons*
 max_steps 這個安全上限)的陣列,不是「剛好幾筆真實事件」的動態長度——前
 n_real_events 筆是真實事件(已排序),後面補 pad 事件(不影響任何下游計算,
-見 layer_chain.py 說明)。下面每個測試都用 n_real_events 切出真正有意義的
+見 stream.py 說明)。下面每個測試都用 n_real_events 切出真正有意義的
 前綴來檢查內容,同時也確認完整的固定長度陣列接回 FC 佇列建構(帶
 n_real_events)、run_layer_forward(帶 n_real_events)之後,行為跟「陣列剛好
 只有真實事件」完全一樣。
@@ -21,14 +21,14 @@ layer2(p=1 個輸出神經元 c1,輸入是 layer1 的 b1,b2 兩顆):W2=[[1.5, 0.
 a = 0.75^4 = 0.31640625,h = 0*a + 1.5 = 1.5 >= v_th=1.0,c1 在 t=4 fire,
 reset 後 V=0。這裡的「1.5」是 W2[c1,b1]=1.5 乘上 b1 的 s_spike(forward 精確
 等於 1),數值上跟不乘 s_spike 完全一樣,只是計算圖裡多一條路徑(見
-layer_chain.py 開頭的說明)。
+stream.py 開頭的說明)。
 """
 
 import jax.numpy as jnp
 
-from salt_core.chunk_scan import run_layer_forward
+from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.layer_chain import extract_output_events
+from salt_core.stream import extract_output_events
 
 TOL = 1e-4
 

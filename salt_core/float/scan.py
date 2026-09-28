@@ -1,5 +1,5 @@
 """多顆神經元(shape (n_out_neurons, S) 的 AffineMap 佇列,任何連接方式都適用)
-的 chunk 化序列消化迴圈:對每顆神經元,反覆用 core.process_chunk 消化固定
+的 chunk 化序列消化迴圈:對每顆神經元,反覆用 float.affine.process_chunk 消化固定
 大小的滑動視窗,spike 後從下一筆事件重新起跑,直到整條佇列消化完。對照
 docs/math/單狀態仿射平行掃描推導.md 第 5 節、Bullet Trains
 snn/dynamics.py 的 run_events_scan/associative_scan_step,但拿掉了求根跟
@@ -12,7 +12,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from salt_core.core import AffineMap, normalize_real_events, process_chunk
+from salt_core.float.affine import AffineMap, normalize_real_events, process_chunk
 
 
 class LayerForwardResult(NamedTuple):
@@ -29,7 +29,7 @@ class LayerForwardResult(NamedTuple):
                                  # 直接查 event_times;conv 壓縮佇列(conv_float_values)
                                  # 不是,這是「這顆神經元自己壓縮佇列裡的第幾欄」,要先查
                                  # local_to_global_j(見 connectivity/conv.py)才是全域事件
-                                 # index,見 layer_chain.py extract_output_events 的說明
+                                 # index,見 stream.py extract_output_events 的說明
     s_spike: jax.Array          # shape (n_out_neurons, max_steps),spike 事件自己的 s
     s_value: jax.Array          # shape (n_out_neurons, max_steps),視窗內有效事件的 s 加總
     v_final: jax.Array          # shape (n_out_neurons,),消化完 max_steps 步之後的膜電位
@@ -59,11 +59,11 @@ def run_layer_forward(maps: AffineMap, v_th: float, chunk_size: int, max_steps: 
     還是壓縮版)永遠安全(正確性優先,還沒針對速度調參,對應 docs/TODO.md
     任務 4 尚未驗證的訓練速度那一項)。
 
-    alpha 是 core.process_chunk 內 atan_spike 的平滑程度參數,見 surrogate.py。
+    alpha 是 float.affine.process_chunk 內 atan_spike 的平滑程度參數,見 surrogate.py。
 
     n_real_events:maps 裡「前面幾筆是真實事件」的數量(必填)。沒有 padding
     的呼叫端傳 maps.a.shape[1](整條都當真實事件)。多層串接時,
-    layer_chain.extract_output_events 回傳的佇列是「固定上限、後面補 pad
+    stream.extract_output_events 回傳的佇列是「固定上限、後面補 pad
     事件」的格式(見該檔案說明),這時要把它回傳的真實筆數明確傳進來,不能
     讓這裡自己用 maps 的 shape 反推——不然 n_valid_in_chunk(下面)會把 pad
     事件也當成真實事件去加總 s_value,重演跟 _pad_queue 同一類「padding 步驟
@@ -85,7 +85,7 @@ def run_layer_forward(maps: AffineMap, v_th: float, chunk_size: int, max_steps: 
     chunk_size 切得多細、spike 發生在哪一步。
 
     s_spike:shape (n_out_neurons, max_steps),該步「如果真的 spike」,spike
-    那個事件自己的 s(= core.process_chunk 內部 soft reset 用的
+    那個事件自己的 s(= float.affine.process_chunk 內部 soft reset 用的
     s_sequence[spike_idx_clamped],這裡只是再取一次,不重算 atan_spike)。
     spike_mask 為 False 的位置數值沒有意義。**不要跟 s_value 搞混**:s_value
     是這個窗口內「所有有效事件的 s 加總」,spike 位置之前還有其他事件時,
@@ -142,7 +142,7 @@ def _run_layer_scan(maps: AffineMap, v_th: float, chunk_size: int, max_steps: in
     n_out_neurons = maps.a.shape[0]
     # 統一成 (n_out_neurons,) int32:密集版傳純量(所有神經元同一個數)、
     # 壓縮版傳逐神經元陣列、沒傳代表整條都是真事件——正規化之後底下只處理
-    # 陣列一種形式(見 core.normalize_real_events)。
+    # 陣列一種形式(見 float.affine.normalize_real_events)。
     n_real = normalize_real_events(n_real_events, n_out_neurons)
     padded = _pad_queue(maps, chunk_size)
     gather = jax.vmap(lambda arr, idx: jnp.take(arr, idx, mode='clip'))
@@ -165,7 +165,7 @@ def _run_layer_scan(maps: AffineMap, v_th: float, chunk_size: int, max_steps: in
         chunk_valid_mask = chunk_idx_range[None, :] < n_valid_in_chunk[:, None]  # shape (n_out_neurons, chunk_size)
         s_value = jnp.sum(jnp.where(chunk_valid_mask, chunk_result.s_sequence, 0.0), axis=1)
 
-        # spike 事件自己的 s(不是加總後的 s_value),core.process_chunk 內部
+        # spike 事件自己的 s(不是加總後的 s_value),float.affine.process_chunk 內部
         # soft reset 已經算過同一個值,這裡只是再 gather 一次,不重算 atan_spike。
         spike_idx_clamped = jnp.minimum(chunk_result.spike_idx, chunk_size - 1)
         s_spike = chunk_result.s_sequence[neuron_idx_range, spike_idx_clamped]

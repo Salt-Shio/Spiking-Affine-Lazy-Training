@@ -8,7 +8,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from salt_core.core import AffineMap, create_affine_maps
+from salt_core.float.affine import AffineMap, create_affine_maps
 
 
 def _axis_candidates(i: jax.Array, K: int, S: int, P: int, N: int,
@@ -33,7 +33,7 @@ def unravel_conv_source(event_source_idx: jax.Array, H_in: int,
     """扁平 neuron id -> (x,y,c) 三元組,對應推導文件第 9.2 節(第 6 節攤平
     公式的反運算)。上一層的 OC_in 會自動變成這一層的 IC,不用額外傳。
 
-    只在 conv 接 conv 時需要呼叫(上一層 layer_chain.extract_output_events
+    只在 conv 接 conv 時需要呼叫(上一層 stream.extract_output_events
     吐出來的是扁平 id);第一層例外——資料端原生就給 (x,y,c),不經過這個
     函式(第 9.3 節)。
 
@@ -79,7 +79,7 @@ def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: in
 
     局部 rank 用「分段重置計數」算(第 2 節):is_start 標記每一段(同一個 n
     的連續區間)的起點,對 is_start 出現的位置索引做累進最大值(cummax,跟
-    core.combine 的 associative_scan 是同一類運算),每個位置減掉「目前這段
+    float.affine.combine 的 associative_scan 是同一類運算),每個位置減掉「目前這段
     的起點」就是段內的局部 rank(0-based)。
 
     回傳 (local_to_global_j, n_real_per_neuron):

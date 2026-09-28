@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from salt_core.layer_chain import EventStream
+from salt_core.stream import EventStream
 from salt_core.layers import ConvLayer, FCLayer
 from salt_core.network import run_network
 from salt_core.quant.backend import QuantBackend

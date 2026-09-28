@@ -110,7 +110,7 @@ def apply_decay_table_int(delta_t: jnp.ndarray, table_int: jnp.ndarray):
 
     - 每個值都是整數:時間不是整數毫秒時,轉型會默默截掉小數。
     - 每個值都在 `[0, 2^31)` 裡:負的 Δt 代表時間倒退;太大的值轉 int32 會
-      溢位(例如沒遮好的 pad 事件時間 `layer_chain._PAD_TIME`)。
+      溢位(例如沒遮好的 pad 事件時間 `stream._PAD_TIME`)。
 
     **這兩個檢查只在 `delta_t` 是具體陣列時才會跑。** 在 `jax.jit` 裡面
     `delta_t` 是 traced 值,沒辦法 raise,檢查會直接跳過、只做轉型。之後如果

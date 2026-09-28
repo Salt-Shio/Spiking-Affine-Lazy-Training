@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from salt_core.layers import ConvLayer, FCLayer
-from salt_core.monitor import LayerForwardTrace
+from salt_core.trace import LayerForwardTrace
 from salt_core.quant.calibrate import merge_v_ranges, v_abs_max_per_channel, v_range_per_channel
 
 # conv:2 channel x 1 x 2 = 4 顆神經元;FC:3 顆

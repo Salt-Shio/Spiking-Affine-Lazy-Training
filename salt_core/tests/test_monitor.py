@@ -11,7 +11,7 @@
 
 `LayerForwardTrace` 2026-09-13 拔掉 `s_value` 欄位(這個架構下 forward 數值
 恆等於 `spike_mask`,而且整條 trace 本身已經 `stop_gradient`,留著沒有實際
-資訊量,見 `salt_core/monitor.py` 開頭說明);`summarize_trace`/`pack_key`/
+資訊量,見 `salt_core/trace.py` 開頭說明);`summarize_trace`/`pack_key`/
 `unpack_key`/`layer_names` 隨同一批改動一併移除(唯一呼叫端 `example/
 trace_probe.py` 已刪除)。
 """
@@ -19,11 +19,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from salt_core.chunk_scan import run_layer_forward, run_layer_forward_traced
+from salt_core.float.scan import run_layer_forward, run_layer_forward_traced
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.layers import ConvLayer, FCLayer
 from salt_core.network import Network, RawEvents, run_network
-from salt_core.monitor import (LayerForwardTrace, resolve_ms_compressed,
+from salt_core.trace import (LayerForwardTrace, resolve_ms_compressed,
                                 resolve_ms_dense, summarize_trace_scalars)
 
 TOL = 1e-6

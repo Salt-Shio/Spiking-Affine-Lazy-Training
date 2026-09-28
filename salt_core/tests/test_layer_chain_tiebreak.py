@@ -1,4 +1,4 @@
-"""驗證 layer_chain.extract_output_events 同一時間戳記多來源並列時的排序規則:
+"""驗證 stream.extract_output_events 同一時間戳記多來源並列時的排序規則:
 用 (times, spike_event_idx) 複合鍵排序,不是只用 times。
 
 反例(源自跟另一個 agent 討論時驗證過的具體案例):$p_0$(layer1 的神經元0)
@@ -12,7 +12,7 @@ p1(X)],把真正先發生的 X 排到後面,順序是反的。
 
 改用 (spike_event_idx, times) 當複合鍵(lexsort 最後一個 key 是主鍵)之後,
 tie-break 依據變成「這筆事件在共用佇列裡的原始位置」——FC 無延遲,佇列本身
-的排列順序天生就是真實時間先後順序(見 fc_queue.py、layer_chain.py 的說明),
+的排列順序天生就是真實時間先後順序(見 fc_queue.py、stream.py 的說明),
 X 的 index 比 Y 小,理當排在前面,輸出應該是 [p1(X), p0(Y)]。
 
 具體構造(tau、v_th 對這個測試不重要,只要能精確控制哪個神經元在哪個事件
@@ -30,9 +30,9 @@ fire 即可):
 
 import jax.numpy as jnp
 
-from salt_core.chunk_scan import run_layer_forward
+from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.layer_chain import extract_output_events
+from salt_core.stream import extract_output_events
 
 TOL = 1e-4
 

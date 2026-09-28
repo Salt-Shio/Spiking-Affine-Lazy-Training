@@ -25,7 +25,7 @@ import optax
 
 from data.src.nmnist import NMNISTDataset
 from salt_core.connectivity.conv import _axis_candidates, unravel_conv_source
-from salt_core.layer_chain import EventStream
+from salt_core.stream import EventStream
 from salt_core.capacity import GrowthPolicy, grown_to_fit, grown_to_fit_batch, reduce_over_batch
 from example.models.conv_net import build_decoder, build_network
 from example.paths import DATASET_ROOT, resolve_config

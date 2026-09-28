@@ -1,7 +1,7 @@
 """驗證 surrogate.atan_spike 的 forward/backward 對不對,以及接上一個簡化的
 序列版單狀態遞迴後,梯度真的能穿過 fire/reset 這個判斷點。
 
-不測 chunk_scan.py 現有的 chunk 化/argmax 版本——「哪個事件是第一個 fire」
+不測 float/scan.py 現有的 chunk 化/argmax 版本——「哪個事件是第一個 fire」
 這個離散選擇本身怎麼處理梯度,是下一步才要處理的整合工作,見 docs/TODO.md
 任務 5。這裡只驗證核心機制:單一事件的 surrogate 判斷,跟一個用它接起來的
 簡化序列遞迴。
@@ -10,7 +10,7 @@
 import jax
 import jax.numpy as jnp
 
-from salt_core.surrogate import atan_spike, atan_smooth
+from salt_core.float.surrogate import atan_spike, atan_smooth
 
 TOL = 1e-6
 
@@ -44,7 +44,7 @@ def test_backward_matches_smooth_primitive_derivative():
 
 def _sequential_lif_with_surrogate(w_arr, n_ms_arr, tau, v_th, alpha):
     """跟 process_chunk 一樣的單狀態遞迴,fire 判斷換成 atan_spike。純序列
-    lax.scan,不是 chunk_scan.py 的 chunk 化版本,但要跟它用同一套「不套閘」
+    lax.scan,不是 float/scan.py 的 chunk 化版本,但要跟它用同一套「不套閘」
     語意:只有真的 fire 時才套用可微分的 soft reset(V_new=(1-s)*h,forward
     精確等於硬重置的 0),沒 fire 就讓 h 原始值直接往下傳,不對它套用任何
     surrogate 修正——不是每一步都無條件乘 (1-s)。
@@ -52,7 +52,7 @@ def _sequential_lif_with_surrogate(w_arr, n_ms_arr, tau, v_th, alpha):
     這個選擇不是圖省事:「每一步都套閘」(spikingjelly 逐 tick 的寫法)會讓
     平行 chunk 化的 associative_scan 沒辦法用(套閘後每一步不再是仿射函數,
     見對話記錄的完整討論);「只在 fire 時套閘」則跟 Bullet Trains 的精神
-    一致(修正只發生在真正的決策點),而且剛好等於 core.py/chunk_scan.py
+    一致(修正只發生在真正的決策點),而且剛好等於 float/affine.py/float/scan.py
     現有實作已經在做的事,不需要額外的 custom_vjp。
     """
     def step(v, inputs):

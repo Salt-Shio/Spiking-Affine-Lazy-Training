@@ -2,7 +2,7 @@
 (spikingjelly `activation_based/surrogate.py` 的 `ATan` / `atan_backward`,
 公式:forward heaviside、backward 用 alpha/2 / (1 + (pi/2 * alpha * x)^2))。
 
-forward 是精確的 heaviside(x>=0 回傳 1,否則 0),跟現有 chunk_scan.py 的硬
+forward 是精確的 heaviside(x>=0 回傳 1,否則 0),跟現有 float/scan.py 的硬
 判斷完全一樣;backward 用平滑 arctan 函式的解析導數近似,讓梯度能穿過這個
 原本不可微分的判斷點。這是 docs/math/單狀態仿射平行掃描推導.md 第 4
 節提到「可以直接沿用 spikingjelly 式 surrogate gradient」的具體實作——留在

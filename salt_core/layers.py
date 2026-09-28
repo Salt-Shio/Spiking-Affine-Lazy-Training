@@ -2,7 +2,7 @@
 
 跟前三層(神經元模擬器 / 佇列建構器 / 標準事件流)的關係:
 
-- 神經元行為(`chunk_scan.run_layer_forward`)、佇列建構(`connectivity/`)、
+- 神經元行為(`float.scan.run_layer_forward`)、佇列建構(`connectivity/`)、
   標準事件流(`layer_chain.EventStream` + `extract_output_events*`)都不動,
   這個檔案只是把它們按「一種 layer 型別」串起來,對外只露兩個約定:
   **讀一條 `EventStream`、吐一份 `LayerOutput`(輸出流、結果、診斷、軌跡)**。
@@ -27,17 +27,17 @@ from typing import NamedTuple, Protocol
 import jax
 import jax.numpy as jnp
 
-from salt_core.backend import FLOAT
+from salt_core.float.backend import FLOAT
 from salt_core.capacity import Capacity, LayerDiag
 from salt_core.connectivity.conv import (ConvQueueStructure, build_conv_structure,
                                           conv_float_values, conv_weight_codes, tile_channels,
                                           unravel_conv_source)
 from salt_core.connectivity.fc import (FCQueueStructure, build_fc_structure, fc_float_values,
                                         fc_weight_codes)
-from salt_core.core import AffineMap
-from salt_core.layer_chain import (EventStream, extract_output_events,
+from salt_core.float.affine import AffineMap
+from salt_core.stream import (EventStream, extract_output_events,
                                     extract_output_events_compressed)
-from salt_core.monitor import (LayerForwardTrace, resolve_ms_compressed,
+from salt_core.trace import (LayerForwardTrace, resolve_ms_compressed,
                                 resolve_ms_dense)
 
 

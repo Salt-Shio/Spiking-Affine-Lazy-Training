@@ -1,4 +1,4 @@
-"""驗證 build_fc_structure + fc_float_values + chunk_scan.run_layer_forward 串起來,
+"""驗證 build_fc_structure + fc_float_values + float.scan.run_layer_forward 串起來,
 數字對得上 docs/math/全連接forward訓練範例.md 第 3、4 節的手算例子:
 
   n=2 (a1,a2), m=2 (b1,b2), tau=4, v_th=1.0
@@ -16,7 +16,7 @@
 
 import jax.numpy as jnp
 
-from salt_core.chunk_scan import run_layer_forward
+from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values, fc_weight_codes
 
 TOL = 1e-4

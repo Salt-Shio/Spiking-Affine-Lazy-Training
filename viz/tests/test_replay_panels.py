@@ -5,7 +5,7 @@
 import numpy as np
 
 from salt_core.layers import ConvLayer, FCLayer
-from salt_core.monitor import LayerForwardTrace
+from salt_core.trace import LayerForwardTrace
 from viz.replay_panels import ConvChannelPanel, FCWindowPanel
 from viz.time_resample import build_frame_grid
 

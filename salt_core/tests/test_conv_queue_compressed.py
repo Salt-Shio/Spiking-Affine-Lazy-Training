@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from salt_core.chunk_scan import run_layer_forward
+from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.conv import (ConvQueueStructure, _compress_candidates,
                                           _delta_t_three_regimes, build_conv_structure,
                                           conv_float_values, conv_weight_codes, tile_channels)

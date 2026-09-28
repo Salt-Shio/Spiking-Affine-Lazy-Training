@@ -181,7 +181,7 @@ class NMNISTDataset:
         (較早的事件);不足的 pad——x/y/c pad 成 0、event_times pad 成該樣本
         最後一筆真實時間(維持陣列非遞減,避免 diff 出現誤導性的負跳躍)。pad
         位置的實際數值不影響正確性,下游一律靠 n_real_events 搭配
-        core.mask_pad_events 強制蓋成 identity 映射(見
+        salt_core 的 float.affine.mask_pad_events 強制蓋成 identity 映射(見
         docs/math/conv事件佇列建構推導.md 第 8.1 節:pad 座標 (0,0,c=0) unravel 後
         看起來完全合法,必須靠 n_real_events 而不是座標合法性檢查來擋)。
         """

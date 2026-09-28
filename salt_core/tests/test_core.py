@@ -11,7 +11,7 @@
 
 import jax.numpy as jnp
 
-from salt_core.core import AffineMap, combine, create_affine_maps, process_chunk
+from salt_core.float.affine import AffineMap, combine, create_affine_maps, process_chunk
 from salt_core.quant.scan import process_event
 
 TOL = 1e-6

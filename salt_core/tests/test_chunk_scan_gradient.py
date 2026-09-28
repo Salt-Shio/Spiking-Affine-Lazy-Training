@@ -1,5 +1,5 @@
-"""驗證 surrogate gradient 真的接進 chunk_scan.run_layer_forward 的
-argmax-based pipeline,不是只在 core.process_chunk 單一 chunk 或
+"""驗證 surrogate gradient 真的接進 float.scan.run_layer_forward 的
+argmax-based pipeline,不是只在 float.affine.process_chunk 單一 chunk 或
 test_surrogate.py 的簡化序列遞迴裡才work。
 
 作法:重用 test_surrogate.py 已經手算鏈式法則驗證過的例子(tau=4,v_th=1.0,
@@ -7,7 +7,7 @@ N=[0,1,4],w=[0.6,0.6,0.9],梯度 [0.898341, 0.680819, 0.910170]——「不套�
 語意,只有真的 fire 才套 soft reset,見 test_surrogate.py 的完整說明),包裝
 成一個 n=3(三個各自只發一次事件的來源神經元)、m=1 的 FC 佇列。loss 定義
 成 sum(s_value):s_value 是「這個 chunk 步驟裡,把有效範圍內每筆真實事件
-自己的 s 全部加起來」(見 chunk_scan.py run_layer_forward 的說明,不是只挑
+自己的 s 全部加起來」(見 float/scan.py run_layer_forward 的說明,不是只挑
 一個代表值),所以不管切成幾個 chunk、fire 發生在哪一步,加總起來永遠等於
 「每一筆事件自己的 s 都恰好算一次」——這正是 test_surrogate.py 序列版參考
 在算的東西,梯度應該精確相等,不需要重新手算。
@@ -22,7 +22,7 @@ N=[0,1,4],w=[0.6,0.6,0.9],梯度 [0.898341, 0.680819, 0.910170]——「不套�
 import jax
 import jax.numpy as jnp
 
-from salt_core.chunk_scan import run_layer_forward
+from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 
 TOL = 1e-4
@@ -45,7 +45,7 @@ def _loss(W, event_times, event_source_idx, tau, v_th, chunk_size, alpha):
     _, _, _, s_value, _ = run_layer_forward(maps, v_th, chunk_size=chunk_size,
                                             max_steps=n_real_events, alpha=alpha,
                                             n_real_events=n_real_events)
-    # s_value 本身已經是「有效範圍內每筆真實事件的 s 加總」(見 chunk_scan.py
+    # s_value 本身已經是「有效範圍內每筆真實事件的 s 加總」(見 float/scan.py
     # run_layer_forward 的說明),包含空轉步驟自動貢獻 0 這件事,直接加總
     # 整個陣列即可,不需要呼叫端再另外處理。
     return jnp.sum(s_value)

@@ -11,8 +11,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from salt_core.backend import FLOAT
-from salt_core.layer_chain import EventStream
+from salt_core.float.backend import FLOAT
+from salt_core.stream import EventStream
 
 _MAX_EVENT_TIME = 2 ** 31  # 整數掃描把 Δt 轉成 int32 當查表 index
 

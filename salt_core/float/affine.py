@@ -15,7 +15,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from salt_core.surrogate import atan_spike
+from salt_core.float.surrogate import atan_spike
 
 
 class AffineMap(NamedTuple):

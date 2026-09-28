@@ -1,6 +1,6 @@
 """三個標準解碼器的驗證。
 
-解碼器只讀 `LayerForwardResult`(chunk_scan.py 的公開契約),把它讀成分數張量:
+解碼器只讀 `LayerForwardResult`(float/scan.py 的公開契約),把它讀成分數張量:
 
   - 膜電位回歸:直接回 `v_final`
   - 頻率:每顆神經元 `s_value` 沿時間軸加總(可微),硬 count 放 metrics
@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from salt_core.chunk_scan import LayerForwardResult
+from salt_core.float.scan import LayerForwardResult
 from salt_core.decoder import (MembraneRegressionDecoder, PopulationDecoder,
                                 RateDecoder)
 from salt_core.layers import FCLayer

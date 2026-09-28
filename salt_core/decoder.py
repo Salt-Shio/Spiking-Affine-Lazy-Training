@@ -5,7 +5,7 @@
 
 - 解碼器**不是網路的一部分**,是網路輸出到任務之間的接縫。`run_network` /
   層物件不因為換編碼而要改。
-- 真正承重的介面是 `LayerForwardResult` 本身(`chunk_scan.py`):`v_final` /
+- 真正承重的介面是 `LayerForwardResult` 本身(`float/scan.py`):`v_final` /
   `s_value` / `spike_mask` 三個量、加上「pad 步對 `s_value` 貢獻 0」的保證,
   已經涵蓋任何 readout 會想要的東西。想要別的編碼,寫一個滿足 `Decoder`
   協定的新物件,或乾脆在自己的 loss_fn 裡直接讀 `LayerForwardResult`——
@@ -25,7 +25,7 @@ from typing import Protocol
 import jax
 import jax.numpy as jnp
 
-from salt_core.chunk_scan import LayerForwardResult
+from salt_core.float.scan import LayerForwardResult
 
 
 class Decoder(Protocol):

@@ -3,7 +3,7 @@ from dataclasses import replace
 
 import pytest
 
-from salt_core.backend import FLOAT
+from salt_core.float.backend import FLOAT
 from salt_core.layers import ConvLayer, FCLayer
 from salt_core.network import Network, check_layer_connections, run_network
 from salt_core.quant.backend import QuantBackend

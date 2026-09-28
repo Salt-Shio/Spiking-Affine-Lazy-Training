@@ -1,4 +1,4 @@
-"""驗證 layer_chain.extract_output_events 的 local_to_global_j 查表(任務7
+"""驗證 stream.extract_output_events 的 local_to_global_j 查表(任務7
 第二階段第3段)。對應 docs/math/conv事件佇列壓縮版推導.md 第 5.3 節。
 
 分三類測試:
@@ -20,10 +20,10 @@
 import jax
 import jax.numpy as jnp
 
-from salt_core.chunk_scan import run_layer_forward
+from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.conv import build_conv_structure, conv_float_values, tile_channels
 from salt_core.tests._reference import dense_conv_affine_map
-from salt_core.layer_chain import extract_output_events, extract_output_events_compressed
+from salt_core.stream import extract_output_events, extract_output_events_compressed
 
 TOL = 1e-6
 

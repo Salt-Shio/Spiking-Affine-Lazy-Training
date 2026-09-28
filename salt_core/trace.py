@@ -10,12 +10,12 @@ trace=True)` 收集,`stop_gradient` 後回傳;浮點、整數 backend 都用這�
 這個型別,不知道呼叫端是誰,跟 `dormant.py` 的 `dormant_score` 同一個放置
 理由(見 docs/監測規格.md §4.1:「salt_core 放通用 helper」)。
 
-實際跑 traced forward 在 `salt_core.chunk_scan.run_layer_forward_traced` /
+實際跑 traced forward 在 `salt_core.float.scan.run_layer_forward_traced` /
 `salt_core.layers`。
 
 **2026-09-13 拔掉的東西**:`s_value` 欄位、`summarize_trace`、`pack_key`/
 `unpack_key`/`layer_names`。理由:(1) `s_value` 在這個架構下 forward 數值
-恆等於 `spike_mask`(一個 chunk 裡最多一筆事件跨過門檻,`chunk_scan.py` 的
+恆等於 `spike_mask`(一個 chunk 裡最多一筆事件跨過門檻,`float/scan.py` 的
 `n_valid_in_chunk` 邏輯保證),而 `LayerForwardTrace` 本身又是
 `stop_gradient` 後才回傳,連它在別處才有意義的「可微分」也用不上——留著
 純粹是重複資訊。(2) 這四樣東西唯一的呼叫端是已移除的

@@ -2,14 +2,14 @@
 
 問題:FC 佇列建構用 event_source_idx(離散索引)從 W 查權重——索引操作
 對「被索引的 W」有梯度,但不會讓「產生這個事件的上一層神經元的權重」出現在
-算式裡。就算 layer_chain.extract_output_events 全部改成純 JAX、正確合併排序,
+算式裡。就算 stream.extract_output_events 全部改成純 JAX、正確合併排序,
 只要下一層的佇列還是「單純用索引查權重」,jax.grad 對上一層權重求出來的梯度
 永遠是 0——不是實作沒寫完整,是計算圖裡真的沒有這條邊。
 
-修法:fc_float_values 的 event_gain 參數,傳上一層 chunk_scan.run_layer_forward
-回傳的 s_spike(不是 s_value,見 chunk_scan.py 的說明)。s_spike 是用
+修法:fc_float_values 的 event_gain 參數,傳上一層 float.scan.run_layer_forward
+回傳的 s_spike(不是 s_value,見 float/scan.py 的說明)。s_spike 是用
 atan_spike 算出來、forward 精確等於 1 的可微分量,乘進權重裡數值不變,但讓
-上一層的權重重新出現在算式裡——跟 core.py 的 soft reset (1-s)*x 是同一個技巧。
+上一層的權重重新出現在算式裡——跟 float/affine.py 的 soft reset (1-s)*x 是同一個技巧。
 
 例子:layer1 一顆神經元 p,三個各自只發一次事件的來源(沿用
 test_chunk_scan_gradient.py 的設定:tau=4,v_th=1.0,event_times=[0,1,5],
@@ -34,9 +34,9 @@ s_value)。
 import jax
 import jax.numpy as jnp
 
-from salt_core.chunk_scan import run_layer_forward
+from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.layer_chain import extract_output_events
+from salt_core.stream import extract_output_events
 
 TOL = 1e-3
 

@@ -15,11 +15,11 @@ import math
 import jax
 import jax.numpy as jnp
 
-from salt_core.chunk_scan import run_layer_forward
+from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.conv import (build_conv_structure, conv_float_values, tile_channels,
                                           unravel_conv_source)
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.layer_chain import extract_output_events, extract_output_events_compressed
+from salt_core.stream import extract_output_events, extract_output_events_compressed
 from salt_core.tests._reference import dense_conv_affine_map
 
 TOL = 1e-5

@@ -132,7 +132,7 @@ def resample_decay(event_ms: np.ndarray, values: np.ndarray, frame_ms: np.ndarra
                     tau: float, before_first: float = 0.0) -> np.ndarray:
     """連續量的衰減插值重取樣。先找「最後一筆 `<= frame_ms` 的 `(t_last,
     v_last)`」,再用 `decay = 1 - 1/tau` 算 `v_last * decay**(frame_ms -
-    t_last)`(對齊 `salt_core/core.py` 的仿射衰減)。早於第一筆事件的 frame
+    t_last)`(對齊 `salt_core/float/affine.py` 的仿射衰減)。早於第一筆事件的 frame
     從 `t=0, v=before_first` 開始衰減——`before_first` 預設 0,對齊神經元真正
     的起始電位(不是拿 `nan` 隨便填)。"""
     event_ms = np.asarray(event_ms)

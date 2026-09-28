@@ -21,7 +21,7 @@
 import numpy as np
 
 from salt_core.layers import ConvLayer, FCLayer
-from salt_core.monitor import LayerForwardTrace
+from salt_core.trace import LayerForwardTrace
 from viz.time_resample import pad_events_by_neuron, resample_decay, resample_pulse, sliding_windows
 
 

@@ -22,7 +22,7 @@ event_gain),外加真事件數(n_real_events)。對應 docs/math/全連接forwar
 恆為 0。修法:額外帶一個 s_spike(這一層每個 spike 事件,自己 spike 那一刻的
 可微分強度,forward 精確等於 1)當下一層的 event_gain,乘進下一層的權重裡:
 數值不變,但 s_spike 是 atan_spike 算出來的、對上一層權重有梯度,讓這條路徑
-重新接通——跟 core.py 的 soft reset (1-s)*v 是同一個技巧。
+重新接通——跟 float/affine.py 的 soft reset (1-s)*v 是同一個技巧。
 """
 from typing import NamedTuple
 
@@ -117,7 +117,7 @@ def extract_output_events(spike_mask: jax.Array, spike_event_idx: jax.Array,
     spike_mask: (n_source_neurons, max_steps) bool。
     spike_event_idx: (n_source_neurons, max_steps) int,全域事件 index。
     s_spike: (n_source_neurons, max_steps),spike 那一刻的可微分強度
-      (chunk_scan.run_layer_forward 的同名欄位,**不是** s_value)。
+      (float.scan.run_layer_forward 的同名欄位,**不是** s_value)。
     event_times: (n_total_events,) 這層自己的輸入事件時間。
     max_total_spikes: 輸出陣列固定長度上限(JAX 要靜態 shape)。預設
       n_source_neurons * max_steps,恆安全(每顆神經元每步最多一個 spike)。

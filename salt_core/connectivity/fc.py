@@ -7,7 +7,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from salt_core.core import AffineMap, create_affine_maps, mask_pad_events
+from salt_core.float.affine import AffineMap, create_affine_maps, mask_pad_events
 
 
 class FCQueueStructure(NamedTuple):

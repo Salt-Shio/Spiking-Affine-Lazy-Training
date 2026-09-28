@@ -21,7 +21,7 @@ w12)——因為全連接下,同一個來源神經元多次觸發時,權重矩�
 import jax
 import jax.numpy as jnp
 
-from salt_core.chunk_scan import run_layer_forward
+from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 
 TOL = 1e-3

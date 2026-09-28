@@ -25,7 +25,7 @@ import numpy as np
 
 import jax.numpy as jnp
 
-from salt_core.core import AffineMap
+from salt_core.float.affine import AffineMap
 
 
 def dense_conv_affine_map(event_times, x, y, c, W, tau, S, P, H_out, W_out,

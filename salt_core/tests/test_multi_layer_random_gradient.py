@@ -1,4 +1,4 @@
-"""用一個跟被測系統完全獨立、逐事件跑的序列參考實作(不用 core.py 的
+"""用一個跟被測系統完全獨立、逐事件跑的序列參考實作(不用 float/affine.py 的
 associative_scan/chunk 化機制),拿中等規模(幾十筆事件、每層好幾顆神經元)
 的隨機資料當 oracle,交叉驗證真正的 FC 佇列建構+run_layer_forward+
 extract_output_events 串接管線,包括:
@@ -13,7 +13,7 @@ extract_output_events 串接管線,包括:
 當觸發事件時,輸出時間戳記會是精確相等的真同分——事件夠密集時真的會發生
 (不是理論上的邊界案例,調參這份測試資料時就實際踩到過),所以這裡的參考
 實作(_sequential_multi_layer)一樣要用 (times, step_idx) 複合鍵排序,跟
-layer_chain.extract_output_events 用同一條 tie-break 規則,兩邊才對得起來。
+stream.extract_output_events 用同一條 tie-break 規則,兩邊才對得起來。
 tie-break 規則本身的正確性(該排哪個在前)由 test_layer_chain_tiebreak.py
 系列獨立、確定性地覆蓋,這裡只是必須讓兩套實作用「同一條」規則,不重複驗證
 規則本身對不對。
@@ -23,17 +23,17 @@ _sequential_lif_with_surrogate 用同一條遞迴公式(不套閘、fire 時 sof
 reset),只是這裡 vmap 到多顆神經元、多層之間用 jnp.nonzero()(不帶 size,
 在 jax.grad 這種 eager 執行的情境下可以用動態 shape,不需要真正的
 pipeline 才需要處理的固定長度/n_real_events 那一套)手動合併、排序——這條路徑
-完全不經過 chunk_scan.py/layer_chain.py 的任何程式碼,是真正獨立的第二套
+完全不經過 float/scan.py/stream.py 的任何程式碼,是真正獨立的第二套
 實作,不是拿同一段程式碼互相比對。
 """
 
 import jax
 import jax.numpy as jnp
 
-from salt_core.chunk_scan import run_layer_forward
+from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.layer_chain import extract_output_events
-from salt_core.surrogate import atan_spike
+from salt_core.stream import extract_output_events
+from salt_core.float.surrogate import atan_spike
 
 TOL = 2e-3
 
@@ -81,7 +81,7 @@ def _sequential_layer(event_times, event_source_idx, event_gain, W, tau, v_th, a
 
 def _sequential_multi_layer(event_times, event_source_idx, weight_matrices, tau, v_th, alpha):
     """串接多層 _sequential_layer,層與層之間用動態長度的 nonzero 手動合併,
-    排序用跟 layer_chain.extract_output_events 完全一樣的 (times, step_idx)
+    排序用跟 stream.extract_output_events 完全一樣的 (times, step_idx)
     複合鍵(lexsort 最後一個 key 是主鍵)——不能只用 times 排序:多個下游神經元
     共用同一顆上游神經元的同一次 fire 當觸發事件時,輸出時間戳記會是精確相等
     的真同分(不是量化造成的假同分),這種情況在事件夠密集時真的會發生
