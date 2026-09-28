@@ -29,8 +29,7 @@ from salt_core.stream import EventStream
 from salt_core.capacity import GrowthPolicy, grown_to_fit, grown_to_fit_batch, reduce_over_batch
 from example.models.conv_net import build_decoder, build_network
 from example.paths import DATASET_ROOT, resolve_config
-from example.train_conv_compressed import load_config
-from example.utils import split_raw_events
+from example.utils import load_config, split_raw_events
 
 # 掃描的 init_k;√3 = Lee 變異數保持、8/64 = 舊 firing-rate 準則。
 INIT_KS = (math.sqrt(3.0), 3.0, 5.0, 8.0, 64.0)

@@ -2,14 +2,14 @@
 
 每種 optimizer 先走兩步,存檔、讀回,檢查權重、optimizer 狀態、shuffle key、epoch
 逐值相同、網路描述相同,而且讀回後的下一步 update 跟沒存讀過的一樣。
-AdamW、梯度裁剪、餘弦退火用訓練腳本的 _build_optimizer 建,跟實際訓練同一條路。
+AdamW、梯度裁剪、餘弦退火用訓練腳本的 build_optimizer 建,跟實際訓練同一條路。
 """
 import jax
 import jax.numpy as jnp
 import optax
 
 from example.checkpoint import Checkpointer
-from example.train_conv_compressed import _build_optimizer
+from example.training.optim import build_optimizer
 from salt_core.layers import ConvLayer, FCLayer
 from salt_core.network import Network
 
@@ -21,7 +21,7 @@ _NETWORK = Network(input_shape=(2, 34, 34), layers=(
     ConvLayer(name="conv2", ic=8, h_in=17, w_in=17, oc=16, k=3, s=2, p=1, init_k=5.0,
               max_queue_len=1083, max_out_spikes=3417, max_steps=540),
     FCLayer(name="out", n_in=1296, n_out=10, init_k=5.0)))
-_DATA_CFG = {"train_size": 16}
+_N_TRAIN = 16
 _BATCH_SIZE = 4
 
 
@@ -74,17 +74,17 @@ def test_adam_state_roundtrip(tmp_path):
 
 
 def test_adamw_state_roundtrip(tmp_path):
-    optimizer = _build_optimizer({"lr": 1e-2, "weight_decay": 1e-2}, _DATA_CFG, _BATCH_SIZE)
+    optimizer = build_optimizer({"lr": 1e-2, "weight_decay": 1e-2}, _N_TRAIN, _BATCH_SIZE)
     _assert_roundtrip(optimizer, str(tmp_path / "ckpt.npz"))
 
 
 def test_grad_clip_chain_state_roundtrip(tmp_path):
-    optimizer = _build_optimizer({"lr": 1e-2, "grad_clip_norm": 10.0}, _DATA_CFG, _BATCH_SIZE)
+    optimizer = build_optimizer({"lr": 1e-2, "grad_clip_norm": 10.0}, _N_TRAIN, _BATCH_SIZE)
     _assert_roundtrip(optimizer, str(tmp_path / "ckpt.npz"))
 
 
 def test_cosine_schedule_state_roundtrip(tmp_path):
     """schedule 的步數存在 opt_state 裡;讀回後下一步的學習率要接著走,不能歸零。"""
-    optimizer = _build_optimizer({"lr": 1e-2, "epochs": 2, "lr_cosine_decay": True},
-                                 _DATA_CFG, _BATCH_SIZE)
+    optimizer = build_optimizer({"lr": 1e-2, "epochs": 2, "lr_cosine_decay": True},
+                                _N_TRAIN, _BATCH_SIZE)
     _assert_roundtrip(optimizer, str(tmp_path / "ckpt.npz"))

@@ -15,6 +15,7 @@ dependencies = []
 packages = [
     "salt_core",
     "salt_core.connectivity",
+    "salt_core.float",
     "salt_core.quant",
     "salt_core.tests",
     "data",
@@ -24,6 +25,7 @@ packages = [
     "example",
     "example.analysis",
     "example.models",
+    "example.training",
     "example.tests",
     "viz",
     "viz.tests",

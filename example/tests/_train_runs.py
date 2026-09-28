@@ -1,11 +1,9 @@
 """example 測試共用的小規模訓練設定跟執行工具。"""
 import contextlib
 import io
-import os
 
-import yaml
-
-from example.train_conv_compressed import train
+from example.train_conv_compressed import load_nmnist_data, train
+from example.training.run_dir import make_exp_dir
 
 
 def base_cfg(run_name: str, seed: int, conv2_max_queue_len_init: int, grow: float, epochs: int,
@@ -53,17 +51,9 @@ def reference_cfg() -> dict:
     return cfg
 
 
-def write_yaml(cfg: dict, root) -> str:
-    """把 cfg 寫成 root 底下的 <run_name>.yaml,回傳路徑。"""
-    path = os.path.join(root, f"{cfg['run_name']}.yaml")
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f, allow_unicode=True)
-    return path
-
-
 def run_capture(cfg: dict, root):
-    """用 cfg 在 root 底下跑 train(),回傳 (train() 的結果, 訓練過程印出的文字)。"""
+    """用 cfg 在 root 底下跑 train(),回傳 (TrainResult, 訓練過程印出的文字)。"""
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        result = train(write_yaml(cfg, root), exp_root=str(root))
+        result = train(cfg, load_nmnist_data(cfg["data"]), make_exp_dir(cfg["run_name"], str(root)))
     return result, buf.getvalue()

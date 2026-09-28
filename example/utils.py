@@ -5,20 +5,20 @@
 刻了一份幾乎一樣的東西,收在這裡單一來源:
 
 - `make_evaluate`:分批 vmap 算 scores、導出 accuracy/loss/preds,兩邊本來
-  各刻一份。`describe_growth` 是它跟訓練共用的容量放大訊息格式。
+  各刻一份。
 - `load_run_record`/`load_run_params`:讀一次訓練 run 的紀錄、權重。權重檔自帶
   網路描述(`salt_core.io`),讀回來就是存檔當下的網路。
 - `split_raw_events`/`take_raw_events`:資料端的 split 轉成檢查過的 `RawEvents`、
   從裡面取一批(`data/` 不依賴 `salt_core`,轉換寫在這裡)。
 - `weight_snapshot_path`:`experiments/<run>/weights/epoch_XXX.npz` 的命名
-  慣例——訓練那邊(`train_conv_compressed.py`)週期性寫,事後分析工具讀,
+  慣例——訓練那邊(`example/training/`)週期性寫,事後分析工具讀,
   兩邊靠這個函式對齊路徑,不是各自重複拼字串。
 
 `TRAIN_DIRNAME`/`WEIGHTS_DIRNAME`/`EVAL_DIRNAME`:`experiments/<run>/` 底下
 三個子資料夾的名字——訓練產物(`run.yaml`/`metrics.csv`/`checkpoint.npz`/
 `params.npz`/`best_params.npz`)、逐 epoch 權重快照(給事後重跑 forward 的
 分析工具用,見 `docs/監測規格.md`)、`eval_test.py`/`plot_eval.py` 的事後
-評估,各自獨立一個資料夾。寫的一邊(`train_conv_compressed.py`)跟讀的一邊
+評估,各自獨立一個資料夾。寫的一邊(`example/training/`)跟讀的一邊
 (`eval_test.py`/`plot_eval.py`/測試)都從這裡拿名字,不是各自重複寫字串
 常數,才不會兩邊漂移。
 """
@@ -31,6 +31,7 @@ import numpy as np
 import optax
 import yaml
 
+from example.training.capacity_control import knob_changes
 from salt_core.capacity import grown_to_fit_batch, reduce_over_batch
 from salt_core.io import load_weights
 from salt_core.network import Network, RawEvents
@@ -38,6 +39,12 @@ from salt_core.network import Network, RawEvents
 TRAIN_DIRNAME = "train"
 WEIGHTS_DIRNAME = "weights"
 EVAL_DIRNAME = "eval"
+
+
+def load_config(path: str) -> dict:
+    """讀 yaml config。"""
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
 def set_seed(seed: int) -> jax.Array:
@@ -97,27 +104,6 @@ def load_run_params(exp_dir: str, which_params: str) -> tuple[Network, tuple]:
     return load_weights(os.path.join(exp_dir, TRAIN_DIRNAME, fname))
 
 
-def capacity_changes(old_layers: list, new_layers: list):
-    """逐一產生容量有變的 (層索引, 旋鈕名, 舊值, 新值)。"""
-    for i, (old, new) in enumerate(zip(old_layers, new_layers)):
-        if old is new or old.capacity is None:
-            continue
-        for knob, old_value in old.capacity.items():
-            if new.capacity[knob] != old_value:
-                yield i, knob, old_value, new.capacity[knob]
-
-
-def describe_growth(old_layers: list, new_layers: list, reduced_diags: list) -> list[str]:
-    """哪些層的哪些容量旋鈕從多少放大到多少,一個旋鈕一行。
-
-    reduced_diags: 對齊層的 LayerDiag,needed 是這個 batch 的最大值。
-    格式:conv2 max_queue_len 32->2100(觀察 1401)。
-    """
-    return [f"{old_layers[i].name} {knob} {old}->{new}"
-            f"(觀察 {int(reduced_diags[i].needed[knob])})"
-            for i, knob, old, new in capacity_changes(old_layers, new_layers)]
-
-
 def _make_scores_fn(network: Network, decoder):
     @jax.jit
     def scores_fn(params, raw_batch: RawEvents):
@@ -152,8 +138,8 @@ def make_evaluate(network: Network, decoder, eval_batch_size: int, policies: dic
                 print(f"[評估出界] batch={start // eval_batch_size}: 放大評估容量重算")
                 grown = grown_to_fit_batch(layers, policies, diags)
                 reduced = [reduce_over_batch(d) for d in diags]
-                for line in describe_growth(layers, grown, reduced):
-                    print(f"  {line}")
+                for change in knob_changes(layers, grown, [d.needed for d in reduced]):
+                    print(f"  {change}")
                 layers = grown
                 scores_fn = _make_scores_fn(network.replace_layers(layers), decoder)
                 regrows += 1

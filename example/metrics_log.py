@@ -54,7 +54,6 @@ class MetricsLog:
         self._firing = {n: [] for n in self._layer_names}
         self._grad = {n: [] for n in self._layer_names}
         self._dec: dict[str, list] = {}
-        self._needed: dict[str, dict[str, int]] = {}  # 層名 -> 旋鈕 -> 這個 epoch 的最大需求
 
     def record_batch(self, *, loss, layers: list, reduced_diags: list,
                      grad_norms: dict, decoder_metrics: dict) -> None:
@@ -66,19 +65,17 @@ class MetricsLog:
             self._dec.setdefault(k, []).append(float(v))
         for layer, d in zip(layers, reduced_diags):
             self._firing[layer.name].append(float(d.firing_rate))
-            layer_needed = self._needed.setdefault(layer.name, {})
-            for knob, value in d.needed.items():
-                layer_needed[knob] = max(layer_needed.get(knob, 0), int(value))
         for name, g in grad_norms.items():
             self._grad[name].append(float(g))
 
-    def finish_epoch(self, *, epoch: int, val_accuracy: float, layers: list,
+    def finish_epoch(self, *, epoch: int, val_accuracy: float, layers: list, needed: dict,
                      val_capacity_regrows: int, dormant_capacity_regrows: int,
                      dormant: dict | None = None) -> None:
         """組這個 epoch 的 row(欄位順序:epoch/loss/val → 逐 conv 容量+用量 →
         逐層 firing rate → 逐層 grad norm → 逐 conv dormant 指標 → 解碼器指標),
         append,該印就印。
 
+        needed:層名 -> 旋鈕名 -> 這個 epoch 的最大需求,有容量的層都要有。
         `dormant`:{conv_layer_name: {"dormant_frac": float}}(見
         salt_core/dormant.py),沒傳則對應欄位填 nan。
         val_capacity_regrows / dormant_capacity_regrows:val 評估、dormant 統計
@@ -92,7 +89,7 @@ class MetricsLog:
             for knob, value in layer.capacity.items():
                 row[f"{layer.name}_{KNOB_COLUMNS[knob].capacity}"] = value
             for knob in layer.capacity:
-                row[f"{layer.name}_{KNOB_COLUMNS[knob].needed}"] = self._needed_of(layer.name, knob)
+                row[f"{layer.name}_{KNOB_COLUMNS[knob].needed}"] = needed[layer.name][knob]
         for name in self._layer_names:
             row[f"{name}_firing_rate"] = float(np.mean(self._firing[name]))
         for name in self._layer_names:
@@ -120,15 +117,12 @@ class MetricsLog:
                 print(f"  {l.name:<6} fr={row[f'{l.name}_firing_rate']:.4f}")
                 continue
             usage = "  ".join(
-                f"{KNOB_COLUMNS[knob].label} {_ratio(self._needed_of(l.name, knob), value)}"
+                f"{KNOB_COLUMNS[knob].label} "
+                f"{_ratio(row[f'{l.name}_{KNOB_COLUMNS[knob].needed}'], value)}"
                 for knob, value in l.capacity.items())
             dorm = row.get(f"{l.name}_dormant_frac", float("nan"))
             dorm_str = f"  dorm={dorm:.3f}" if dorm == dorm else ""
             print(f"  {l.name:<6} {usage}  fr={row[f'{l.name}_firing_rate']:.4f}{dorm_str}")
-
-    def _needed_of(self, layer_name: str, knob: str) -> int:
-        """這個 epoch 這層這個旋鈕的最大需求;沒有成功的 batch 時是 0。"""
-        return self._needed.get(layer_name, {}).get(knob, 0)
 
     @property
     def rows(self) -> list:

@@ -21,6 +21,7 @@ import optax
 from data.src.nmnist import NMNISTDataset
 from example.models.conv_net import build_decoder
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
+from example.training.loop import epoch_permutation
 from example.utils import (WEIGHTS_DIRNAME, load_run_record, take_raw_events, split_raw_events,
                            weight_snapshot_path)
 from salt_core.io import load_weights
@@ -39,18 +40,6 @@ def _rebuild_train_split(run_record: dict):
     dataset = NMNISTDataset(DATASET_ROOT, max_events=data_cfg["max_events"])
     return dataset.build_split(seed=data_cfg["seed_train"],
                                n_samples=data_cfg["train_size"], which="train")
-
-
-def _epoch_permutation(seed: int, n_train: int, target_epoch: int) -> np.ndarray:
-    """精確重算 train_conv_compressed.run_epochs 用的 shuffle 順序(純 PRNG key
-    分裂,跟浮點非決定性無關)。`shuffle_key` 從 `PRNGKey(seed+1)` 開始,逐
-    epoch split,要從 epoch 0 依序重放到 target_epoch,不能跳著算。"""
-    shuffle_key = jax.random.PRNGKey(seed + 1)
-    perm = None
-    for _epoch in range(target_epoch + 1):
-        shuffle_key, subkey = jax.random.split(shuffle_key)
-        perm = jax.random.permutation(subkey, n_train)
-    return np.asarray(perm)
 
 
 def per_sample_forward(run_record: dict, network, params: tuple, split,
@@ -125,7 +114,7 @@ def main() -> None:
     print(f"  mean={n_real.mean():.1f}  std={n_real.std():.1f}  max={n_real.max()}")
 
     print(f"\n=== 重建 epoch{args.target_epoch} 的 batch 切法,找離群樣本落在哪個 batch ===")
-    perm = _epoch_permutation(train_cfg["seed"], n_train, args.target_epoch)
+    perm = epoch_permutation(train_cfg["seed"], n_train, args.target_epoch)
     batch_size = min(train_cfg["batch_size"], n_train)
     n_batches = n_train // batch_size
 

@@ -49,8 +49,8 @@ import optax
 import pytest
 
 from example.tests._train_runs import base_cfg, run_capture
-from example.train_conv_compressed import (_build_learning_rate, _build_optimizer,
-                                            _cross_entropy_loss)
+from example.training.loss import cross_entropy_loss
+from example.training.optim import build_learning_rate, build_optimizer
 from example.utils import TRAIN_DIRNAME
 from salt_core.io import network_from_dict
 
@@ -126,12 +126,11 @@ def test_optimizer_knobs_run_through_training(run_root):
 
 
 def test_grad_clip_norm_none_matches_plain_adamw():
-    """`train.grad_clip_norm` 不填(預設)時,`_build_optimizer` 要跟原本的
+    """`train.grad_clip_norm` 不填(預設)時,`build_optimizer` 要跟原本的
     `optax.adamw` 逐位元一致——「不設就是原樣通過」的慣例,跟
     `score_cap=None`/`weight_decay=0` 同一套。"""
     train_cfg = {"lr": 1e-2, "weight_decay": 0.0}
-    data_cfg = {"train_size": 40}
-    built = _build_optimizer(train_cfg, data_cfg, batch_size=4)
+    built = build_optimizer(train_cfg, n_train=40, batch_size=4)
     plain = optax.adamw(1e-2, weight_decay=0.0)
 
     params = {"w": jnp.array([1.0, 2.0, 3.0])}
@@ -152,9 +151,8 @@ def test_grad_clip_norm_changes_update_relative_to_unclipped():
     params = {"w": jnp.array([1.0, 1.0, 1.0])}
     huge_grad = {"w": jnp.array([1e6, 1e6, 1e6])}
 
-    unclipped = _build_optimizer({"lr": 1e-2}, {"train_size": 40}, batch_size=4)
-    clipped = _build_optimizer({"lr": 1e-2, "grad_clip_norm": 1e-10},
-                               {"train_size": 40}, batch_size=4)
+    unclipped = build_optimizer({"lr": 1e-2}, n_train=40, batch_size=4)
+    clipped = build_optimizer({"lr": 1e-2, "grad_clip_norm": 1e-10}, n_train=40, batch_size=4)
 
     upd_u, _ = unclipped.update(huge_grad, unclipped.init(params), params)
     upd_c, _ = clipped.update(huge_grad, clipped.init(params), params)
@@ -163,13 +161,13 @@ def test_grad_clip_norm_changes_update_relative_to_unclipped():
 
 
 def test_score_cap_none_matches_plain_cross_entropy():
-    """`score_cap=None`(預設)時,`_cross_entropy_loss` 要跟原始
+    """`score_cap=None`(預設)時,`cross_entropy_loss` 要跟原始
     `optax.softmax_cross_entropy` 逐位元一致——這是「不設就是原樣通過」的
     基本保證。"""
     scores = jnp.array([[0.0, 3.0, -1.0]])
     labels_onehot = jax.nn.one_hot(jnp.array([1]), 3)
 
-    capped = _cross_entropy_loss(scores, labels_onehot, None)
+    capped = cross_entropy_loss(scores, labels_onehot, None)
     plain = optax.softmax_cross_entropy(scores, labels_onehot)
 
     assert jnp.array_equal(capped, plain)
@@ -182,8 +180,8 @@ def test_score_cap_does_not_distort_scores_far_below_the_cap():
     scores = jnp.array([[0.0, 1.0, 0.0]])  # logit 差距只有 1,遠低於 cap
     labels_onehot = jax.nn.one_hot(jnp.array([1]), 3)
 
-    uncapped = _cross_entropy_loss(scores, labels_onehot, None)
-    capped = _cross_entropy_loss(scores, labels_onehot, 6.0)
+    uncapped = cross_entropy_loss(scores, labels_onehot, None)
+    capped = cross_entropy_loss(scores, labels_onehot, 6.0)
 
     assert jnp.allclose(uncapped, capped, atol=1e-2)
 
@@ -193,20 +191,19 @@ def test_score_cap_saturates_extreme_scores_to_a_fixed_loss():
     都趨近同一個值——loss 因此不再隨原始分數繼續下降,不像沒有 cap 時
     logit 差距可以無界增長、loss 可以無界壓向 0。"""
     labels_onehot = jax.nn.one_hot(jnp.array([1]), 3)
-    loss_1e6 = _cross_entropy_loss(jnp.array([[0.0, 1e6, 0.0]]), labels_onehot, 6.0)
-    loss_1e9 = _cross_entropy_loss(jnp.array([[0.0, 1e9, 0.0]]), labels_onehot, 6.0)
+    loss_1e6 = cross_entropy_loss(jnp.array([[0.0, 1e6, 0.0]]), labels_onehot, 6.0)
+    loss_1e9 = cross_entropy_loss(jnp.array([[0.0, 1e9, 0.0]]), labels_onehot, 6.0)
 
     assert jnp.allclose(loss_1e6, loss_1e9, atol=1e-6)
     assert float(loss_1e6[0]) > 1e-4  # 有實質下限,不會被沖到趨近 0
 
 
 def test_build_learning_rate_without_cosine_decay_returns_plain_float():
-    """`train.lr_cosine_decay` 不填(預設)時,`_build_learning_rate` 原樣
+    """`train.lr_cosine_decay` 不填(預設)時,`build_learning_rate` 原樣
     傳回 `train.lr` 這個純量,不包成 schedule——這是「不設就是原樣通過」的
     基本保證,跟 `score_cap=None`/`weight_decay=0` 同一個慣例。"""
     train_cfg = {"lr": 1e-2, "epochs": 10}
-    data_cfg = {"train_size": 40}
-    lr = _build_learning_rate(train_cfg, data_cfg, batch_size=4)
+    lr = build_learning_rate(train_cfg, n_train=40, batch_size=4)
     assert lr == 1e-2
 
 
@@ -216,9 +213,8 @@ def test_build_learning_rate_cosine_decay_starts_high_ends_low():
     (docs/math/梯度下降曲率穩定性推導.md 第 5 節:讓 $2/\\eta$ 隨訓練進行
     升高)。"""
     train_cfg = {"lr": 1e-2, "epochs": 10, "lr_cosine_decay": True, "lr_cosine_alpha": 0.0}
-    data_cfg = {"train_size": 40}
-    schedule = _build_learning_rate(train_cfg, data_cfg, batch_size=4)
-    total_steps = train_cfg["epochs"] * (data_cfg["train_size"] // 4)  # 10 * 10 = 100
+    schedule = build_learning_rate(train_cfg, n_train=40, batch_size=4)
+    total_steps = train_cfg["epochs"] * (40 // 4)  # 10 * 10 = 100
 
     assert float(schedule(0)) == pytest.approx(1e-2, rel=1e-3)
     assert float(schedule(total_steps - 1)) < 1e-2 * 0.01  # alpha=0,退火到接近 0
@@ -233,7 +229,7 @@ def test_conv1_queue_overflow_grows_not_raises(run_root):
     訓練正常跑完(不再像舊版那樣直接 raise)。"""
     cfg = base_cfg("b_conv1_queue_grow", seed=42, conv2_max_queue_len_init=5000, grow=1.5, epochs=2,
                      conv1_max_queue_len_init=5)  # 真實佇列需求落在 ~100+,5 保證第一個 batch 就出界
-    (exp_dir, _, _, _, _, final_cfg), stdout = run_capture(cfg, run_root)
+    (exp_dir, _, _, final_cfg), stdout = run_capture(cfg, run_root)
 
     ovs = _parse_overflows(stdout)
     assert ovs, "conv1_max_queue_len_init=5 應該要觸發出界"
@@ -253,7 +249,7 @@ def test_conv2_queue_overflow_before_first_checkpoint_reinits_with_same_seed(run
     開頭)。"""
     l_init = 32
     overflow_cfg = base_cfg("b_reinit_attempt", seed=42, conv2_max_queue_len_init=l_init, grow=2.0, epochs=2)
-    (_, _, params_a, _, _, cfg_a), stdout_a = run_capture(overflow_cfg, run_root)
+    (_, _, params_a, cfg_a), stdout_a = run_capture(overflow_cfg, run_root)
 
     ovs = _parse_overflows(stdout_a)
     assert ovs, "conv2_max_queue_len_init=32 應觸發出界"
@@ -266,7 +262,7 @@ def test_conv2_queue_overflow_before_first_checkpoint_reinits_with_same_seed(run
                         if kk["layer"] == "conv2" and kk["knob"] == "max_queue_len"][-1]
     assert _final_capacity(cfg_a, "conv2")["max_queue_len"] == last_conv2_queue["new"]
 
-    (_, _, params_b, _, _, _), stdout_b = reference_run
+    (_, _, params_b, _), stdout_b = reference_run
     assert not _parse_overflows(stdout_b), "reference 用 conv2_max_queue_len_init=5000 應全程夠用"
 
     _assert_params_close(params_a, params_b, "出界重來 vs 直接用足夠大 max_queue_len 訓練")
@@ -279,7 +275,7 @@ def test_conv2_queue_overflow_mid_epoch_discards_partial_epoch_updates(run_root,
     更新若沒被正確丟棄,結果會差到遠超 float32 雜訊。"""
     l_init = 900
     overflow_cfg = base_cfg("b_midepoch_attempt", seed=42, conv2_max_queue_len_init=l_init, grow=2.0, epochs=2)
-    (_, _, params_a, _, _, cfg_a), stdout_a = run_capture(overflow_cfg, run_root)
+    (_, _, params_a, cfg_a), stdout_a = run_capture(overflow_cfg, run_root)
 
     ovs = _parse_overflows(stdout_a)
     assert len(ovs) == 1, f"預期剛好一次出界,實際 {len(ovs)}:{ovs}"
@@ -289,7 +285,7 @@ def test_conv2_queue_overflow_mid_epoch_discards_partial_epoch_updates(run_root,
     k = next(k for k in ov["knobs"] if k["layer"] == "conv2" and k["knob"] == "max_queue_len")
     _assert_grow_formula(k, 2.0)
 
-    (_, _, params_b, _, _, _), stdout_b = reference_run
+    (_, _, params_b, _), stdout_b = reference_run
     assert not _parse_overflows(stdout_b)
 
     _assert_params_close(params_a, params_b, "mid-epoch 出界重來 vs 直接用足夠大 max_queue_len")
@@ -304,7 +300,7 @@ def test_conv2_queue_overflow_after_checkpoint_resumes_from_disk_not_reinit(run_
     錯誤變回 0,epoch0 被重複執行——metrics.csv 就會出現重複 epoch 或超行。"""
     epochs = 3
     cfg = base_cfg("b_resume_from_checkpoint", seed=1, conv2_max_queue_len_init=1011, grow=2.0, epochs=epochs)
-    (exp_dir, _, _, _, _, final_cfg), stdout = run_capture(cfg, run_root)
+    (exp_dir, _, _, final_cfg), stdout = run_capture(cfg, run_root)
 
     ovs = _parse_overflows(stdout)
     assert ovs, "應該至少出界一次"
@@ -333,7 +329,7 @@ def test_conv2_queue_overflow_multiple_times_eventually_converges(run_root):
     (仍小於後面的 batch),要再度出界放大到 ceil(~1050*1.01)≈1061 才夠。
     驗證最終能正常跑完、不再出界,且過程真的出現至少兩次出界。"""
     cfg = base_cfg("b_multi_overflow", seed=42, conv2_max_queue_len_init=1, grow=1.01, epochs=2)
-    (exp_dir, _, _, _, _, _), stdout = run_capture(cfg, run_root)
+    (exp_dir, _, _, _), stdout = run_capture(cfg, run_root)
 
     n_overflows = stdout.count("[出界]")
     assert n_overflows >= 2, f"max_queue_len=1 配保守倍率應逼出至少兩次連續出界,實際 {n_overflows} 次"
@@ -351,7 +347,7 @@ def test_conv2_queue_overflow_on_final_epoch_still_detected(run_root):
     正確交叉確認。"""
     epochs = 2
     cfg = base_cfg("b_final_epoch_overflow", seed=1, conv2_max_queue_len_init=1011, grow=2.0, epochs=epochs)
-    (exp_dir, _, _, _, _, final_cfg), stdout = run_capture(cfg, run_root)
+    (exp_dir, _, _, final_cfg), stdout = run_capture(cfg, run_root)
 
     ovs = _parse_overflows(stdout)
     assert ovs, "最後一個 epoch 出界的訊息不該被吃掉"
@@ -383,7 +379,7 @@ def test_conv_output_buffer_overflow_grows_and_matches_generous_start(run_root, 
     metrics/final_cfg 反映新值、沒有 NaN;出界發生在還沒存 checkpoint 前,
     是乾淨的整個重來,結果要跟一開始就給夠(參考訓練)在容差內一致。"""
     cfg = _buf_cfg("c_buf_overflow", conv2_max_out_init=500)
-    (exp_dir, _, final_params, _, _, final_cfg), stdout = run_capture(cfg, run_root)
+    (exp_dir, _, final_params, final_cfg), stdout = run_capture(cfg, run_root)
 
     ovs = _parse_overflows(stdout)
     assert ovs, "conv2_max_out=500 應觸發出界"
@@ -402,6 +398,6 @@ def test_conv_output_buffer_overflow_grows_and_matches_generous_start(run_root, 
         assert not math.isnan(float(r["train_loss"]))
     assert int(rows[-1]["conv2_max_layer_spikes"]) == _final_capacity(final_cfg, "conv2")["max_out_spikes"]
 
-    (_, _, params_ref, _, _, _), stdout_ref = reference_run
+    (_, _, params_ref, _), stdout_ref = reference_run
     assert not _parse_overflows(stdout_ref), "參考訓練的 max_out 預設值對 seed=42 小規模應夠用"
     _assert_params_close(final_params, params_ref, "max_out 出界放大 vs 一開始就給夠")
