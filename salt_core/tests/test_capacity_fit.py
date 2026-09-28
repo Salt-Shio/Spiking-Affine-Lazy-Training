@@ -69,6 +69,34 @@ def test_one_overflowing_sample_grows_layer():
     assert grown[1] is FC
 
 
+CONV2 = ConvLayer(name="conv2", ic=1, h_in=4, w_in=4, oc=1, k=3, s=1, p=1, init_k=1.0,
+                  max_queue_len=10, max_out_spikes=20, max_steps=10)
+TWO_CONV_POLICIES = {"conv": GrowthPolicy(), "conv2": GrowthPolicy()}
+
+
+def test_only_second_layer_overflowing_grows_only_second_layer():
+    # conv 全部放得下;conv2 第二筆 max_queue_len 需要 15 > 10:ceil(15 * 1.5) = 23,max_steps 跟著變 23
+    layers = [CONV, CONV2, FC]
+    diags = [_diag([2, 3, 2], [1, 1, 1], [1, 1, 1]), _diag([2, 15, 2], [1, 1, 1], [1, 1, 1]),
+             _fc_diag()]
+    grown = grown_to_fit_batch(layers, TWO_CONV_POLICIES, diags)
+    assert grown[0] is CONV
+    assert dict(grown[1].capacity) == {"max_queue_len": 23, "max_out_spikes": 20, "max_steps": 23}
+    assert grown[2] is FC
+
+
+def test_two_layers_overflowing_grow_together_in_one_call():
+    # conv max_queue_len 需要 12 > 10:ceil(12 * 1.5) = 18,max_steps 跟著變 18;
+    # conv2 max_out_spikes 需要 25 > 20:ceil(25 * 1.5) = 38
+    layers = [CONV, CONV2, FC]
+    diags = [_diag([12, 3, 2], [1, 1, 1], [1, 1, 1]), _diag([2, 3, 2], [1, 25, 1], [1, 1, 1]),
+             _fc_diag()]
+    grown = grown_to_fit_batch(layers, TWO_CONV_POLICIES, diags)
+    assert dict(grown[0].capacity) == {"max_queue_len": 18, "max_out_spikes": 20, "max_steps": 18}
+    assert dict(grown[1].capacity) == {"max_queue_len": 10, "max_out_spikes": 38, "max_steps": 10}
+    assert grown[2] is FC
+
+
 # ============================================================================
 # GrowthPolicy
 # ============================================================================

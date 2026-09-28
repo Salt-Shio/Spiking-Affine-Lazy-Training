@@ -16,7 +16,7 @@ RTOL = 5e-5
 
 
 def test_load_epoch_weights_forces_chunk_size_one(reference_run):
-    (exp_dir, *_), _stdout = reference_run
+    exp_dir = reference_run.exp_dir
     network, params = load_epoch_weights(exp_dir, 0)
     assert [layer.chunk_size for layer in network.layers] == [1] * len(network.layers)
     assert len(params) == len(network.layers)
@@ -24,7 +24,7 @@ def test_load_epoch_weights_forces_chunk_size_one(reference_run):
 
 def test_snapshot_carries_capacity_of_its_epoch(reference_run):
     """每個 epoch 的權重快照帶的容量,等於 metrics.csv 那個 epoch 記的容量。"""
-    (exp_dir, *_), _stdout = reference_run
+    exp_dir = reference_run.exp_dir
     with open(os.path.join(exp_dir, TRAIN_DIRNAME, "metrics.csv"), newline="",
               encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
@@ -43,7 +43,7 @@ def test_snapshot_carries_capacity_of_its_epoch(reference_run):
 def test_replay_matches_training_forward(reference_run):
     """replay(chunk_size=1)每層軌跡形狀對得上層的神經元數;最後一層軌跡的最後一步,
     要跟用訓練時原本 chunk_size 跑出來的 v_final 在浮點捨入誤差內一致。"""
-    (exp_dir, *_), _stdout = reference_run
+    exp_dir = reference_run.exp_dir
     run_record = load_run_record(exp_dir)
     sample = load_train_sample(run_record, 0)
     replay_network, params = load_epoch_weights(exp_dir, 0)

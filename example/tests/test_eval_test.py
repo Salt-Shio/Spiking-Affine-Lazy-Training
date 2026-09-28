@@ -35,7 +35,7 @@ def test_confusion_matrix_hand():
 # ============================================================================
 
 def test_evaluate_run_outputs_consistent(reference_run):
-    (exp_dir, *_), _stdout = reference_run
+    exp_dir = reference_run.exp_dir
     result = evaluate_run(exp_dir, which="val", n_samples=8, seed=0, which_params="best")
 
     assert 0.0 <= result["accuracy"] <= 1.0
