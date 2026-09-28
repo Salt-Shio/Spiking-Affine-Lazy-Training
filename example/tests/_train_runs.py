@@ -133,7 +133,7 @@ def synthetic_cfg(run_name: str, seed: int, *, conv1: dict | None = None,
                  "tau": 16.0, "v_th": 1.0, "alpha": 2.0, "chunk_size": 1, "init_k": 8.0,
                  "max_queue_len": max_queue_len, "max_out_spikes": max_out_spikes,
                  "max_queue_len_grow_factor": grow, "out_grow_factor": grow,
-                 "max_steps_grow_factor": grow}
+                 "max_extra_steps_grow_factor": grow}
         entry.update(overrides or {})
         return entry
     return {

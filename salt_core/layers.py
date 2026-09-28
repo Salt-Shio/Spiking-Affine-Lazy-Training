@@ -34,7 +34,7 @@ from salt_core.connectivity.conv import (ConvQueueStructure, build_conv_structur
                                           unravel_conv_source)
 from salt_core.connectivity.fc import (FCQueueStructure, build_fc_structure, fc_float_values,
                                         fc_weight_codes)
-from salt_core.float.affine import AffineMap
+from salt_core.float.affine import AffineMap, base_scan_steps, safe_extra_steps
 from salt_core.stream import (EventStream, extract_output_events,
                                     extract_output_events_compressed)
 from salt_core.trace import (LayerForwardTrace, resolve_ms_compressed,
@@ -101,7 +101,7 @@ class Layer(Protocol):
         ...
 
     def with_chunk_size(self, chunk_size: int) -> "Layer":
-        """換 chunk_size,其他跟著要改的欄位(例如 max_steps)由層自己改對。"""
+        """換 chunk_size,其他跟著要改的欄位(例如 max_extra_steps)由層自己改對。"""
         ...
 
 
@@ -165,19 +165,14 @@ class ConvLayer:
     # 「不要太小、少幾次開頭重編譯」。
     max_queue_len: int = 128
     max_out_spikes: int = 8192
-    # 跟 max_queue_len 脫鉤的掃描步數上界(見 docs/math/掃描步數上界推導.md)。`None`
-    # (預設)代表「沒特別設起始猜測」,`__post_init__` 落到 `self.max_queue_len`,對齊這個
-    # 欄位存在之前的行為(safe fallback,永遠夠用)——這是給**沒有經過**
-    # `example/train_conv_compressed.py` 動態放大迴圈的呼叫端(例如
-    # 直接用 `build_network` 的分析腳本)用的安全預設,
-    # 不會因為這個欄位的新增而默默截斷掃描、算出錯的結果。訓練腳本要用小
-    # 起始值讓它自己長(跟 `max_queue_len`/`max_out_spikes` 同一種「config 給起始猜測」
-    # 的用法),config 就直接填這個欄位,不要靠這個 fallback。
-    max_steps: int | None = None
+    # 掃描步數 = ceil(max_queue_len / chunk_size) + max_extra_steps,後者是因為 fire 要多跑的步數
+    # (見 docs/math/掃描步數上界推導.md)。None 時設成一定夠的值(總步數 = max_queue_len)。
+    max_extra_steps: int | None = None
 
     def __post_init__(self) -> None:
-        if self.max_steps is None:
-            object.__setattr__(self, "max_steps", self.max_queue_len)
+        if self.max_extra_steps is None:
+            object.__setattr__(self, "max_extra_steps",
+                               safe_extra_steps(self.max_queue_len, self.chunk_size))
 
     @property
     def h_out(self) -> int:
@@ -210,7 +205,7 @@ class ConvLayer:
     @property
     def capacity(self) -> Capacity:
         return Capacity(max_queue_len=self.max_queue_len, max_out_spikes=self.max_out_spikes,
-                        max_steps=self.max_steps)
+                        max_extra_steps=self.max_extra_steps)
 
     def with_capacity(self, capacity: Capacity) -> "ConvLayer":
         """換成 capacity 的容量值,其他欄位不變。"""
@@ -255,7 +250,7 @@ class ConvLayer:
         diag = _layer_diag(scan.result.spike_mask, self.n_neurons, in_stream.n_real_events,
                            needed={"max_queue_len": jnp.max(structure.n_real_events),
                                    "max_out_spikes": out_stream.n_real_events,
-                                   "max_steps": scan.steps_needed})
+                                   "max_extra_steps": scan.extra_steps_needed})
         layer_trace = None
         if trace:
             event_ms = resolve_ms_compressed(scan.pointer_steps, local_to_global_j,
@@ -290,16 +285,17 @@ class ConvLayer:
         return tile_channels(structure.n_real_events, self.oc)
 
     def scan_steps(self, structure: ConvQueueStructure) -> int:
-        """浮點掃描的步數上限。"""
-        return self.max_steps
+        """浮點掃描的步數:ceil(max_queue_len / chunk_size) + max_extra_steps。"""
+        return base_scan_steps(self.max_queue_len, self.chunk_size) + self.max_extra_steps
 
     def with_chunk_size(self, chunk_size: int) -> "ConvLayer":
-        """換 chunk_size,max_steps 退回 max_queue_len。
+        """換 chunk_size,max_extra_steps 設成一定夠的值(總步數 = max_queue_len)。
 
-        訓練時 max_steps 是照舊 chunk_size 的需求縮小過的,換成更小的 chunk_size
-        可能不夠;max_queue_len 步一定夠,因為每一步至少處理一筆事件。
+        訓練時 max_extra_steps 是照舊 chunk_size 的需求縮小過的,換 chunk_size 後可能不夠;
+        max_queue_len 步一定夠,因為每一步至少處理一筆事件。
         """
-        return replace(self, chunk_size=chunk_size, max_steps=self.max_queue_len)
+        return replace(self, chunk_size=chunk_size,
+                       max_extra_steps=safe_extra_steps(self.max_queue_len, chunk_size))
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,8 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from salt_core.float.affine import safe_extra_steps
+
 
 class LayerDiag(NamedTuple):
     """一層 forward 的診斷。
@@ -68,38 +70,38 @@ def _grow(observed: int, factor: float) -> int:
 
 @dataclass(frozen=True)
 class GrowthPolicy:
-    """一層容量的放大縮小公式。倍率跟門檻的理由見 docs/規格書.md「conv 層 max_steps」。
+    """一層容量的放大縮小公式。倍率跟門檻的理由見 docs/規格書.md「掃描步數旋鈕 max_extra_steps」。
 
     放大、縮小共用同一個倍率:需求沒變時兩邊算出的目標值相等,不會來回震盪。
     縮小門檻:候選值要掉到現值乘這個比例以下才縮,值得付一次重編譯。
     """
     max_queue_len_grow_factor: float = 1.5
     out_grow_factor: float = 1.5
-    max_steps_grow_factor: float = 1.5
+    max_extra_steps_grow_factor: float = 1.5
     out_shrink_threshold: float = 0.5
-    max_steps_shrink_threshold: float = 0.5
+    max_extra_steps_shrink_threshold: float = 0.5
 
     def _grow_factor(self, knob: str) -> float:
         return {"max_queue_len": self.max_queue_len_grow_factor, "max_out_spikes": self.out_grow_factor,
-                "max_steps": self.max_steps_grow_factor}[knob]
+                "max_extra_steps": self.max_extra_steps_grow_factor}[knob]
 
     def _shrink_threshold(self, knob: str) -> float | None:
         return {"max_out_spikes": self.out_shrink_threshold,
-                "max_steps": self.max_steps_shrink_threshold}.get(knob)
+                "max_extra_steps": self.max_extra_steps_shrink_threshold}.get(knob)
 
-    def grown(self, capacity: Capacity, needed: dict) -> Capacity:
+    def grown(self, capacity: Capacity, needed: dict, chunk_size: int) -> Capacity:
         """needed 超過容量的旋鈕放大到 ceil(needed * 倍率),其他不變。
 
-        needed: 旋鈕名 -> 需求量(純量)。
-        max_queue_len 放大時 max_steps 直接設成新的 max_queue_len:這批的 max_steps 需求是在裝不下的佇列上算的,
-        不可信;max_queue_len 步一定夠,因為每一步至少處理一筆事件。
+        needed: 旋鈕名 -> 需求量(純量)。chunk_size: 這層的 chunk_size。
+        max_queue_len 放大時 max_extra_steps 直接設成一定夠的值(總步數 = 新的 max_queue_len):
+        這批的步數需求是在裝不下的佇列上算的,不可信;每一步至少處理一筆事件。
         """
         new = {knob: _grow(needed[knob], self._grow_factor(knob))
                      if int(needed[knob]) > value else value
                for knob, value in capacity.items()}
-        if ("max_queue_len" in new and "max_steps" in new
+        if ("max_queue_len" in new and "max_extra_steps" in new
                 and new["max_queue_len"] != capacity["max_queue_len"]):
-            new["max_steps"] = new["max_queue_len"]
+            new["max_extra_steps"] = safe_extra_steps(new["max_queue_len"], chunk_size)
         return Capacity(**new)
 
     def shrunk(self, capacity: Capacity, observed: dict) -> Capacity:
@@ -140,7 +142,7 @@ def grown_to_fit(layers: list, policies: dict, diags: list) -> list:
     """
     return _replace_capacity(layers, [
         None if layer.capacity is None
-        else policies[layer.name].grown(layer.capacity, diag.needed)
+        else policies[layer.name].grown(layer.capacity, diag.needed, layer.chunk_size)
         for layer, diag in zip(layers, diags)])
 
 

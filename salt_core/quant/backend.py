@@ -46,7 +46,7 @@ class QuantBackend:
     def scan(self, layer, structure, params: QuantizedLayerParams,
              event_gain: jax.Array | None, *, trace: bool) -> ScanOutput:
         """一層的查表 + 取權重碼 + 整數掃描。掃描長度是佇列長度,跟 chunk_size、
-        max_steps 無關。event_gain 用不到:整數路徑的跨層增益恆為 1。
+        max_extra_steps 無關。event_gain 用不到:整數路徑的跨層增益恆為 1。
         params.q 不是整數 dtype 時 raise ValueError。"""
         _check_weight_codes(params.q)
         a_int, is_identity = apply_decay_table_int(layer.neuron_delta_t(structure),
@@ -64,7 +64,7 @@ class QuantBackend:
         # 沒有 surrogate gradient,跨層增益用常數 1。
         spike_gain = jnp.ones_like(result.spike_mask, dtype=jnp.float32)
         return ScanOutput(result=result, spike_gain=spike_gain,
-                          steps_needed=jnp.zeros((), dtype=jnp.int32),
+                          extra_steps_needed=jnp.zeros((), dtype=jnp.int32),
                           v_steps=v_steps, pointer_steps=pointer_steps)
 
     def readout(self, result: QuantLayerResult,

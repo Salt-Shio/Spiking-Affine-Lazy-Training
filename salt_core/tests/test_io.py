@@ -15,7 +15,7 @@ from salt_core.network import Network
 NETWORK = Network(input_shape=(2, 8, 8), layers=(
     ConvLayer(name="conv1", ic=2, h_in=8, w_in=8, oc=3, k=3, s=2, p=1, init_k=5.0,
               tau=12.0, v_th=0.8, alpha=3.0, chunk_size=4,
-              max_queue_len=17, max_out_spikes=40, max_steps=9),
+              max_queue_len=17, max_out_spikes=40, max_extra_steps=9),
     FCLayer(name="out", n_in=3 * 4 * 4, n_out=5, init_k=2.0, tau=20.0, chunk_size=8)))
 
 

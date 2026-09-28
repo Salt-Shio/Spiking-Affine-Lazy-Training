@@ -24,7 +24,7 @@ class KnobColumns(NamedTuple):
 # 欄名沿用舊 run 的命名,舊的 metrics.csv 才能用同一套程式讀。
 KNOB_COLUMNS = {"max_queue_len": KnobColumns("max_event_queue", "obs_event_queue", "佇列"),
                 "max_out_spikes": KnobColumns("max_layer_spikes", "obs_layer_spikes", "輸出spike"),
-                "max_steps": KnobColumns("max_steps", "obs_steps", "掃描步數")}
+                "max_extra_steps": KnobColumns("max_extra_steps", "obs_extra_steps", "額外掃描步數")}
 
 
 def _ratio(obs: int, cap: int) -> str:

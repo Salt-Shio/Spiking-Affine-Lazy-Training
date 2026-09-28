@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 
 from salt_core.backend import ScanOutput
-from salt_core.float.affine import spike_step_upper_bound
+from salt_core.float.affine import extra_steps_upper_bound
 from salt_core.float.scan import run_layer_forward, run_layer_forward_traced
 
 
@@ -25,8 +25,9 @@ class FloatBackend:
         else:
             result = run_layer_forward(maps, layer.v_th, **scan_kwargs)
             v_steps = pointer_steps = None
-        steps_needed = jnp.max(spike_step_upper_bound(maps.b, layer.v_th, layer.chunk_size))
-        return ScanOutput(result=result, spike_gain=result.s_spike, steps_needed=steps_needed,
+        extra_steps_needed = jnp.max(extra_steps_upper_bound(maps.b, layer.v_th, layer.chunk_size))
+        return ScanOutput(result=result, spike_gain=result.s_spike,
+                          extra_steps_needed=extra_steps_needed,
                           v_steps=v_steps, pointer_steps=pointer_steps)
 
     def readout(self, result, params):

@@ -142,10 +142,10 @@ def _generous_case():
     return layers, params, batch, _report(layers, params, batch, chunk=3, input_shape=INPUT_SHAPE)
 
 
-def _assert_regrow_matches_generous(knob: str):
-    """每個 conv 層的 knob 設成 1:要重算,結果跟一開始就給足容量相同。"""
+def _assert_regrow_matches_generous(knob: str, value: int = 1):
+    """每個 conv 層的 knob 設成 value:要重算,結果跟一開始就給足容量相同。"""
     layers, params, batch, (expect, generous_regrows) = _generous_case()
-    small = with_conv_knob(layers, knob, 1)
+    small = with_conv_knob(layers, knob, value)
     got, regrows = _report(small, params, batch, chunk=3, input_shape=INPUT_SHAPE)
     assert generous_regrows == 0
     assert regrows > 0
@@ -162,4 +162,4 @@ def test_dormant_report_regrows_on_output_spike_overflow():
 
 
 def test_dormant_report_regrows_on_scan_step_overflow():
-    _assert_regrow_matches_generous("max_steps")
+    _assert_regrow_matches_generous("max_extra_steps", value=0)

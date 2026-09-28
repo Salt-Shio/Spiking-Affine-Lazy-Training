@@ -20,9 +20,9 @@ _SHAPES = ((8, 2, 3, 3), (16, 8, 3, 3), (10, 1296))
 # 權重形狀是 _SHAPES 的網路,容量用非預設值,確認讀回的是存進去的容量
 _NETWORK = Network(input_shape=(2, 34, 34), layers=(
     ConvLayer(name="conv1", ic=2, h_in=34, w_in=34, oc=8, k=3, s=2, p=1, init_k=5.0,
-              max_queue_len=185, max_out_spikes=5361, max_steps=146),
+              max_queue_len=185, max_out_spikes=5361, max_extra_steps=99),
     ConvLayer(name="conv2", ic=8, h_in=17, w_in=17, oc=16, k=3, s=2, p=1, init_k=5.0,
-              max_queue_len=1083, max_out_spikes=3417, max_steps=540),
+              max_queue_len=1083, max_out_spikes=3417, max_extra_steps=269),
     FCLayer(name="out", n_in=1296, n_out=10, init_k=5.0)))
 # best 那個 epoch 的網路:容量跟 _NETWORK 不同,確認讀回的是 best 自己的網路
 _BEST_NETWORK = _NETWORK.replace_layers(

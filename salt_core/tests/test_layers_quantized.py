@@ -7,7 +7,7 @@
    `apply_decay_table_int`、`quant.scan.run_layer`)都各自有單元
    測試,這裡驗證組裝起來的結果跟直接呼叫這些元件完全一致。
 3. **conv catch-up**:真 tap 之後的 catch-up 衰減要真的套用到 `v_final`。
-4. **跟訓練容量設定無關**:整數版每步一筆事件,不受 `ConvLayer.max_steps` 影響。
+4. **跟訓練容量設定無關**:整數版每步一筆事件,不受 `ConvLayer.max_extra_steps` 影響。
 5. **多層串接**:`run_network` 跟手動逐層呼叫結果一致。
 6. **`f_a` 越粗,結果確實不同**(不是接了一個沒作用的參數)。
 7. **軌跡**:`trace=True` 時每層軌跡的 `v_steps` 最後一欄等於 `v_final`;
@@ -151,22 +151,22 @@ def test_conv_forward_quantized_applies_catchup_decay():
     assert list(np.asarray(result.v_final)) == [65, 80]
 
 
-def test_conv_forward_quantized_ignores_training_max_steps():
-    """`ConvLayer.max_steps` 是照訓練時的 `chunk_size` 校準出來的;整數版每步
-    一筆事件,掃描長度是佇列長度 `max_queue_len`,不能受它影響。兩個只有 `max_steps`
+def test_conv_forward_quantized_ignores_training_max_extra_steps():
+    """`ConvLayer.max_extra_steps` 是照訓練時的 `chunk_size` 校準出來的;整數版每步
+    一筆事件,掃描長度是佇列長度 `max_queue_len`,不能受它影響。兩個只有 `max_extra_steps`
     不同的層算出來的結果要完全一樣。"""
     base, in_stream = _conv_3x3_setup()
     q = jnp.round(base.init_weight(jax.random.PRNGKey(0)) * 20).astype(jnp.int32)
     params = _params(q, tau=base.tau, f_a=8, f_V=2, i_V=16,
                      v_th_int=jnp.array([1000]))  # 只看 v_final 軌跡,不管 fire
 
-    result_small = dataclasses.replace(base, max_steps=2).forward(
+    result_small = dataclasses.replace(base, max_extra_steps=2).forward(
         params, in_stream, backend=QUANT).result
-    result_large = dataclasses.replace(base, max_steps=9).forward(
+    result_large = dataclasses.replace(base, max_extra_steps=9).forward(
         params, in_stream, backend=QUANT).result
 
     assert np.array_equal(np.asarray(result_small.v_final), np.asarray(result_large.v_final)), \
-        "整數 backend 的結果不該受 self.max_steps 影響"
+        "整數 backend 的結果不該受 self.max_extra_steps 影響"
 
 
 def test_run_network_quantized_chains_conv_into_fc_matches_manual_chaining():

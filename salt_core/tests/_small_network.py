@@ -9,9 +9,9 @@ from salt_core.layers import ConvLayer, FCLayer
 
 INPUT_SHAPE = (2, 8, 8)
 MAX_LEN = 40
-# 給足的容量:大約是這組合成資料實際需要量的 2~3 倍
-GENEROUS = {"conv1": dict(max_queue_len=MAX_LEN, max_out_spikes=512, max_steps=MAX_LEN),
-            "conv2": dict(max_queue_len=128, max_out_spikes=256, max_steps=1536)}
+# 給足的容量:大約是這組合成資料實際需要量的 2~3 倍;額外步數用預設(一定夠)
+GENEROUS = {"conv1": dict(max_queue_len=MAX_LEN, max_out_spikes=512),
+            "conv2": dict(max_queue_len=128, max_out_spikes=256)}
 
 
 def synthetic_raw_batch(key, n_samples, max_len, h_in, w_in, ic):

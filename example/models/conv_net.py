@@ -40,7 +40,7 @@ __all__ = ["N_CLASSES", "build_network", "build_growth_policies", "build_decoder
 # layer entry 裡這些 key 轉型後才傳給層類別(yaml 的 `1.0e9` 之類會被 parse
 # 成字串——PyYAML 遵 YAML 1.1,指數要 `1.0e+9` 才算 float)。不認得的 key
 # 原樣傳,讓層類別自己 TypeError。
-_LAYER_INT_FIELDS = ("chunk_size", "max_queue_len", "max_out_spikes", "max_steps")
+_LAYER_INT_FIELDS = ("chunk_size", "max_queue_len", "max_out_spikes", "max_extra_steps")
 _LAYER_FLOAT_FIELDS = ("tau", "v_th", "alpha", "init_k")
 # layer entry 裡屬於 GrowthPolicy 的 key,不傳給層類別
 _POLICY_FIELDS = tuple(f.name for f in dataclasses.fields(GrowthPolicy))
@@ -73,7 +73,7 @@ def build_network(model_cfg: dict) -> Network:
         - `fc` 必填 `n_out`;`n_in` = 上一層攤平。
         - `GrowthPolicy` 的欄位(`max_queue_len_grow_factor` 這些)留給 `build_growth_policies`。
         - 其餘 key(`tau` / `v_th` / `alpha` / `chunk_size` / `max_queue_len` /
-          `max_out_spikes` / `max_steps` / `init_k`)直接當關鍵字傳給層類別,
+          `max_out_spikes` / `max_extra_steps` / `init_k`)直接當關鍵字傳給層類別,
           沒填就吃類別預設(見 `salt_core.layers`)。
         - `name` 選填,沒填自動 `conv1` / `conv2` / ... / `fc1` / ...。
 

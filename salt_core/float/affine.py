@@ -96,6 +96,22 @@ def spike_step_upper_bound(b: jax.Array, v_th: float, chunk_size: int) -> jax.Ar
     return steps.astype(jnp.int32)
 
 
+def base_scan_steps(queue_len: int, chunk_size: int) -> int:
+    """不 fire 時掃完整條佇列的步數:每步吃滿 chunk_size 筆,ceil(queue_len / chunk_size)。"""
+    return -(-queue_len // chunk_size)
+
+
+def safe_extra_steps(queue_len: int, chunk_size: int) -> int:
+    """一定夠的額外步數:總步數等於佇列長度,每步至少吃一筆。"""
+    return queue_len - base_scan_steps(queue_len, chunk_size)
+
+
+def extra_steps_upper_bound(b: jax.Array, v_th: float, chunk_size: int) -> jax.Array:
+    """因為 fire 要比 base_scan_steps 多跑的步數上界:spike_step_upper_bound 減掉基本步數。
+    b 同 spike_step_upper_bound,回傳 int32,不 fire 或 chunk_size=1 時是 0。"""
+    return spike_step_upper_bound(b, v_th, chunk_size) - base_scan_steps(b.shape[-1], chunk_size)
+
+
 class ChunkForwardResult(NamedTuple):
     v_final: jax.Array     # chunk 結束後的膜電位(若有 spike,已套用硬重置)
     is_spiked: jax.Array   # bool scalar,這個 chunk 內是否有 spike
