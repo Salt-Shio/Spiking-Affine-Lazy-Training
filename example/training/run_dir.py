@@ -21,14 +21,25 @@ def make_exp_dir(run_name: str, exp_root: str) -> str:
     return exp_dir
 
 
+def _now() -> str:
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
 def run_header(cfg: dict) -> dict:
-    """run.yaml 開頭的欄位:config 快照、git commit、XLA_FLAGS、時間。"""
+    """run.yaml 開頭的欄位:config 快照、git commit、XLA_FLAGS、時間、續練紀錄(空的)。"""
     return {
         "config": cfg,
         "git_commit": get_git_commit_hash(str(REPO_ROOT)),
         "xla_flags": os.environ.get("XLA_FLAGS", ""),
-        "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        "timestamp": _now(),
+        "resumes": [],
     }
+
+
+def resume_entry(from_epoch: int) -> dict:
+    """run.yaml 的 resumes 一筆:從哪個 epoch 接著練、當時的 git commit、時間。"""
+    return {"from_epoch": from_epoch, "git_commit": get_git_commit_hash(str(REPO_ROOT)),
+            "timestamp": _now()}
 
 
 def write_run_record(exp_dir: str, run_record: dict) -> None:
@@ -39,10 +50,15 @@ def write_run_record(exp_dir: str, run_record: dict) -> None:
 
 def write_weights(exp_dir: str, network, params, best) -> None:
     """params.npz 帶結束時的網路,best_params.npz 帶 best epoch 當下的網路。"""
-    train_dir = os.path.join(exp_dir, TRAIN_DIRNAME)
-    save_weights(os.path.join(train_dir, "params.npz"), network, params)
-    save_weights(os.path.join(train_dir, "best_params.npz"), best.network, best.params)
+    save_weights(params_path(exp_dir), network, params)
+    save_weights(os.path.join(exp_dir, TRAIN_DIRNAME, "best_params.npz"), best.network,
+                 best.params)
 
 
 def metrics_csv_path(exp_dir: str) -> str:
     return os.path.join(exp_dir, TRAIN_DIRNAME, "metrics.csv")
+
+
+def params_path(exp_dir: str) -> str:
+    """結束時的權重;存在代表這個 run 跑完了。"""
+    return os.path.join(exp_dir, TRAIN_DIRNAME, "params.npz")

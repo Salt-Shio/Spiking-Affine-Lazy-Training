@@ -128,6 +128,10 @@ class MetricsLog:
     def rows(self) -> list:
         return self._rows
 
+    def restore(self, rows: list) -> None:
+        """從 checkpoint 接著練時,換回存檔當下已完成 epoch 的列。"""
+        self._rows = list(rows)
+
     def last_needed(self, layer) -> dict[str, int]:
         """最後一個 epoch 這層每個容量旋鈕的最大需求。"""
         last = self._rows[-1]

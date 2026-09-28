@@ -74,7 +74,7 @@ class CapacityControl:
 
     policies: 層名 -> GrowthPolicy,有容量的層都要有。
     reestimate_every: 每幾個 epoch 檢查一次縮小,0 不檢查。
-    events: 到目前為止的 GrowEvent、ShrinkEvent,依發生順序。
+    events: 到目前為止的事件(GrowEvent、ShrinkEvent 的 to_dict()),依發生順序。
     """
 
     def __init__(self, policies: dict, reestimate_every: int):
@@ -82,6 +82,10 @@ class CapacityControl:
         self.reestimate_every = reestimate_every
         self.events: list = []
         self._epoch_needed: dict = {}
+
+    def restore(self, events: list) -> None:
+        """從 checkpoint 接著練時,換回存檔當下的事件紀錄。"""
+        self.events = list(events)
 
     def start_epoch(self, layers: list) -> None:
         self._epoch_needed = {layer.name: dict.fromkeys(layer.capacity, 0)
@@ -105,7 +109,7 @@ class CapacityControl:
         grown = grown_to_fit(layers, self.policies, diags)
         event = GrowEvent(epoch=epoch, batch=batch, resumed_from_epoch=resumed_from_epoch,
                           changes=knob_changes(layers, grown, [d.needed for d in diags]))
-        self.events.append(event)
+        self.events.append(event.to_dict())
         return grown, event
 
     def shrink(self, layers: list, epoch: int) -> tuple[list, ShrinkEvent | None]:
@@ -117,5 +121,5 @@ class CapacityControl:
             return layers, None
         needed = [self._epoch_needed.get(layer.name) for layer in layers]
         event = ShrinkEvent(epoch=epoch, changes=knob_changes(layers, shrunk, needed))
-        self.events.append(event)
+        self.events.append(event.to_dict())
         return shrunk, event

@@ -3,8 +3,9 @@
 容量旋鈕從 config 的起始值開始,訓練中出界就放大、退回最近跑完的 epoch 重來,
 理由見 docs/math/conv事件佇列壓縮版推導.md;縮小的規則見 docs/規格書.md。
 
-用法(config 路徑相對於 repo 根目錄,或給絕對路徑):
+用法(路徑相對於 repo 根目錄,或給絕對路徑):
   python -m example.train_conv_compressed configs/conv/baseline.yaml
+  python -m example.train_conv_compressed --resume experiments/<run 目錄>    # 從 checkpoint 接著練
 """
 import argparse
 import datetime
@@ -17,18 +18,21 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 # 訓練跑好幾小時,輸出導向檔案時 Python 預設整批緩衝,中途看不到進度。
 sys.stdout.reconfigure(line_buffering=True)
 
+import jax
+
 from data.src.nmnist import NMNISTDataset
 from example.checkpoint import Checkpointer
 from example.metrics_log import MetricsLog
 from example.models.conv_net import build_decoder, build_growth_policies, build_network
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR, resolve_config
 from example.training.capacity_control import CapacityControl
-from example.training.loop import RunContext, TrainData, initial_state, run_training
+from example.training.loop import (RunContext, TrainData, TrainState, initial_state, run_training,
+                                   state_from_checkpoint)
 from example.training.optim import build_optimizer
-from example.training.run_dir import (make_exp_dir, metrics_csv_path, run_header, write_run_record,
-                                      write_weights)
-from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, load_config, split_raw_events,
-                           take_raw_events)
+from example.training.run_dir import (make_exp_dir, metrics_csv_path, params_path, resume_entry,
+                                      run_header, write_run_record, write_weights)
+from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, load_config, load_run_record,
+                           split_raw_events, take_raw_events)
 from salt_core.io import network_to_dict
 from salt_core.layers import ConvLayer
 from salt_core.network import Network
@@ -82,17 +86,40 @@ def _make_context(cfg: dict, data: TrainData, network: Network, exp_dir: str) ->
         snapshot_dir=snapshot_dir, snapshot_every=snapshot_every)
 
 
+def _starting_point(cfg: dict, ctx: RunContext, network: Network,
+                    exp_dir: str) -> tuple[Network, TrainState, dict]:
+    """回傳 (起始網路, 起始狀態, run.yaml 開頭)。
+
+    沒有 checkpoint:config 建的網路、初始狀態、新的開頭。
+    有 checkpoint:checkpoint 的網路跟狀態,指標、容量事件換回存檔當下的紀錄,
+    沿用原本的開頭,resumes 多一筆。
+    """
+    if not ctx.checkpointer.exists():
+        return network, initial_state(ctx, network), run_header(cfg)
+    saved = ctx.checkpointer.load(
+        opt_state_template=ctx.optimizer.init(network.init(jax.random.PRNGKey(0))))
+    ctx.metrics_log.restore(saved.history["metrics_rows"])
+    ctx.capacity.restore(saved.history["capacity_events"])
+    header = load_run_record(exp_dir)
+    header["resumes"].append(resume_entry(saved.epoch + 1))
+    print(f"從 checkpoint 接著練:epoch {saved.epoch + 1} 開始")
+    return saved.network, state_from_checkpoint(saved), header
+
+
 def train(cfg: dict, data: TrainData, exp_dir: str) -> TrainResult:
     """照 cfg(model、train 區塊)在 data 上訓練,產出寫進 exp_dir(要先建好 train/ 子目錄)。
 
-    開訓時先寫一份 run.yaml(config 快照),結束時整份覆寫成完整紀錄。
+    exp_dir 有 checkpoint 時從它接著練。開訓時先寫一份 run.yaml(config 快照),
+    結束時整份覆寫成完整紀錄。exp_dir 的 run 已經跑完(有 params.npz)時 raise ValueError。
     """
+    if os.path.isfile(params_path(exp_dir)):
+        raise ValueError(f"{exp_dir} 已經跑完,不能再接著練")
     network = build_network(cfg["model"])
     ctx = _make_context(cfg, data, network, exp_dir)
-    header = run_header(cfg)
+    network, state, header = _starting_point(cfg, ctx, network, exp_dir)
     write_run_record(exp_dir, header)
 
-    network, state = run_training(ctx, network, initial_state(ctx, network))
+    network, state = run_training(ctx, network, state)
 
     metrics_log = ctx.metrics_log
     capacity_layers = [layer for layer in network.layers if layer.capacity is not None]
@@ -103,7 +130,7 @@ def train(cfg: dict, data: TrainData, exp_dir: str) -> TrainResult:
         "network": network_to_dict(network),
         "last_epoch_obs": ({layer.name: metrics_log.last_needed(layer) for layer in capacity_layers}
                            if metrics_log.rows else {}),
-        "capacity_events": [event.to_dict() for event in ctx.capacity.events],
+        "capacity_events": list(ctx.capacity.events),
     }
     metrics_log.write_csv(metrics_csv_path(exp_dir))
     write_run_record(exp_dir, run_record)
@@ -117,12 +144,20 @@ def train(cfg: dict, data: TrainData, exp_dir: str) -> TrainResult:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("config", help="yaml config 檔案路徑(相對於 repo 根目錄,或絕對路徑)")
+    parser.add_argument("config", nargs="?",
+                        help="yaml config 檔案路徑(相對於 repo 根目錄,或絕對路徑)")
+    parser.add_argument("--resume", metavar="EXP_DIR",
+                        help="從這個 run 目錄的 checkpoint 接著練,config 用它開訓時的快照")
     args = parser.parse_args()
-    cfg = load_config(str(resolve_config(args.config)))
-    data = load_nmnist_data(cfg["data"])
-    exp_dir = make_exp_dir(cfg.get("run_name", "run"), EXPERIMENTS_DIR)
-    train(cfg, data, exp_dir)
+    if (args.config is None) == (args.resume is None):
+        parser.error("config 跟 --resume 要剛好給一個")
+    if args.resume is not None:
+        exp_dir = str(resolve_config(args.resume))
+        cfg = load_run_record(exp_dir)["config"]
+    else:
+        cfg = load_config(str(resolve_config(args.config)))
+        exp_dir = make_exp_dir(cfg.get("run_name", "run"), EXPERIMENTS_DIR)
+    train(cfg, load_nmnist_data(cfg["data"]), exp_dir)
 
 
 if __name__ == "__main__":

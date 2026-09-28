@@ -9,7 +9,7 @@ from typing import NamedTuple
 import jax
 import numpy as np
 
-from example.checkpoint import Checkpointer
+from example.checkpoint import Best, Checkpointer, CheckpointState
 from example.dormant import dormant_report
 from example.metrics_log import MetricsLog
 from example.training.capacity_control import CapacityControl
@@ -23,14 +23,6 @@ class TrainData(NamedTuple):
     """訓練跟驗證資料。每個 split 要有 event_times、x、y、c、n_real_events、labels、labels_onehot。"""
     train: object
     val: object
-
-
-class Best(NamedTuple):
-    """val_accuracy 最好的 epoch。network 是那個 epoch 當下的網路(含容量)。"""
-    params: tuple
-    network: Network
-    val_accuracy: float
-    epoch: int
 
 
 class TrainState(NamedTuple):
@@ -99,6 +91,16 @@ def initial_state(ctx: RunContext, network: Network) -> TrainState:
                       best=Best(params=params, network=network, val_accuracy=-1.0, epoch=-1))
 
 
+def state_from_checkpoint(saved: CheckpointState) -> TrainState:
+    return TrainState(params=saved.params, opt_state=saved.opt_state, shuffle_key=saved.shuffle_key,
+                      next_epoch=saved.epoch + 1, best=saved.best)
+
+
+def _history(ctx: RunContext) -> dict:
+    """checkpoint 裡的紀錄:已完成 epoch 的 metrics 列、到目前為止的容量事件。"""
+    return {"metrics_rows": ctx.metrics_log.rows, "capacity_events": ctx.capacity.events}
+
+
 def _finish_epoch(ctx: RunContext, network: Network, layers: list, epoch: int,
                   params, evaluate, best: Best) -> Best:
     """epoch 跑完:val 評估、dormant、記指標、存 checkpoint 跟權重快照。回傳更新過的 best。"""
@@ -121,6 +123,7 @@ def run_epochs(ctx: RunContext, network: Network, state: TrainState) -> EpochsOu
 
     某個 batch 放不下:丟掉這個 batch,回傳這個 epoch 開始時的狀態跟放大後的層。
     epoch 跑完後照這個 epoch 的需求縮小:回傳跑完的狀態跟縮小後的層。
+    checkpoint 存的是下一個 epoch 要用的網路(縮小之後);權重快照存這個 epoch 用的網路。
     """
     layers = list(network.layers)
     train_step = make_train_step(network, ctx.optimizer, ctx.decoder, ctx.score_cap)
@@ -156,16 +159,17 @@ def run_epochs(ctx: RunContext, network: Network, state: TrainState) -> EpochsOu
                                          decoder_metrics=out.decoder_metrics)
 
         best = _finish_epoch(ctx, network, layers, epoch, params, evaluate, best)
-        ctx.checkpointer.save(network=network, params=params, opt_state=opt_state,
-                              shuffle_key=shuffle_key, epoch=epoch)
+        shrunk, shrink_event = ctx.capacity.shrink(layers, epoch)
+        ctx.checkpointer.save(CheckpointState(
+            network=network.replace_layers(shrunk), params=params, opt_state=opt_state,
+            shuffle_key=shuffle_key, epoch=epoch, best=best, history=_history(ctx)))
         if ctx.snapshot_every > 0 and epoch % ctx.snapshot_every == 0:
             save_weights(weight_snapshot_path(ctx.snapshot_dir, epoch), network, params)
         state = TrainState(params=params, opt_state=opt_state, shuffle_key=shuffle_key,
                            next_epoch=epoch + 1, best=best)
 
-        shrunk, event = ctx.capacity.shrink(layers, epoch)
-        if event is not None:
-            for line in event.describe():
+        if shrink_event is not None:
+            for line in shrink_event.describe():
                 print(line)
             return EpochsOutcome(state=state, new_layers=shrunk)
 

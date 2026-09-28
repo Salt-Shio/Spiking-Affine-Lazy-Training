@@ -1,14 +1,17 @@
 """example/checkpoint.py 的存讀測試。
 
-每種 optimizer 先走兩步,存檔、讀回,檢查權重、optimizer 狀態、shuffle key、epoch
-逐值相同、網路描述相同,而且讀回後的下一步 update 跟沒存讀過的一樣。
+每種 optimizer 先走兩步,存檔、讀回,檢查權重、optimizer 狀態、shuffle key、epoch、
+best、紀錄逐值相同、網路描述相同,而且讀回後的下一步 update 跟沒存讀過的一樣。
 AdamW、梯度裁剪、餘弦退火用訓練腳本的 build_optimizer 建,跟實際訓練同一條路。
 """
+import math
+import os
+
 import jax
 import jax.numpy as jnp
 import optax
 
-from example.checkpoint import Checkpointer
+from example.checkpoint import Best, Checkpointer, CheckpointState
 from example.training.optim import build_optimizer
 from salt_core.layers import ConvLayer, FCLayer
 from salt_core.network import Network
@@ -21,6 +24,15 @@ _NETWORK = Network(input_shape=(2, 34, 34), layers=(
     ConvLayer(name="conv2", ic=8, h_in=17, w_in=17, oc=16, k=3, s=2, p=1, init_k=5.0,
               max_queue_len=1083, max_out_spikes=3417, max_steps=540),
     FCLayer(name="out", n_in=1296, n_out=10, init_k=5.0)))
+# best 那個 epoch 的網路:容量跟 _NETWORK 不同,確認讀回的是 best 自己的網路
+_BEST_NETWORK = _NETWORK.replace_layers(
+    (_NETWORK.layers[0].with_capacity(_NETWORK.layers[0].capacity.replace(max_out_spikes=9000)),)
+    + _NETWORK.layers[1:])
+# 紀錄裡有 nan(沒算的 dormant 欄)跟 None(從頭重來的事件)
+_HISTORY = {"metrics_rows": [{"epoch": 0, "train_loss": 1.5, "conv1_dormant_frac": float("nan")}],
+            "capacity_events": [{"kind": "grow", "epoch": 0, "batch": 1, "resumed_from_epoch": None,
+                                 "changes": [{"layer": "conv1", "knob": "max_queue_len", "old": 5,
+                                              "new": 10, "observed": 7}]}]}
 _N_TRAIN = 16
 _BATCH_SIZE = 4
 
@@ -50,10 +62,14 @@ def _assert_roundtrip(optimizer, path: str) -> None:
         params = optax.apply_updates(params, updates)
     shuffle_key = jax.random.PRNGKey(999)
 
+    best_params = _params(5)
     ckpt = Checkpointer(path)
-    ckpt.save(network=_NETWORK, params=params, opt_state=opt_state,
-              shuffle_key=shuffle_key, epoch=7)
+    ckpt.save(CheckpointState(
+        network=_NETWORK, params=params, opt_state=opt_state, shuffle_key=shuffle_key, epoch=7,
+        best=Best(params=best_params, network=_BEST_NETWORK, val_accuracy=0.625, epoch=4),
+        history=_HISTORY))
     assert ckpt.exists() and ckpt.last_epoch == 7
+    assert os.listdir(os.path.dirname(path)) == [os.path.basename(path)], "暫存檔沒有換名"
 
     loaded = ckpt.load(opt_state_template=optimizer.init(_params(0)))
     loaded_params, loaded_opt_state = loaded.params, loaded.opt_state
@@ -63,6 +79,12 @@ def _assert_roundtrip(optimizer, path: str) -> None:
     _assert_trees_equal(opt_state, loaded_opt_state, "opt_state")
     assert jnp.array_equal(shuffle_key, loaded.shuffle_key)
     assert loaded.epoch == 7
+    assert loaded.best.network == _BEST_NETWORK
+    _assert_trees_equal(best_params, loaded.best.params, "best params")
+    assert (loaded.best.val_accuracy, loaded.best.epoch) == (0.625, 4)
+    [row] = loaded.history["metrics_rows"]
+    assert (row["epoch"], row["train_loss"]) == (0, 1.5) and math.isnan(row["conv1_dormant_frac"])
+    assert loaded.history["capacity_events"] == _HISTORY["capacity_events"]
 
     next_update, _ = optimizer.update(_grad(params), opt_state, params)
     loaded_next_update, _ = optimizer.update(_grad(loaded_params), loaded_opt_state, loaded_params)

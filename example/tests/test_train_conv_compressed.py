@@ -18,11 +18,14 @@ import numpy as np
 import optax
 import pytest
 
+from example.checkpoint import Checkpointer
 from example.models.conv_net import build_network
 from example.tests._train_runs import (SYNTH_GROW, batch_needs, first_batch_needed, run_train,
                                        synthetic_cfg, synthetic_setup)
+from example.train_conv_compressed import train
 from example.training.loss import cross_entropy_loss
 from example.training.optim import build_learning_rate, build_optimizer
+from example.training.run_dir import make_exp_dir
 from example.utils import TRAIN_DIRNAME, WEIGHTS_DIRNAME, split_raw_events, weight_snapshot_path
 from salt_core.io import load_weights, network_from_dict
 
@@ -375,3 +378,50 @@ def test_repeated_overflows_follow_every_new_record_need(synth, run_root):
     rows = _read_metrics_csv(result.exp_dir)
     assert [int(r["epoch"]) for r in rows] == list(range(epochs))
     assert int(rows[-1]["conv1_max_event_queue"]) == capacity
+
+
+# ============================================================================
+# E. 跨行程續練
+# ============================================================================
+
+class _Crash(Exception):
+    """模擬訓練行程在存完 checkpoint 之後當掉。"""
+
+
+def test_resume_after_crash_continues_from_checkpoint(synth, run_root, synth_reference,
+                                                       monkeypatch):
+    """conv1 佇列容量 3:epoch 0 在 (0, 1) 出界一次;存完 epoch 0 的 checkpoint 就當掉。
+    同一個目錄重新呼叫 train() 接著練:epoch 1 在需求 12 的樣本出界、退回 epoch 0。
+    紀錄(metrics 列、事件)要接得上,權重跟參考訓練一致。"""
+    cfg = synthetic_cfg("resume_after_crash", synth.seed,
+                        conv1={"max_queue_len": batch_needs(synth, 0)[0]})
+    exp_dir = make_exp_dir(cfg["run_name"], str(run_root))
+    save = Checkpointer.save
+
+    def save_then_crash(self, state):
+        save(self, state)
+        raise _Crash
+
+    monkeypatch.setattr(Checkpointer, "save", save_then_crash)
+    with pytest.raises(_Crash):
+        train(cfg, synth.data, exp_dir)
+    monkeypatch.undo()
+    result = train(cfg, synth.data, exp_dir)
+
+    assert [e["from_epoch"] for e in result.run_record["resumes"]] == [1]
+    assert [(e["epoch"], e["batch"], e["resumed_from_epoch"]) for e in _grow_events(result)] == [
+        (0, 1, None), (1, _batch_of_largest_sample(synth, 1), 0)]
+    rows = _read_metrics_csv(result.exp_dir)
+    reference_rows = _read_metrics_csv(synth_reference.exp_dir)
+    assert [int(r["epoch"]) for r in rows] == [0, 1, 2]
+    for row, reference_row in zip(rows, reference_rows):
+        assert float(row["train_loss"]) == pytest.approx(float(reference_row["train_loss"]),
+                                                         rel=_TRAIN_RESULT_TOL)
+    assert result.run_record["best"]["epoch"] == synth_reference.run_record["best"]["epoch"]
+    _assert_params_close(result.params, synth_reference.params, "當掉後接著練 vs 參考訓練")
+
+
+def test_train_refuses_to_continue_a_finished_run(synth, synth_reference):
+    cfg = synthetic_cfg("reference", synth.seed)
+    with pytest.raises(ValueError, match="已經跑完"):
+        train(cfg, synth.data, synth_reference.exp_dir)
