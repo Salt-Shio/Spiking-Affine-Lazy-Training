@@ -93,7 +93,7 @@ def test_fake_quantize_tensor_rejects_bits_below_2():
 
 
 def test_fake_quantize_tensor_ties_away_from_zero_not_to_even():
-    """第十八節:權重碼的離線捨入是卡在正中間時往離零方向,不是 jnp.round 的
+    """權重碼的離線捨入是卡在正中間時往離零方向,不是 jnp.round 的
     逢五取偶。threshold=127 讓 scale=1.0,2.5/-2.5 是中點,逢五取偶會給
     2.0/-2.0,這裡要的是 3.0/-3.0。"""
     x = jnp.array([2.5, -2.5])

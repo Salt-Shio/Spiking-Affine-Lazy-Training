@@ -58,11 +58,13 @@ root solver;單狀態模型沒有這個性質(上面的引理),不需要那整�
 
 | 資料夾 | 定位 |
 |---|---|
-| `salt_core/` | 核心運算,自成封閉系統。單狀態仿射 LIF、chunk 化 associative scan 前向 / 梯度、事件佇列建構、surrogate gradient |
-| `data/` | N-MNIST 載入 + 視覺化,不依賴 `salt_core/` |
-| `example/` | 拿 `salt_core` + `data` 組一個實際能訓練的模型:conv 網路、訓練腳本、動態容量放大、評估。換資料集 / 換架構改這裡 |
+| `salt_core/` | 核心運算,自成封閉系統:層、網路、容量;浮點 backend(chunk 化 associative scan、surrogate gradient)跟整數 backend(模擬 FPGA 定點運算) |
+| `data/` | N-MNIST 載入 + 資料集視覺化,不依賴 `salt_core/` |
+| `viz/` | 通用繪圖(逐 epoch 曲線、網格圖、動畫);只有 `replay_panels.py` 依賴 `salt_core/` |
+| `example/` | 拿 `salt_core` + `data` 組一個實際能訓練的模型:conv 網路、訓練腳本、動態容量放大、評估、分析、notebook。換資料集 / 換架構改這裡 |
+| `configs/` | 訓練用的 yaml |
 
-- 架構(四層切分、`EventStream` 約定、解碼器):[`docs/架構.md`](docs/架構.md)
+- 架構(分層、`EventStream` 約定、backend、容量、解碼器):[`docs/架構.md`](docs/架構.md)
 - 規格(dataset 格式、網路超參):[`docs/規格書.md`](docs/規格書.md)
 - 數學推導:[`docs/math/`](docs/math/)
 - 待辦:[`docs/TODO.md`](docs/TODO.md)

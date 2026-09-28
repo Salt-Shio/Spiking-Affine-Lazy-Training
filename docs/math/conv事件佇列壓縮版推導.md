@@ -94,7 +94,9 @@ Scatter 結果——每顆神經元自己的壓縮佇列(內容是全域事件 $
 
 $\mathcal E(n)$ 是神經元 $n$ 依序保留的全域事件 index 集合,$j_0<j_1<\dots$ 排好序:
 
-$$\Delta t_m=\begin{cases}t_{j_0}-0 & m=0\\ t_{j_m}-t_{j_{m-1}} & m>0\end{cases}\qquad(\text{基準 }t=0\text{,問題紀錄第七節})$$
+$$\Delta t_m=\begin{cases}t_{j_0}-0 & m=0\\ t_{j_m}-t_{j_{m-1}} & m>0\end{cases}\qquad(\text{基準 }t=0)$$
+
+基準是 $t=0$ 的理由見 `問題紀錄.md`「洞見:N(經過的時間差)的計算基準是模擬起始時刻,不是第一筆事件的時間」。
 
 $$a_m=(1-1/\tau)^{\Delta t_m},\qquad b_m^{(oc)}=W\big[oc,\ c_{j_m},\ k_y(j_m,n),\ k_x(j_m,n)\big]$$
 

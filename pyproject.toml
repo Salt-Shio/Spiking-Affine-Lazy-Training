@@ -16,6 +16,7 @@ packages = [
     "salt_core",
     "salt_core.connectivity",
     "salt_core.float",
+    "salt_core.layers",
     "salt_core.quant",
     "salt_core.tests",
     "data",
