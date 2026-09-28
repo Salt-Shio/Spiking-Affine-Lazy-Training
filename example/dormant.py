@@ -15,7 +15,7 @@ from example.utils import take_raw_events
 
 
 def _make_chunk_activity(network: Network, layer_names: tuple, use_s_value: bool):
-    """jit 過的 (params, 一批 RawEvents) -> ({層名: (B, n_neurons) 活動量}, 每層 LayerDiag)。"""
+    """jit 過的 (params, 一批 RawEvents) -> ({層名: (B, n_neurons) 活動量}, 每層 LayerDiag, fits)。"""
 
     @jax.jit
     def chunk_activity(params, raw_batch: RawEvents):
@@ -25,7 +25,7 @@ def _make_chunk_activity(network: Network, layer_names: tuple, use_s_value: bool
             if layer.name in layer_names:
                 per_step = result.s_value if use_s_value else result.spike_mask
                 activity[layer.name] = jnp.sum(per_step, axis=-1)
-        return activity, output.diags
+        return activity, output.diags, output.fits
 
     return chunk_activity
 
@@ -53,15 +53,13 @@ def dormant_report(network: Network, params, probe: RawEvents, policies: dict, *
     totals: dict | None = None
     for lo in range(0, n, chunk):
         chunk_raw = take_raw_events(probe, slice(lo, min(lo + chunk, n)))
-        acts, diags = chunk_activity(params, chunk_raw)
-        grown = grown_to_fit_batch(layers, policies, diags)
-        while grown is not layers:
-            layers = grown
+        acts, diags, fits = chunk_activity(params, chunk_raw)
+        while not bool(jnp.all(fits)):
+            layers = grown_to_fit_batch(layers, policies, diags)
             chunk_activity = _make_chunk_activity(network.replace_layers(layers), layer_names,
                                                   use_s_value)
             regrows += 1
-            acts, diags = chunk_activity(params, chunk_raw)
-            grown = grown_to_fit_batch(layers, policies, diags)
+            acts, diags, fits = chunk_activity(params, chunk_raw)
         acts = {k: np.asarray(jnp.sum(v, axis=0)) for k, v in acts.items()}
         totals = acts if totals is None else {k: totals[k] + acts[k] for k in totals}
 

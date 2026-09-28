@@ -123,7 +123,7 @@ def _make_scores_fn(network: Network, decoder):
     def scores_fn(params, raw_batch: RawEvents):
         output = network.apply_batched(params, raw_batch)
         scores, _ = jax.vmap(decoder.decode)(output.last)
-        return scores, output.diags
+        return scores, output.diags, output.fits
 
     return scores_fn
 
@@ -147,18 +147,17 @@ def make_evaluate(network: Network, decoder, eval_batch_size: int, policies: dic
         for start in range(0, n, eval_batch_size):
             end = min(start + eval_batch_size, n)
             batch = take_raw_events(raw, slice(start, end))
-            scores, diags = scores_fn(params, batch)
-            grown = grown_to_fit_batch(layers, policies, diags)
-            while grown is not layers:
+            scores, diags, fits = scores_fn(params, batch)
+            while not bool(jnp.all(fits)):
                 print(f"[評估出界] batch={start // eval_batch_size}: 放大評估容量重算")
+                grown = grown_to_fit_batch(layers, policies, diags)
                 reduced = [reduce_over_batch(d) for d in diags]
                 for line in describe_growth(layers, grown, reduced):
                     print(f"  {line}")
                 layers = grown
                 scores_fn = _make_scores_fn(network.replace_layers(layers), decoder)
                 regrows += 1
-                scores, diags = scores_fn(params, batch)
-                grown = grown_to_fit_batch(layers, policies, diags)
+                scores, diags, fits = scores_fn(params, batch)
             scores_parts.append(scores)
         scores = jnp.concatenate(scores_parts)
         preds = jnp.argmax(scores, axis=1)

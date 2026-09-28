@@ -49,10 +49,11 @@ class RawEvents(NamedTuple):
 
 
 class NetworkOutput(NamedTuple):
-    """run_network 的輸出,每個欄位每層一個,對齊 layers。"""
+    """run_network 的輸出。results、diags、traces 每層一個,對齊 layers。"""
     results: tuple        # 每層的 LayerOutput.result
     diags: tuple          # 每層的 LayerDiag
     traces: tuple | None  # trace=True 才有,已經 stop_gradient
+    fits: jax.Array       # bool:每個有容量的層都放得下;False 時結果可能被截斷,不可信
 
     @property
     def last(self):
@@ -90,6 +91,7 @@ def run_network(layers, weights, input_stream: EventStream, *, backend=FLOAT,
     weights: 對齊 layers 的每層參數;浮點 backend 是權重,整數 backend 是
         QuantizedLayerParams。
     trace: True 時收每層逐步軌跡。
+    回傳的 fits:每個有容量的層都放得下這筆輸入。
     相鄰層接不上時 raise ValueError。
     """
     check_layer_connections(layers)
@@ -103,8 +105,13 @@ def run_network(layers, weights, input_stream: EventStream, *, backend=FLOAT,
     if trace:
         traces = jax.tree_util.tree_map(jax.lax.stop_gradient,
                                         tuple(output.trace for output in outputs))
+    fits = jnp.array(True)
+    for layer, output in zip(layers, outputs):
+        if layer.capacity is not None:
+            fits = fits & layer.capacity.fits(output.diag)
     return NetworkOutput(results=tuple(output.result for output in outputs),
-                         diags=tuple(output.diag for output in outputs), traces=traces)
+                         diags=tuple(output.diag for output in outputs), traces=traces,
+                         fits=fits)
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,5 @@
 """salt_core/network.py:RawEvents.checked 的時間檢查、Network 的輸入流、第一層是 FC、
-apply_batched 跟逐筆 apply 一致。連接檢查在 test_layer_connections.py。"""
+apply_batched 跟逐筆 apply 一致、fits 旗標。連接檢查在 test_layer_connections.py。"""
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -9,7 +9,8 @@ from salt_core.layers import FCLayer
 from salt_core.network import Network, RawEvents, run_network
 from salt_core.quant.backend import QuantBackend, QuantizedLayerParams
 from salt_core.quant.codes import build_decay_table_int
-from salt_core.tests._small_network import INPUT_SHAPE, init_params, raw_batch, small_layers
+from salt_core.tests._small_network import (GENEROUS, INPUT_SHAPE, init_params, raw_batch,
+                                            small_layers)
 
 
 def _raw(times, n_real):
@@ -106,3 +107,35 @@ def test_apply_batched_accepts_numpy_weights_as_jit_constants():
     got = jax.jit(lambda raw: network.apply_batched(weights, raw).last.v_final)(batch)
     want = network.apply_batched(tuple(jnp.asarray(w) for w in weights), batch).last.v_final
     np.testing.assert_array_equal(np.asarray(got), np.asarray(want))
+
+
+def _fits_of(capacity: dict) -> np.ndarray:
+    """6 筆合成樣本在這組容量下的 fits。"""
+    network = Network(INPUT_SHAPE, small_layers(capacity))
+    weights = init_params(list(network.layers), seed=3)
+    return np.asarray(network.apply_batched(weights, RawEvents(*raw_batch(seed=4))).fits)
+
+
+def test_fits_true_when_capacity_is_generous():
+    assert _fits_of(GENEROUS).tolist() == [True] * 6
+
+
+def test_fits_per_sample_when_one_layer_is_too_small():
+    """conv2 每筆需要的輸出 spike 數是 62、63、41、26、36、49;上限 50 時前兩筆放不下。"""
+    capacity = {**GENEROUS, "conv2": {**GENEROUS["conv2"], "max_out_spikes": 50}}
+    assert _fits_of(capacity).tolist() == [False, False, True, True, True, True]
+
+
+def test_fits_single_sample_is_scalar():
+    network = Network(INPUT_SHAPE, small_layers())
+    weights = init_params(list(network.layers), seed=3)
+    raw = jax.tree_util.tree_map(lambda a: a[0], RawEvents(*raw_batch(seed=4)))
+    fits = network.apply(weights, raw).fits
+    assert fits.shape == () and bool(fits)
+
+
+def test_fits_always_true_without_capacity_layers():
+    network = Network((2, 3, 4), [FCLayer(name="fc", n_in=24, n_out=2, init_k=1.0)])
+    raw = RawEvents(event_times=jnp.array([1.0, 2.0]), x=jnp.array([1, 3]),
+                    y=jnp.array([2, 0]), c=jnp.array([1, 0]), n_real_events=jnp.array(2))
+    assert bool(network.apply(network.init(jax.random.PRNGKey(0)), raw).fits)
