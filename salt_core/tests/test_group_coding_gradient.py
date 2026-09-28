@@ -1,21 +1,10 @@
-"""簡化版群體編碼(population coding)loss 的梯度驗證:loss 不是單一神經元
-自己的 s 加總,是「跨神經元」的線性組合,例如 L=S_1-S_2(每顆神經元自己
-sum(s_value)之後再做線性組合)——對應論文/實務常見的「用哪個神經元 fire
-比較多次來判斷分類結果」這種頻率編碼,不是完整的 softmax cross-entropy
-(那個手算量大很多,留給之後有需要再做)。
+"""跨神經元線性組合的 loss 的梯度:L = S1 - S2,S 是每顆神經元 s_value 的總和。
 
-沿用 docs/math/全連接forward訓練範例.md 第 3 節的 n=2(a1,a2)、m=2(b1,b2) FC
-結構(跟 test_fc_forward.py 完全一樣的設定):tau=4,v_th=1.0,上游事件
-(t=1,a1)(t=2,a2)(t=4,a1),W=[[0.6,0.5],[0.3,0.2]]。b1 在 t=4(事件 index2)
-fire 一次,b2 全程不 fire。
-
-這個結構有一個之前測試都沒有覆蓋到的重點:**同一個權重被同一個神經元的
-兩筆不同事件共用**(b1 的事件0、事件2 都來自 a1,共用 w11;b2 同理共用
-w12)——因為全連接下,同一個來源神經元多次觸發時,權重矩陣裡的那個值不會
-變,梯度要正確地把兩筆事件各自的貢獻加總。
-
-手算鏈式法則逐項核對過(見程式碼裡的計算),跟 jax.grad 實際跑出來的結果
-吻合(誤差在四捨五入範圍內),tol 用 1e-3 涵蓋手算累積的捨入誤差。
+設定同 docs/math/全連接forward訓練範例.md「具體例子:n=2,m=2」(也同 test_fc_forward.py):
+tau=4,v_th=1.0,上游事件 (t=1,a1)(t=2,a2)(t=4,a1),W=[[0.6,0.5],[0.3,0.2]]。
+b1 在 t=4(事件 2)fire 一次,b2 不 fire。
+同一個權重被同一顆神經元的兩筆事件共用(b1 的事件 0、2 都來自 a1,共用 w11),梯度要把兩筆的
+貢獻加起來。手算結果見下面的常數,tol 1e-3 涵蓋手算的捨入。
 """
 
 import jax
@@ -26,7 +15,7 @@ from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 
 TOL = 1e-3
 
-# 手算鏈式法則逐項核對過的梯度(見本檔案 docstring 的結構說明):
+# 手算的梯度:
 #   dL/dw11 = dS1/dw11(event0、event2 都用 w11,兩項相加) ≈ 2.326497
 #   dL/dw21 = dS1/dw21(只有 event1 用 w21)               ≈ 1.453337
 #   dL/dw12 = -dS2/dw12(event0、event2 都用 w12)         ≈ -0.806479
@@ -77,7 +66,5 @@ def test_group_coding_gradient_chunk_size_1():
 
 
 def test_group_coding_gradient_chunk_size_full():
-    """chunk_size=3:同一個群體編碼 loss,驗證梯度跟 chunk_size=1 完全一致,
-    包含「同一權重被同一神經元的兩筆事件共用」這件事在 chunk 化窗口下
-    也不會算錯。"""
+    """chunk_size=3:梯度跟 chunk_size=1 一致,兩筆事件共用同一個權重在 chunk 裡也算對。"""
     _check_grad_matches_reference(chunk_size=3)

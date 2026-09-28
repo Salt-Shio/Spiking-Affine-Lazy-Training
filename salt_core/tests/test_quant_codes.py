@@ -26,7 +26,7 @@ TOL = 1e-5
 # ============================================================================
 
 def test_quantize_to_int_returns_int32_codes_matching_fake_quantize_tensor():
-    """`q` 是 int32 整數碼,`q*scale` 精確等於 `fake_quantize_tensor` 的 x_hat。"""
+    """q 是 int32 整數碼,q*scale 精確等於 fake_quantize_tensor 的 x_hat。"""
     key = jax.random.PRNGKey(2)
     x = jax.random.uniform(key, (200,), minval=-5.0, maxval=5.0)
     x_hat, scale_a = fake_quantize_tensor(x, bits=8)

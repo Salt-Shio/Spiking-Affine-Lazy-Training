@@ -1,19 +1,20 @@
-"""Dormant neuron 診斷(Sokar et al. 2023, arXiv:2302.12902)的歸約:逐神經元活動量 ->
-dormant 統計。定義跟用途見 docs/math/初始權重尺度推導.md 步驟 7。
+"""dormant neuron 診斷的歸約:逐神經元活動量 -> dormant 統計。
 
-挑哪幾層、跑哪批探測樣本是應用的決定,在 example/dormant.py。
+定義見 docs/math/初始權重尺度推導.md「診斷該看分布,不是平均 firing rate(dormant score)」。
+挑哪幾層、用哪批樣本由呼叫端決定。
 """
 import numpy as np
 
 
 def dormant_score(activity, *, tau: float = 0.1) -> dict:
-    """逐神經元活動量 `(n,)`(已在探測樣本上平均、非負)-> dormant 統計。
+    """逐神經元活動量 -> dormant 統計。純歸約,不跑 forward。
 
-    純歸約,不跑 forward —— ReDo 挑回收對象、`dormant_report` 寫紀錄都用這個。
+    activity: (n,) 已在樣本上平均的活動量,取絕對值後用。
+    tau: score 小於等於它就算 dormant。
 
     回傳 {"dormant_frac": float, "score": (n,) ndarray}:
-      dormant_frac = #{score_i <= tau} / n,score_i = activity_i / 層平均。
-    層平均為 0(整層全死)時 dormant_frac = 1.0、score 全 0。
+    score_i = activity_i / 層平均,dormant_frac = score <= tau 的比例。
+    層平均是 0(整層全死)時 dormant_frac = 1.0、score 全 0。
     """
     activity = np.abs(np.asarray(activity, dtype=np.float64))
     denom = float(np.mean(activity))

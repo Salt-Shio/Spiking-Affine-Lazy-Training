@@ -1,27 +1,11 @@
-"""驗證 stream.extract_output_events_fc 把 layer1 的輸出接成 layer2 的輸入,
-兩層串起來的數字算對。
+"""extract_output_events_fc 把 layer1 的輸出接成 layer2 的輸入,兩層串起來的數字對。
 
-stream.extract_output_events_fc 是純 JAX 實作,回傳固定長度(n_source_neurons*
-max_steps 這個安全上限)的陣列,不是「剛好幾筆真實事件」的動態長度——前
-n_real_events 筆是真實事件(已排序),後面補 pad 事件(不影響任何下游計算,
-見 stream.py 說明)。下面每個測試都用 n_real_events 切出真正有意義的
-前綴來檢查內容,同時也確認完整的固定長度陣列接回 FC 佇列建構(帶
-n_real_events)、run_layer_forward(帶 n_real_events)之後,行為跟「陣列剛好
-只有真實事件」完全一樣。
+輸出是固定長度的陣列,前 n_real_events 筆是真事件,其餘是 pad;每個測試都確認帶 n_real_events
+接回佇列建構跟 run_layer_forward 之後,結果跟只有真事件時一樣。
 
-layer1 沿用 test_fc_forward.py 的例子(n=2,m=2,tau=4,v_th=1.0):$b_1$ 在 t=4
-fire(唯一一次),$b_2$ 全程不 fire。所以 layer1 的輸出事件包只有一筆:
-(t=4, 來源=b1)。
-
-layer2(p=1 個輸出神經元 c1,輸入是 layer1 的 b1,b2 兩顆):W2=[[1.5, 0.4]]。
-只有 b1 的事件會真的進到 layer2 的佇列(b2 沒 fire,W2 對 b2 那個權重 0.4 在
-這個例子裡不會被用到,純粹補滿矩陣形狀)。
-
-手算 layer2:唯一一筆事件 (t=4, 來源=b1),N = 4 - 0 = 4(t=0 起算),
-a = 0.75^4 = 0.31640625,h = 0*a + 1.5 = 1.5 >= v_th=1.0,c1 在 t=4 fire,
-reset 後 V=0。這裡的「1.5」是 W2[c1,b1]=1.5 乘上 b1 的 s_spike(forward 精確
-等於 1),數值上跟不乘 s_spike 完全一樣,只是計算圖裡多一條路徑(見
-stream.py 開頭的說明)。
+test_two_layer_fc_forward:layer1 同 test_fc_forward.py(n=2,m=2,tau=4,v_th=1.0),b1 在 t=4 fire
+一次,b2 不 fire,輸出只有 (t=4, 來源 b1)。layer2 一顆神經元 c1,W2=[[1.5, 0.4]]。
+手算:唯一一筆事件 N = 4,a = 0.75^4,h = 0*a + 1.5*s_spike = 1.5 >= 1.0,c1 在 t=4 fire,reset 成 0。
 """
 
 import jax.numpy as jnp
@@ -43,7 +27,7 @@ def test_two_layer_fc_forward():
     tau = 4.0
     v_th = 1.0
 
-    # --- layer1: 跟 test_fc_forward.py 完全一樣的設定 ---
+    # --- layer1: 同 test_fc_forward.py ---
     layer1_event_times = jnp.array([1.0, 2.0, 4.0])
     layer1_event_source_idx = jnp.array([0, 1, 0])
     W1 = jnp.array([[0.6, 0.5],
@@ -58,8 +42,7 @@ def test_two_layer_fc_forward():
     layer2_event_times, layer2_event_source_idx, layer2_event_gain, n_real_events_2 = \
         extract_output_events_fc(spike_mask_1, spike_event_idx_1, s_spike_1, layer1_event_times)
 
-    # layer1 只該有一筆輸出事件:(t=4, 來源=b1=index0),固定長度陣列裡
-    # 只有前 n_real_events_2 筆算數
+    # layer1 只有一筆輸出事件 (t=4, 來源 b1=index0)
     assert int(n_real_events_2) == 1, n_real_events_2
     assert_allclose(layer2_event_times[0], 4.0, "layer1 輸出事件時間")
     assert int(layer2_event_source_idx[0]) == 0, "layer1 輸出事件來源應該是 b1"
@@ -82,10 +65,7 @@ def test_two_layer_fc_forward():
 
 
 def test_two_layer_fc_forward_multi_fire_interleaved():
-    """比 test_two_layer_fc_forward 更強的例子:layer1 兩顆神經元都會 fire
-    (其中一顆 fire 兩次),合併後的時間順序也不是「照神經元編號分組」——
-    b2 先 fire、b1 才 fire、b2 又 fire 一次——用來驗證 extract_output_events_fc
-    是真的照時間排序合併,不是碰巧照 nonzero 掃描到的順序排對而已。
+    """layer1 兩顆神經元都 fire,b2 先、b1 後、b2 再一次,確認輸出照時間合併,不是照神經元分組。
     tau=4(a=0.75^N,N 從 t=0 起算),v_th=1.0。
 
     layer1 手算軌跡:
@@ -157,12 +137,8 @@ def test_two_layer_fc_forward_multi_fire_interleaved():
 
 
 def test_empty_layer_output():
-    """layer1 全部神經元都不 fire 的邊界情況:extract_output_events_fc 回傳的固定
-    長度陣列裡 n_real_events=0(全部都是 pad 事件),接著
-    FC 佇列建構/run_layer_forward 帶 n_real_events=0 處理這個「語意上等於
-    空佇列」的陣列,也不該出錯——這是先前 review 提過、但沒實測過的邊界案例。
-
-    weights 故意設得很小,兩顆神經元在三筆事件內都不可能碰到 v_th=1.0。
+    """layer1 都不 fire:輸出 n_real_events=0,全部是 pad;layer2 吃這個陣列不出錯、什麼都沒發生。
+    權重設很小,三筆事件內碰不到 v_th=1.0。
     """
     tau = 4.0
     v_th = 1.0
@@ -188,8 +164,7 @@ def test_empty_layer_output():
     assert layer2_event_times.shape == (6,), layer2_event_times.shape
     assert layer2_event_source_idx.shape == (6,), layer2_event_source_idx.shape
 
-    # --- layer2 吃這個「語意上是空事件包」的固定長度陣列,不該出錯,
-    #     結果應該是「什麼都沒發生」 ---
+    # --- layer2 吃全是 pad 的陣列,結果是什麼都沒發生 ---
     W2 = jnp.array([[0.5, 0.5]])
     layer2_maps = fc_float_values(build_fc_structure(layer2_event_times, layer2_event_source_idx, n_real_events_2),
                                   W2, tau, layer2_event_gain)

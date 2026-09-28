@@ -1,23 +1,12 @@
-"""驗證 event_gain 補的是一個真實存在的梯度缺口,不是可有可無的加強項。
+"""event_gain 補的是真的梯度缺口:下一層用離散索引查權重,對上一層權重的梯度恆為 0,
+傳上一層的 s_spike 當 event_gain 才接得回來。理由見 docs/問題紀錄.md
+「洞見:離散索引 gather 不會把梯度帶回「決定索引值的來源」」。
 
-問題:FC 佇列建構用 event_source_idx(離散索引)從 W 查權重——索引操作
-對「被索引的 W」有梯度,但不會讓「產生這個事件的上一層神經元的權重」出現在
-算式裡。就算 stream.extract_output_events_fc 全部改成純 JAX、正確合併排序,
-只要下一層的佇列還是「單純用索引查權重」,jax.grad 對上一層權重求出來的梯度
-永遠是 0——不是實作沒寫完整,是計算圖裡真的沒有這條邊。
+例子:layer1 一顆神經元 p,三個各發一次事件的來源(同 test_scan_gradient.py:tau=4,v_th=1.0,
+event_times=[0,1,5],W1=[[0.6,0.6,0.9]]),p 在事件 1(t=1)fire。layer2 一顆神經元 q,只接 p,
+W2=[[0.5]]。loss 是 q 的 v_final(layer2 不 fire)。
 
-修法:fc_float_values 的 event_gain 參數,傳上一層 float.scan.run_layer_forward
-回傳的 s_spike(不是 s_value,見 float/scan.py 的說明)。s_spike 是用
-atan_spike 算出來、forward 精確等於 1 的可微分量,乘進權重裡數值不變,但讓
-上一層的權重重新出現在算式裡——跟 float/affine.py 的 soft reset (1-s)*x 是同一個技巧。
-
-例子:layer1 一顆神經元 p,三個各自只發一次事件的來源(沿用
-test_scan_gradient.py 的設定:tau=4,v_th=1.0,event_times=[0,1,5],
-W1=[[0.6,0.6,0.9]]),p 在事件 1(t=1)fire。layer2 一顆神經元 q,只接 p 一個
-來源,W2=[[0.5]]。loss 直接用 v_final,q(layer2 沒 fire,純仿射,不用透過
-s_value)。
-
-手算(見對話記錄,已用 jax.grad 交叉驗證):
+手算:
   x_0 = 0.6(N=0,a=1)
   x_1 = 0.75*0.6+0.6 = 1.05 >= v_th,spike,s_spike = atan_spike(0.05) forward=1
   atan_spike backward 在 x=0.05,alpha=2 處的斜率:
@@ -52,8 +41,8 @@ def assert_allclose(actual, expected, msg, tol=TOL):
 def _two_layer_v_final_q(W1, event_times, event_source_idx, tau, v_th, alpha, W2,
                           use_gain):
     """layer1(1 顆神經元 p,3 個來源)接 layer2(1 顆神經元 q,只接 p)。
-    max_steps=2:layer1 處理完事件0、事件1(fire)就停,事件2 從來沒被讀取過。
-    use_gain=False 時刻意不傳 event_gain,模擬「補之前」的算法,對照組。"""
+    max_steps=2:layer1 處理完事件 0、事件 1(fire)就停,事件 2 沒被讀到。
+    use_gain=False 時不傳 event_gain,當對照組。"""
     maps1 = fc_float_values(build_fc_structure(event_times, event_source_idx, event_times.shape[0]),
                             W1, tau, None)
     spike_mask, spike_event_idx, s_spike, _, _ = run_layer_forward(
@@ -83,8 +72,7 @@ def _setup():
 
 
 def test_forward_value_matches_hand_calc():
-    """先確認 forward 數值本身是對的(不管有沒有 event_gain,forward 都應該
-    是同一個數字,因為 s_spike forward 精確等於 1)。"""
+    """forward 數值對:有沒有 event_gain 都一樣,因為 s_spike forward 等於 1。"""
     W1, event_times, event_source_idx, tau, v_th, alpha, W2 = _setup()
     v_gain = _two_layer_v_final_q(W1, event_times, event_source_idx, tau, v_th,
                                    alpha, W2, use_gain=True)
@@ -95,7 +83,7 @@ def test_forward_value_matches_hand_calc():
 
 
 def test_cross_layer_gradient_matches_hand_calc():
-    """補上 event_gain 之後,d(v_final,q)/dW1 應該非 0,而且對上手算的三個分量。"""
+    """有 event_gain 時 d(v_final_q)/dW1 不是 0,而且對上手算的三個分量。"""
     W1, event_times, event_source_idx, tau, v_th, alpha, W2 = _setup()
 
     grad_fn = jax.grad(lambda W1: _two_layer_v_final_q(
@@ -109,8 +97,7 @@ def test_cross_layer_gradient_matches_hand_calc():
 
 
 def test_without_event_gain_gradient_is_zero():
-    """對照組:不傳 event_gain(退化成單純用索引查權重),證明這正是文件裡
-    講的那個缺口——梯度不是「算錯」,是計算圖裡根本沒有這條邊,恆為 0。"""
+    """對照組:不傳 event_gain 時梯度恆為 0,計算圖裡沒有這條邊。"""
     W1, event_times, event_source_idx, tau, v_th, alpha, W2 = _setup()
 
     grad_fn = jax.grad(lambda W1: _two_layer_v_final_q(

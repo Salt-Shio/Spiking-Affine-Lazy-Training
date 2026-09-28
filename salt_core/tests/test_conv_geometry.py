@@ -1,14 +1,8 @@
-"""conv 佇列建構的**幾何覆蓋** + **跨層梯度**測試,step 4d 從已刪除的
-test_conv_queue.py(原本測密集版 build_conv_queue)搬過來、改成打壓縮版
-`build_conv_structure` + `conv_float_values`,對照組換成 `salt_core/tests/_reference.py` 的
-透明 numpy 參考(`dense_conv_affine_map`)。
+"""conv 佇列建構的幾何跟跨層梯度。
 
-分三塊:
-1. `unravel_conv_source` round-trip(純函式,不牽涉佇列建構器)。
-2. 參考本身的錨定:拿手算 literal 對 `dense_conv_affine_map` 的 (a,b),確保
-   後面「壓縮版 vs 參考」不是循環驗證。
-3. 壓縮版 vs 參考:隨機幾何(各種 N、S/P、多 OC/多 IC);以及 conv->conv /
-   conv->FC 的跨層梯度(atan surrogate 斜率手算)。
+1. unravel_conv_source 來回。
+2. 參考實作 dense_conv_affine_map 本身對手算答案,確保後面拿它當對照不是循環驗證。
+3. conv 佇列跟參考比:各種 K、S、P、多 OC、多 IC;conv->conv、conv->FC 的跨層梯度對手算。
 """
 import math
 
@@ -19,7 +13,7 @@ from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.conv import (build_conv_structure, conv_float_values, tile_channels,
                                           unravel_conv_source)
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.stream import extract_output_events_fc, extract_output_events_conv
+from salt_core.stream import extract_output_events_conv
 from salt_core.tests._reference import dense_conv_affine_map
 
 TOL = 1e-5
@@ -117,7 +111,7 @@ def test_reference_anchored_n3_multiple_candidates_per_axis():
 
 
 # ============================================================================
-# 3. 壓縮版 vs 參考:幾何變化
+# 3. conv 佇列 vs 參考:幾何變化
 # ============================================================================
 
 def _assert_conv_matches_ref(et, x, y, c, W, S, P, H_out, W_out, L=None,
@@ -130,7 +124,7 @@ def _assert_conv_matches_ref(et, x, y, c, W, S, P, H_out, W_out, L=None,
 
 
 def test_matches_ref_random_various_geometry():
-    """幾組隨機事件 x 幾種 (K,S,P),壓縮版 v_final 要跟參考一致。"""
+    """幾組隨機事件 x 幾種 (K,S,P),v_final 要跟參考一致。"""
     for seed, (K, S, P, H_out, W_out) in enumerate([
         (3, 2, 1, 4, 4), (1, 1, 0, 5, 5), (5, 2, 2, 3, 3), (3, 1, 1, 6, 6),
     ]):
@@ -147,8 +141,7 @@ def test_matches_ref_random_various_geometry():
 
 
 # ============================================================================
-# 3b. 跨層梯度(atan surrogate 斜率手算)——原 test_conv_queue.py 的
-#     conv->conv / conv->FC 手算梯度,改用壓縮版 + extract_output_events_conv。
+# 3b. 跨層梯度(atan surrogate 斜率手算)
 # ============================================================================
 
 # 共用小場景:K=3,S=2,P=1,H_out=W_out=3;W1[0,0,ky,kx]=ky*3+kx+1(1..9)。

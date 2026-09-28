@@ -1,12 +1,9 @@
-"""三個標準解碼器的驗證。
+"""三個標準解碼器。
 
-解碼器只讀 `LayerForwardResult`(float/scan.py 的公開契約),把它讀成分數張量:
-
-  - 膜電位回歸:直接回 `v_final`
-  - 頻率:每顆神經元 `s_value` 沿時間軸加總(可微),硬 count 放 metrics
-  - 群體:神經元連續等分成組,每組 `s_value` 加總相加
-
-`validate` 擋「最後一層門檻設定跟編碼不配」。
+- 膜電位回歸:回 v_final。
+- 頻率:每顆神經元 s_value 沿時間加總,硬 spike 次數放 metrics。
+- 群體:神經元依序分組,每組 s_value 加總。
+validate 擋最後一層的門檻跟編碼不配。
 """
 import jax
 import jax.numpy as jnp
@@ -21,8 +18,7 @@ TOL = 1e-6
 
 
 def _hand_result(n_neurons: int = 3, n_steps: int = 4) -> LayerForwardResult:
-    """手構一個 `LayerForwardResult`:數值挑成好心算。`s_value` / `spike_mask`
-    / `v_final` 直接指定,不跑 forward。"""
+    """手構一個 LayerForwardResult,數值挑好心算的,不跑 forward。"""
     s_value = jnp.array([[0.1, 0.2, 0.0, 0.0],     # 加總 0.3
                          [0.5, 0.5, 0.5, 0.0],     # 加總 1.5
                          [0.0, 0.0, 0.0, 0.0]])    # 加總 0.0

@@ -1,19 +1,10 @@
-"""salt_core 逐步軌跡監測(docs/監測規格.md §6)的測試。
+"""逐步軌跡(salt_core/trace.py)。規格見 docs/監測規格.md「LayerForwardTrace / run_network(trace=True)(逐步軌跡,已實作)」。
 
-四層:
-
-- `run_layer_forward_traced` vs `run_layer_forward`:同參數下 `LayerForwardResult`
-  五欄逐位元相同(共用 scan 內核),`v_steps` 的最後一欄膜電位 == `v_final`。
-- `resolve_ms_*`:掃描步指標 -> 真實毫秒的還原,手算小例子 + 空轉步 = nan。
-- `run_network(..., trace=True)`:結果跟不帶軌跡時一致、`LayerForwardTrace` 形狀對、
-  `stop_gradient` 生效。
-- `summarize_trace_scalars`:純歸約函式,手算小例子 + 非有限值計數。
-
-`LayerForwardTrace` 2026-09-13 拔掉 `s_value` 欄位(這個架構下 forward 數值
-恆等於 `spike_mask`,而且整條 trace 本身已經 `stop_gradient`,留著沒有實際
-資訊量,見 `salt_core/trace.py` 開頭說明);`summarize_trace`/`pack_key`/
-`unpack_key`/`layer_names` 隨同一批改動一併移除(唯一呼叫端 `example/
-trace_probe.py` 已刪除)。
+A. run_layer_forward_traced 跟 run_layer_forward:LayerForwardResult 五欄相同(共用掃描內核),
+   v_steps 最後一欄等於 v_final。
+B. resolve_ms_fc、resolve_ms_conv:掃描步換成真實毫秒,手算小例子,空轉步是 nan。
+C. run_network(..., trace=True):結果跟不帶軌跡時一致、軌跡形狀對、stop_gradient 有效。
+D. summarize_trace_scalars:手算小例子、非有限值計數。
 """
 import jax
 import jax.numpy as jnp
@@ -113,7 +104,7 @@ def test_traced_pointer_monotone_and_starts_at_zero():
 
 
 # ============================================================================
-# B. resolve_ms_*
+# B. resolve_ms_fc、resolve_ms_conv
 # ============================================================================
 
 def test_resolve_ms_fc_hand():

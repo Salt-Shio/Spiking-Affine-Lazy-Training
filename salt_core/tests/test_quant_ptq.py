@@ -71,7 +71,7 @@ def test_fake_quantize_tensor_clips_outlier_to_threshold():
 
 
 def test_fake_quantize_tensor_per_channel_axis0_independent_threshold():
-    """`axis=0` 時每個 channel(row)各自的 threshold 只看自己那一行。"""
+    """axis=0 時每個 channel(row)各自的 threshold 只看自己那一行。"""
     x = jnp.array([[1.0, 2.0, 3.0], [10.0, 20.0, 30.0]])
     x_hat, scale = fake_quantize_tensor(x, bits=8, axis=0)
     assert scale.shape == (2, 1)
@@ -137,7 +137,7 @@ def test_quantize_params_preserves_shapes_and_alignment():
 
 
 def test_quantize_params_clip_percentile_100_equals_max_abs_default():
-    """`clip_percentile=100` 應該跟 `fake_quantize_tensor` 沒給 `threshold`
+    """clip_percentile=100 應該跟 fake_quantize_tensor 沒給 threshold
     時的預設(max-abs)行為一致——100th percentile 精確等於最大值。"""
     layers = _layers()
     params = _params(layers)

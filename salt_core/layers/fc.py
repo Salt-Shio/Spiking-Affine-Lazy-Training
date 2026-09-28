@@ -16,23 +16,21 @@ from salt_core.trace import LayerForwardTrace, resolve_ms_fc
 
 @dataclass(frozen=True)
 class FCLayer:
-    """一個密集版 FC 層,可以當隱藏層或輸出層。輸出層要不要 fire 是門檻設定,
-    怎麼讀成預測是解碼器的事。
+    """FC 層,可以當隱藏層或輸出層。輸出層不 fire 時把 v_th 設很大(例如 1e9)。
 
-    佇列是整條輸入流,長度 = 上一層的輸出容量,不是自己的欄位。掃描步數 =
-    ceil(輸入流長度 / chunk_size) + max_extra_steps;上一層容量變時前一項跟著變,
-    旋鈕只記因為 fire 要多跑的步數(不 fire 時 0 就夠)。
+    每顆神經元的佇列都是整條輸入流,長度等於上一層的 max_out_spikes。
+    掃描步數 = ceil(輸入流長度 / chunk_size) + max_extra_steps;不 fire 時 max_extra_steps=0 就夠。
     """
     name: str
     n_in: int
     n_out: int
     init_k: float
-    # 神經元動力學 —— 有預設,跟 ConvLayer 一樣。
+    # 神經元動力學
     tau: float = 16.0
     v_th: float = 1.0
     alpha: float = 2.0
     chunk_size: int = 1
-    # 容量 —— 有預設,出界會自己長大。
+    # 容量。訓練時出界會放大。
     max_out_spikes: int = 8192
     max_extra_steps: int = 0
 

@@ -1,23 +1,9 @@
-"""輸出編碼的解碼器:把最後一層的 `LayerForwardResult` 讀成「拿去比對 label
-的分數張量」。
+"""輸出解碼器:最後一層的 LayerForwardResult -> 跟 label 比對的分數。
 
-跟前四層(神經元模擬器 / 佇列建構器 / 標準事件流 / 組裝器)的關係:
-
-- 解碼器**不是網路的一部分**,是網路輸出到任務之間的接縫。`run_network` /
-  層物件不因為換編碼而要改。
-- 真正承重的介面是 `LayerForwardResult` 本身(`float/scan.py`):`v_final` /
-  `s_value` / `spike_mask` 三個量、加上「pad 步對 `s_value` 貢獻 0」的保證,
-  已經涵蓋任何 readout 會想要的東西。想要別的編碼,寫一個滿足 `Decoder`
-  協定的新物件,或乾脆在自己的 loss_fn 裡直接讀 `LayerForwardResult`——
-  兩條路都開著,解碼器不是唯一出口。
-- 這裡只提供三個標準編碼(膜電位回歸 / 頻率 / 群體)+ 一個門檻配對檢查
-  (`validate`),把三個坑封起來:
-    1. 要 `s_value` 不是 `s_spike`(用錯會把「不套閘」設計在 readout 上破壞掉)。
-    2. pad 步不能漏梯度(primitive 已處理,呼叫端不必知道)。
-    3. 最後一層 `v_th` 設超大(純積分)還是正常(放電)要跟編碼配。
-
-靜態 vs 會被微分:解碼器是 frozen dataclass,只有 Python 純量欄位,不含
-JAX 陣列、沒有可學參數,可雜湊 → 能被 `jax.jit` 當閉包捕捉 / `jax.vmap`。
+三種標準編碼:膜電位回歸讀 v_final,頻率、群體讀 s_value(定義見 float/scan.py)。
+validate 檢查最後一層的門檻跟編碼配不配。要別的編碼可以寫一個符合 Decoder 的新物件,
+或在 loss 裡直接讀 LayerForwardResult。
+解碼器是 frozen dataclass,沒有可學參數,可以被 jax.jit 閉包捕捉。
 """
 from dataclasses import dataclass
 from typing import Protocol
@@ -29,24 +15,25 @@ from salt_core.float.scan import LayerForwardResult
 
 
 class Decoder(Protocol):
-    """一個解碼器的對外約定(純文件用途,呼叫端靠 duck typing)。"""
+    """解碼器的約定。只當文件用,實際靠 duck typing。"""
 
     def decode(self, result: LayerForwardResult) -> tuple[jax.Array, dict]:
-        """讀最後一層的 forward 結果,吐 `(scores, metrics)`。單樣本(批次由
-        呼叫端 vmap);`scores` 形狀 `(類別,)`,同時給 loss 和 argmax 用;
-        `metrics` 是編碼特定的純量 dict,可為空。"""
+        """單筆樣本最後一層的結果 -> (scores, metrics)。批次由呼叫端 vmap。
+
+        scores: (類別數,),loss 跟 argmax 都用它。metrics: 這種編碼的監看純量,可以是空 dict。
+        """
         ...
 
     def validate(self, last_layer) -> None:
-        """檢查最後一層的門檻設定跟這個編碼配不配,不配就 raise `ValueError`
-        (擋掉「配錯 → 靜默算垃圾」)。只讀 `last_layer.v_th` 之類的靜態欄位。"""
+        """最後一層的門檻跟這個編碼不配時 raise ValueError。只讀層的靜態欄位。"""
         ...
 
 
 @dataclass(frozen=True)
 class MembraneRegressionDecoder:
-    """膜電位回歸:直接拿最後一層消化完整條佇列後的膜電位當分數。要求最後一
-    層近乎不放電(`v_th` 設超大),`v_final` 才是「全部加權事件的純仿射積分」。
+    """膜電位回歸:最後一層消化完整條佇列後的膜電位 v_final 當分數。
+
+    最後一層要近乎不 fire(v_th >= min_out_v_th),v_final 才是所有加權事件的積分。
     """
     min_out_v_th: float = 1e6
 
@@ -63,9 +50,9 @@ class MembraneRegressionDecoder:
 
 @dataclass(frozen=True)
 class RateDecoder:
-    """頻率編碼:每顆輸出神經元自己的 spike 活動量當分數。分數用可微的
-    `s_value` 沿時間軸加總,硬 spike 次數(`sum(spike_mask)`)只放 `metrics`
-    當監看值(部署行為),不進梯度路徑。要求最後一層照常放電(`v_th` 正常)。
+    """頻率編碼:每顆輸出神經元的 s_value 沿時間加總當分數。
+
+    硬 spike 次數只放 metrics 當監看值,不進梯度。最後一層要照常 fire(v_th <= max_out_v_th)。
     """
     max_out_v_th: float = 1e3
 
@@ -86,9 +73,10 @@ class RateDecoder:
 
 @dataclass(frozen=True)
 class PopulationDecoder:
-    """群體編碼:輸出神經元**連續等分**成 `n_classes` 組、每組 `group_size`
-    顆,一個類別的分數 = 該組神經元的 `s_value` 加總再相加(神經元 `[0,
-    group_size)` → 類 0,依此類推)。要求最後一層照常放電。
+    """群體編碼:輸出神經元依序分成 n_classes 組、每組 group_size 顆,一組的 s_value 總和是
+    那個類別的分數(神經元 0 ~ group_size-1 是類別 0,依此類推)。
+
+    最後一層要照常 fire,n_out 要等於 n_classes * group_size。
     """
     n_classes: int
     group_size: int

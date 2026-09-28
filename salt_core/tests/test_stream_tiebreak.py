@@ -1,31 +1,16 @@
-"""驗證 stream.extract_output_events_fc 同一時間戳記多來源並列時的排序規則:
-用 (times, spike_event_idx) 複合鍵排序,不是只用 times。
+"""extract_output_events_fc 在同一時間戳記有多筆輸出時的排序:依輸入佇列的位置(spike_event_idx),
+不是只看時間。理由見 docs/問題紀錄.md「洞見:同一時間戳記排序,用複合鍵不能只用時間」。
 
-反例(源自跟另一個 agent 討論時驗證過的具體案例):$p_0$(layer1 的神經元0)
-被佇列裡索引比較晚的事件 Y 觸發 fire,$p_1$(神經元1)被索引比較早的事件 X
-觸發 fire,X、Y 兩筆事件的時間戳記量化後剛好相等(這裡直接用完全相同的
-event_times 數值構造,不需要另外做量化)。
+反例:p0 被佇列裡較晚的事件 Y fire,p1 被較早的事件 X fire,X、Y 時間相同。只用時間排序時同分會
+退化成 jnp.nonzero 的順序(先神經元 0 再神經元 1),輸出 [p0(Y), p1(X)],順序反了;正確是 [p1(X), p0(Y)]。
 
-如果排序只用 times 當 key,同分會退化成 jnp.nonzero 攤平出來的順序——固定
-是先掃神經元0、再掃神經元1(跟真實時間先後完全無關),所以會輸出 [p0(Y),
-p1(X)],把真正先發生的 X 排到後面,順序是反的。
-
-改用 (spike_event_idx, times) 當複合鍵(lexsort 最後一個 key 是主鍵)之後,
-tie-break 依據變成「這筆事件在共用佇列裡的原始位置」——FC 無延遲,佇列本身
-的排列順序天生就是真實時間先後順序(見 fc_queue.py、stream.py 的說明),
-X 的 index 比 Y 小,理當排在前面,輸出應該是 [p1(X), p0(Y)]。
-
-具體構造(tau、v_th 對這個測試不重要,只要能精確控制哪個神經元在哪個事件
-fire 即可):
-  event_times = [1.0, 1.0](索引0=X,索引1=Y,刻意做成同一個時間戳記)
-  event_source_idx = [0, 0](單一來源,兩筆事件共用同一個權重)
+構造:
+  event_times = [1.0, 1.0](索引 0 是 X,索引 1 是 Y)
+  event_source_idx = [0, 0](單一來源,兩筆共用同一個權重)
   W = [[0.6], [1.2]]
-    p0(row0,w=0.6): 單筆事件不夠 fire(0.6<v_th),兩筆疊加(N=0,不衰減)
-      0.6+0.6=1.2>=v_th,在事件索引1(=Y)才 fire
-    p1(row1,w=1.2): 單筆事件就夠 fire(1.2>=v_th),在事件索引0(=X)立刻 fire
-  用 chunk_size=2(兩筆事件塞進同一個 chunk)、max_steps=1,讓 process_chunk
-  一次處理完整條佇列、fire 後立刻停,避免 p1 fire 之後在第二筆事件又重複
-  fire 把測試複雜化。
+    p0(w=0.6):0.6 < v_th,兩筆疊加(N=0 不衰減)1.2 >= v_th,在索引 1(Y)fire
+    p1(w=1.2):第一筆就 fire,在索引 0(X)
+  chunk_size=2、max_steps=1:一步處理完整條佇列、fire 後就停,p1 不會在第二筆再 fire。
 """
 
 import jax.numpy as jnp
@@ -57,8 +42,7 @@ def test_tiebreak_uses_spike_event_idx_not_neuron_order():
     spike_mask, spike_event_idx, s_spike, _, _ = run_layer_forward(
         maps, v_th, chunk_size=2, max_steps=1, n_real_events=maps.a.shape[1])
 
-    # 前置確認:p0 真的是被索引1(Y)觸發,p1 真的是被索引0(X)觸發——這是
-    # 這個反例成立的前提,不是這次要驗證的重點,但要先確認前提沒有搭錯
+    # 前提:p0 在索引 1(Y)fire、p1 在索引 0(X)fire
     assert bool(spike_mask[0, 0]), "p0 應該要 fire"
     assert bool(spike_mask[1, 0]), "p1 應該要 fire"
     assert int(spike_event_idx[0, 0]) == 1, "p0 應該是被事件索引1(Y)觸發"
@@ -72,8 +56,7 @@ def test_tiebreak_uses_spike_event_idx_not_neuron_order():
     assert_allclose(times[0], 1.0, "第一筆輸出事件時間")
     assert_allclose(times[1], 1.0, "第二筆輸出事件時間")
 
-    # 重點:排序結果應該是 [p1(X), p0(Y)],不是 [p0(Y), p1(X)]——
-    # X 的 spike_event_idx(=0)比 Y(=1)小,真正先發生,tie-break 之後應該排前面
+    # X 的 spike_event_idx(0)比 Y(1)小,排前面
     assert int(source_idx[0]) == 1, (
         f"tie-break 應該讓被較早事件(X,index=0)觸發的 p1 排第一筆,"
         f"實際 source_idx={list(map(int, source_idx))}")
@@ -83,17 +66,14 @@ def test_tiebreak_uses_spike_event_idx_not_neuron_order():
 
 
 def test_tiebreak_with_three_neurons_not_in_row_order():
-    """把反例從 2 顆神經元擴大到 3 顆:三顆神經元同一個時間戳記各自 fire 一次,
-    觸發它們的事件索引刻意跟神經元編號完全錯開(A 被最晚的索引2觸發、B 被
-    最早的索引0觸發、C 被中間的索引1觸發),確認 lexsort 排序結果是照
-    spike_event_idx 遞增(B,C,A),不是退化成神經元編號順序(A,B,C)。
+    """三顆神經元同一個時間戳記各 fire 一次,觸發的事件索引跟神經元編號錯開,排序要照
+    spike_event_idx 遞增(B, C, A),不是神經元編號(A, B, C)。
 
-    構造(單一來源,三筆事件同一時間戳記,N=0 不衰減,直接累加):
-      A(row0,w=0.4): 0.4 -> 0.8 -> 1.2(在索引2 fire)
-      B(row1,w=1.2): 1.2(在索引0 立刻 fire)
-      C(row2,w=0.6): 0.6 -> 1.2(在索引1 fire)
-    chunk_size=3、max_steps=1,process_chunk 一次處理完整條佇列、fire 後
-    立刻停,避免任何一顆神經元 reset 後在同一個 chunk 內又重複 fire。
+    構造(單一來源,三筆事件同時間,N=0 不衰減):
+      A(row0,w=0.4):0.4 -> 0.8 -> 1.2,在索引 2 fire
+      B(row1,w=1.2):1.2,在索引 0 fire
+      C(row2,w=0.6):0.6 -> 1.2,在索引 1 fire
+    chunk_size=3、max_steps=1:一步處理完、fire 後就停。
     """
     tau = 4.0
     v_th = 1.0
@@ -109,7 +89,7 @@ def test_tiebreak_with_three_neurons_not_in_row_order():
     spike_mask, spike_event_idx, s_spike, _, _ = run_layer_forward(
         maps, v_th, chunk_size=3, max_steps=1, n_real_events=maps.a.shape[1])
 
-    # 前置確認:三顆神經元各自在預期的事件索引 fire
+    # 前提:三顆神經元各自在預期的索引 fire
     assert bool(spike_mask[:, 0].all()), "A、B、C 都應該要 fire"
     assert int(spike_event_idx[0, 0]) == 2, "A 應該是被事件索引2觸發"
     assert int(spike_event_idx[1, 0]) == 0, "B 應該是被事件索引0觸發"
@@ -122,8 +102,7 @@ def test_tiebreak_with_three_neurons_not_in_row_order():
     for i in range(3):
         assert_allclose(times[i], 1.0, f"第{i}筆輸出事件時間")
 
-    # 重點:排序結果應該照 spike_event_idx 遞增排成 [B(idx0), C(idx1), A(idx2)],
-    # 不是退化成神經元編號順序 [A(row0), B(row1), C(row2)]
+    # 照 spike_event_idx 遞增:B(idx0)、C(idx1)、A(idx2)
     expected_order = [1, 2, 0]  # B, C, A 的神經元 index
     got_order = list(map(int, source_idx[:3]))
     assert got_order == expected_order, (

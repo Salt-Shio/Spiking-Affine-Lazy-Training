@@ -1,7 +1,8 @@
-"""Conv 層的事件佇列建構,分兩段:結構段(build_conv_structure)只看事件,
-決定每個空間位置收哪些事件、Δt、kernel 位置;數值段用權重算出仿射映射
-(conv_float_values)或取出整數權重碼(conv_weight_codes)。推導見 docs/math/conv事件佇列建構推導.md、
-docs/math/conv事件佇列壓縮版推導.md。
+"""conv 層的事件佇列建構,分兩段:結構段(build_conv_structure)只看事件,決定每個空間位置
+收哪些事件、每欄的 dt 跟 kernel 位置;數值段用權重算出仿射映射(conv_float_values)或取出整數
+權重碼(conv_weight_codes)。
+
+推導見 docs/math/conv事件佇列建構推導.md、docs/math/conv事件佇列壓縮版推導.md。
 """
 from typing import NamedTuple
 
@@ -13,11 +14,11 @@ from salt_core.float.affine import AffineMap, create_affine_maps
 
 def _axis_candidates(i: jax.Array, K: int, S: int, P: int, N: int,
                       O_max: int) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """單軸(y 或 x 共用同一條公式)算出 N 個候選輸出位置、合法性、tap。
-    對應推導文件第 1、4.1 節。全程整數運算,不經過浮點數 ceil/floor
-    (第 1 節已證明 (n+S-1)//S 這條式子對正負分子都成立,不需要分支)。
+    """單軸(y 或 x)每筆事件的 N 個候選輸出位置 o、合不合法、kernel 位置 k。
 
-    回傳 (o, valid, k),shape 都是 (n_events, N)。
+    i: (n_events,) 事件在這一軸的座標。O_max: 這一軸的輸出尺寸。
+    公式見 docs/math/conv事件佇列建構推導.md「連接結構:o,k 公式」。
+    回傳 (o, valid, k),形狀都是 (n_events, N)。
     """
     o_min = (i + P - K + 1 + S - 1) // S       # ceil((i+P-K+1)/S)
     upper = (i + P) // S                        # floor((i+P)/S)
@@ -30,14 +31,9 @@ def _axis_candidates(i: jax.Array, K: int, S: int, P: int, N: int,
 
 def unravel_conv_source(event_source_idx: jax.Array, H_in: int,
                          W_in: int) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """扁平 neuron id -> (x,y,c) 三元組,對應推導文件第 9.2 節(第 6 節攤平
-    公式的反運算)。上一層的 OC_in 會自動變成這一層的 IC,不用額外傳。
+    """扁平的來源神經元編號 c*H_in*W_in + y*W_in + x -> (x, y, c)。
 
-    只在 conv 接 conv 時需要呼叫(上一層 stream.extract_output_events_fc
-    吐出來的是扁平 id);第一層例外——資料端原生就給 (x,y,c),不經過這個
-    函式(第 9.3 節)。
-
-    回傳 (x,y,c),shape 都跟 event_source_idx 一樣。
+    回傳 (x, y, c),形狀都跟 event_source_idx 一樣。
     """
     hw_in = H_in * W_in
     c = event_source_idx // hw_in
@@ -48,11 +44,10 @@ def unravel_conv_source(event_source_idx: jax.Array, H_in: int,
 
 
 class ConvQueueStructure(NamedTuple):
-    """conv 佇列的結構段,只由事件決定。第一維是空間位置 oy*w_out+ox,跟 oc 無關;
-    L = max_queue_len。"""
+    """conv 佇列的結構段,只由事件決定。第一維是空間位置 oy*w_out+ox,跟 oc 無關;L = max_queue_len。"""
     local_to_global_j: jax.Array  # (n_spatial, L) int32,局部欄 -> 全域事件 index,空欄是 n_events
     n_real_events: jax.Array      # (n_spatial,) int32,真 tap 數;可能超過 L,出界偵測用
-    delta_t: jax.Array            # (n_spatial, L) float32,真 tap / catch-up / identity 三段規則
+    delta_t: jax.Array            # (n_spatial, L) float32,見 _delta_t_three_regimes
     tap_c: jax.Array              # (n_spatial, L) int32,每欄的 kernel 位置,已夾進合法範圍
     tap_ky: jax.Array             # (n_spatial, L) int32
     tap_kx: jax.Array             # (n_spatial, L) int32
@@ -61,55 +56,17 @@ class ConvQueueStructure(NamedTuple):
 
 def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: int,
                           max_queue_len: int, n_events: int) -> tuple[jax.Array, jax.Array]:
-    """候選清單 -> 每顆(空間)神經元自己的壓縮佇列。對應推導文件第 2 節。
+    """候選清單 -> 每個空間位置自己的佇列。演算法見 docs/math/conv事件佇列壓縮版推導.md
+    「演算法:排序 + 分段重置計數」。
 
-    n_flat: shape (C,),每個候選的目標神經元 id——只含空間位置 $(o_y,o_x)$
-      攤平後的 id,不含 oc(第 1 節:感受野篩選跟 oc 無關,同一個空間位置
-      的 OC 個神經元共用同一份篩選結果,呼叫端只需要對 H_out*W_out 做一次,
-      不用對 OC*H_out*W_out 各做一次)。不合法的候選,呼叫端要先把 n 改標記
-      成 >= n_out_spatial 的保證越界值(哪個值都可以)。
-    j_flat: shape (C,),每個候選對應的全域事件 index,值域 [0, n_events)。
-    n_out_spatial: H_out*W_out(不含 oc)。
-    max_queue_len: 文件記法 $L$,壓縮後每顆神經元佇列的固定長度上限。
-    n_events: 全域事件總數,只用來選一個不會跟真實 j 值搞混的 sentinel。
-
-    排序依 (n,j) 為主/次鍵:全域事件列表本身已經照時間排序,j 本身就是時間
-    先後順序,不需要另外排序時間(第 2 節)。`jnp.lexsort` 的慣例是「最後一個
-    key 是主鍵」,所以呼叫時 n_flat 要放在 tuple 最後面。
-
-    局部 rank 用「分段重置計數」算(第 2 節):is_start 標記每一段(同一個 n
-    的連續區間)的起點,對 is_start 出現的位置索引做累進最大值(cummax,跟
-    float.affine.combine 的 associative_scan 是同一類運算),每個位置減掉「目前這段
-    的起點」就是段內的局部 rank(0-based)。
-
+    n_flat: (C,) 每個候選的目標空間位置;不合法的候選標成 >= n_out_spatial 的任意值。
+    j_flat: (C,) 每個候選的全域事件 index,0 <= j < n_events。
+    n_out_spatial: h_out * w_out。
+    max_queue_len: 每個空間位置佇列的長度 L,放不下的候選丟掉。
+    n_events: 全域事件數,空欄填這個值。
     回傳 (local_to_global_j, n_real_per_neuron):
-      local_to_global_j: shape (n_out_spatial, max_queue_len) int32。第
-        (n, local_rank) 格是神經元 n 第 local_rank 個相關事件的全域 index;
-        沒被寫到的格子填 n_events(值域外的 sentinel,呼叫端拿它去 gather
-        event_times/x/y/c 時,JAX 的 clip 模式會夾到最後一個真實事件,不會
-        crash/NaN——但這些位置本來就會被 n_real_per_neuron 蓋成 catch-up/
-        identity,夾到什麼值不影響最終結果,見 build_conv_structure)。
-      n_real_per_neuron: shape (n_out_spatial,) int32,神經元真正收到的
-        合法 tap 數(不含 catch-up、不含 identity)。
-
-    $L$ 太小、真的放不下全部候選的情況(第 7.2 節「L 出界」問題):不合法候選
-    跟溢出候選,都用底下「垃圾桶」機制丟棄,不會 crash;`n_real_per_neuron`
-    如實回報真正的候選數(可能超過 `max_queue_len`),主動偵測「是不是真的
-    丟過東西」是第 7.2 節動態 L 修正機制的責任,不是這個函式(第 1 階段)要
-    做的事。
-
-    **不用 `mode='drop'`,改用「垃圾桶」(2026-09-18,問題紀錄第八節)**:
-    `mode='drop'` 讓 scatter 的 index 陣列真的帶越界值,這個組合(多個邏輯
-    獨立樣本合併進同一次呼叫 + scatter 的 index 真的越界)會踩到 XLA 一個
-    GPU determinism 相關的 codegen bug(`--xla_gpu_deterministic_ops=true`
-    開著、外層 batch `vmap` 時,梯度會算錯——forward 不受影響,純粹是
-    backward 的 scatter-add 出錯,細節見 `docs/問題紀錄.md` 第八節、
-    `archive/xla_repro/`)。改法:scatter 目標陣列的兩個維度都多開一格當「垃圾桶」
-    (`n_out_spatial+1`、`max_queue_len+1`),不合法/溢出的候選全部指去
-    垃圾桶座標——保證是合法範圍內的 index,scatter 從頭到尾不需要真的丟棄
-    任何一次寫入;事後把垃圾桶那一整格切掉,效果跟原本完全一樣。跟
-    `mode='drop'` 版本逐位元等價,已用多組測資(一般情況、全部合法、全部
-    不合法、L 溢出、空清單)驗證過,見 `archive/xla_repro/verify_trash_row_equivalence.py`。
+        local_to_global_j: (n_out_spatial, L) int32,第 r 欄是這個位置第 r 個事件的全域 index。
+        n_real_per_neuron: (n_out_spatial,) int32,合法候選數,可能超過 L(給出界偵測用)。
     """
     order = jnp.lexsort((j_flat, n_flat))
     sorted_n = n_flat[order]
@@ -122,9 +79,8 @@ def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: in
     last_start = jax.lax.cummax(start_positions)
     local_rank = idx_range - last_start
 
-    # 垃圾桶座標:n_out_spatial(對應「候選不合法」的既有 sentinel 慣例)、
-    # max_queue_len(候選溢出 L 時的落點)——兩者都保證落在 padded 陣列的
-    # 合法範圍內,scatter 不需要 mode='drop'。
+    # 不合法、放不下的候選寫到多開的一格(垃圾桶)再切掉,不用 mode='drop'(開 GPU determinism flag 時梯度會算錯),見
+    # docs/問題紀錄.md「洞見:JAX/XLA 在 GPU 上的規約運算不保證可重現,連同一顆 seed 都不例外」。
     is_invalid_n = sorted_n >= n_out_spatial
     safe_n = jnp.where(is_invalid_n, n_out_spatial, sorted_n)
     safe_rank = jnp.where((local_rank >= max_queue_len) | is_invalid_n, max_queue_len, local_rank)
@@ -133,14 +89,8 @@ def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: in
     local_to_global_j_padded = local_to_global_j_padded.at[safe_n, safe_rank].set(sorted_j)
     local_to_global_j = local_to_global_j_padded[:n_out_spatial, :max_queue_len]
 
-    # 對每個 n scatter-max(local_rank+1):同一段內 local_rank 嚴格遞增
-    # 0,1,...,count-1,段內最後一筆的 local_rank+1 剛好等於這段的合法候選數
-    # (=這個神經元的 n_real_events),用 max 而不是取最後一筆,是因為 scatter
-    # 不保證處理順序,但這裡任一筆的 local_rank+1 都 <= count,取 max 恆等於
-    # count,不用依賴處理順序。**這個 scatter 只看 n 合不合法,跟
-    # local_rank 有沒有超過 max_queue_len 完全無關**——local_rank+1 就算
-    # 超過 max_queue_len 也要照樣參與 max,這樣下游才能靠這個數字偵測「真的
-    # 需要比 L 更大的容量」,不能沿用上面 local_to_global_j 那個溢出判斷。
+    # 段內 local_rank+1 的最大值就是合法候選數(scatter 不保證順序,所以取 max)。
+    # 超過 max_queue_len 的也要算進去,出界偵測靠這個數。
     n_real_per_neuron_padded = jnp.zeros((n_out_spatial + 1,), dtype=jnp.int32)
     real_local_rank = jnp.where(is_invalid_n, 0, local_rank + 1)
     n_real_per_neuron_padded = n_real_per_neuron_padded.at[safe_n].max(real_local_rank)
@@ -151,25 +101,14 @@ def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: in
 
 def _delta_t_three_regimes(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
                            global_last_time: jax.Array) -> jax.Array:
-    """壓縮版佇列每一欄的 Δt(推導文件第 4.3、4.4 節)。
+    """佇列每一欄的 dt,三段規則(推導見 docs/math/conv事件佇列壓縮版推導.md「修正規則」):
+    真事件的欄是跟前一筆的差(第一筆跟 t=0 比);真事件之後的第一欄(catch-up)是
+    global_last_time - 這個位置最後一筆事件的時間;其餘是 0。
 
-    t_gathered: shape (n_out, L),第 (n, col) 格是 local_to_global_j[n,col]
-      對應的全域事件時間(呼叫端用 event_times[local_to_global_j] 算好再傳
-      進來,這個函式不知道、也不需要知道 local_to_global_j 本身)。
-    n_real_per_neuron: shape (n_out,),見 `_compress_candidates`。
-    global_last_time: 純量,「全域最後一筆事件的時間」(第 4.3 節)——這裡
-      刻意讓呼叫端算好傳進來,因為呼叫端可能還要處理 n_real_events(pad
-      事件)的情況,「全域最後一筆」在那種情況下指的是最後一筆真事件,不是
-      陣列最後一格,這個函式本身不處理 pad,只認呼叫端給的這個值。
-
-    三段規則:
-      col < n_real_per_neuron[n]   (真 tap):自己這條子序列裡跟前一筆的差,
-        col=0 跟 t=0 比(問題紀錄第七節同一個基準)
-      col == n_real_per_neuron[n]  (catch-up):全域最後一筆時間 - 這個神經元
-        自己最後一筆相關事件的時間
-      col > n_real_per_neuron[n]   (identity):Δt 定義成 0
-
-    回傳浮點 delta_t,shape (n_out, L)。
+    t_gathered: (n_out, L) 每欄對應的事件時間。
+    n_real_per_neuron: (n_out,) 真事件數。
+    global_last_time: 純量,最後一筆真輸入事件的時間。
+    回傳 (n_out, L) float。
     """
     n_out, L = t_gathered.shape
     col_idx = jnp.arange(L, dtype=jnp.int32)[None, :]

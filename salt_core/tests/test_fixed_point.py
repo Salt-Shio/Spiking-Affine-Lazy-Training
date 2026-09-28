@@ -100,7 +100,7 @@ def test_wide_mul_shift_rejects_shift_bits_above_limit():
 def test_wide_mul_shift_matches_exact_python_int_arithmetic_random_wide_values():
     """亂數交叉驗證:用 Python 原生大整數(不受 int32 限制)算 oracle,對照
     乘積本身會溢位 int32 的寬參數範圍(shift_bits=15,v_int 接近 30 位元)。
-    Python 的 `>>` 對負數也是算術右移,oracle 直接照兩補數慣例寫。"""
+    Python 的 >> 對負數也是算術右移,oracle 直接照兩補數慣例寫。"""
     a_key, v_key = jax.random.split(jax.random.PRNGKey(3))
     shift_bits = MAX_SHIFT_BITS
     a_vals = jax.random.randint(a_key, (500,), minval=0, maxval=2 ** shift_bits)

@@ -12,17 +12,13 @@ from salt_core.trace import LayerForwardTrace
 
 
 def uniform_init(key: jax.Array, shape: tuple, fan_in: int, init_k: float) -> jax.Array:
-    """單一權重張量的 uniform 初始化,`limit = init_k / sqrt(fan_in)`。這是通用的
-    權重初始化 primitive(標準 U(-1/sqrt(fan_in), 1/sqrt(fan_in)) 尺度,乘上
-    可調的 init_k),層的 `init_weight` 跟找 k 的掃描都用它——同一個 key 只換
-    init_k,firing rate 的變化才只來自 init_k 本身。"""
+    """權重張量的 uniform 初始化:U(-limit, limit),limit = init_k / sqrt(fan_in)。"""
     limit = init_k / jnp.sqrt(float(fan_in))
     return jax.random.uniform(key, shape, minval=-limit, maxval=limit)
 
 
 class Layer(Protocol):
-    """一個 layer 的對外約定(純文件用途,`run_network` 跟 backend 靠 duck typing)。
-    `run_network` 跟 backend 只需要底下這幾樣,不管是 conv 還是 FC。"""
+    """層的約定:run_network 跟 backend 只用到這些。只當文件用,實際靠 duck typing。"""
     name: str
     input_shape: tuple    # 吃空間輸入時是 (channel, 高, 寬),吃攤平輸入時是 (n,)
     output_shape: tuple   # 同上,這層輸出的形狀
@@ -32,7 +28,7 @@ class Layer(Protocol):
     chunk_size: int
 
     def init_weight(self, key: jax.Array) -> jax.Array:
-        """這一層的權重張量(形狀 / fan_in / init_k 都是層自己的知識)。"""
+        """這一層的初始權重。"""
         ...
 
     def unflatten_neurons(self, values):
@@ -45,8 +41,8 @@ class Layer(Protocol):
 
     def forward(self, params, in_stream: EventStream, *, backend=FLOAT,
                 trace: bool = False) -> "LayerOutput":
-        """讀一條標準事件流 + 這層參數(backend 決定是浮點權重還是量化參數),
-        吐 LayerOutput。trace=True 時多帶逐步軌跡。"""
+        """輸入事件流 -> LayerOutput。params 的型別由 backend 決定(浮點權重或量化參數);
+        trace=True 時多帶逐步軌跡。"""
         ...
 
     # 以下給 backend 用:佇列的數值段跟掃描設定。structure 是這層自己的佇列結構。

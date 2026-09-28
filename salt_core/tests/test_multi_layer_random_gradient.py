@@ -1,30 +1,15 @@
-"""用一個跟被測系統完全獨立、逐事件跑的序列參考實作(不用 float/affine.py 的
-associative_scan/chunk 化機制),拿中等規模(幾十筆事件、每層好幾顆神經元)
-的隨機資料當 oracle,交叉驗證真正的 FC 佇列建構+run_layer_forward+
-extract_output_events_fc 串接管線,包括:
+"""多層 FC 管線(佇列建構 + run_layer_forward + extract_output_events_fc)跟獨立的逐事件參考實作比。
 
-  1. 疊加兩次跨層(layer1->layer2->layer3),不是只驗證過一次
-  2. 量夠大、多神經元的情況,不是只有手算得動的小例子
-  3. 跨層梯度不只測過 v_final 型 loss,也測 s_value(頻率編碼加總)型 loss
-  4. 隨機資料不保證碰得到的構造案例:fire 落在 chunk 邊界、同一個 chunk 裡 fire 兩次
+參考實作(_sequential_layer)不用 associative_scan、不分 chunk,逐事件跑同一條遞迴(不套閘、fire 時
+soft reset,同 test_surrogate.py),層與層之間用動態長度的 nonzero 合併,不經過 float/scan.py、
+stream.py。涵蓋:
+  1. 三層(兩次跨層)。
+  2. 幾十筆事件、每層多顆神經元的隨機資料。
+  3. v_final 型跟 s_value 型 loss 的跨層梯度。
+  4. fire 落在 chunk 邊界、同一個 chunk 裡 fire 兩次。
 
-外部原始輸入的事件時間用連續亂數 jitter 生成,這一層不會真的同分。但**層與
-層之間的輸出不是這樣**:多個下游神經元共用同一顆上游神經元的同一次 fire
-當觸發事件時,輸出時間戳記會是精確相等的真同分——事件夠密集時真的會發生
-(不是理論上的邊界案例,調參這份測試資料時就實際踩到過),所以這裡的參考
-實作(_sequential_multi_layer)一樣要用 (times, step_idx) 複合鍵排序,跟
-stream.extract_output_events_fc 用同一條 tie-break 規則,兩邊才對得起來。
-tie-break 規則本身的正確性(該排哪個在前)由 test_stream_tiebreak.py
-系列獨立、確定性地覆蓋,這裡只是必須讓兩套實作用「同一條」規則,不重複驗證
-規則本身對不對。
-
-序列參考實作(_sequential_layer)刻意跟 test_surrogate.py 的
-_sequential_lif_with_surrogate 用同一條遞迴公式(不套閘、fire 時 soft
-reset),只是這裡 vmap 到多顆神經元、多層之間用 jnp.nonzero()(不帶 size,
-在 jax.grad 這種 eager 執行的情境下可以用動態 shape,不需要真正的
-pipeline 才需要處理的固定長度/n_real_events 那一套)手動合併、排序——這條路徑
-完全不經過 float/scan.py/stream.py 的任何程式碼,是真正獨立的第二套
-實作,不是拿同一段程式碼互相比對。
+層與層之間會有真的同時間戳記:多顆下游神經元被上游同一次 fire 觸發。參考實作跟管線用同一條
+(times, step_idx) 排序規則才對得起來;規則本身在 test_stream_tiebreak.py 測。
 """
 
 import jax
@@ -49,9 +34,8 @@ def assert_allclose(actual, expected, msg, tol=TOL):
 # ---------------------------------------------------------------------------
 
 def _sequential_layer(event_times, event_source_idx, event_gain, W, tau, v_th, alpha):
-    """對 W 的每個 row(輸出神經元),逐事件跑序列版。跟 test_surrogate.py 的
-    _sequential_lif_with_surrogate 是同一條遞迴公式,這裡 vmap 到多顆神經元、
-    多筆事件共用同一份時間軸(FC 無延遲)。
+    """W 的每一列(輸出神經元)逐事件跑遞迴,所有神經元共用同一條時間軸(FC 無延遲)。
+
 
     回傳:
       fired: shape (m, S) bool
@@ -80,14 +64,9 @@ def _sequential_layer(event_times, event_source_idx, event_gain, W, tau, v_th, a
 
 
 def _sequential_multi_layer(event_times, event_source_idx, weight_matrices, tau, v_th, alpha):
-    """串接多層 _sequential_layer,層與層之間用動態長度的 nonzero 手動合併,
-    排序用跟 stream.extract_output_events_fc 完全一樣的 (times, step_idx)
-    複合鍵(lexsort 最後一個 key 是主鍵)——不能只用 times 排序:多個下游神經元
-    共用同一顆上游神經元的同一次 fire 當觸發事件時,輸出時間戳記會是精確相等
-    的真同分(不是量化造成的假同分),這種情況在事件夠密集時真的會發生
-    (這個檔案調參時就踩到過)。同分時處理順序會影響「fire 之後 reset、剩餘
-    貢獻怎麼疊加」的結果,兩套實作的 tie-break 規則不一致就會讓 forward 數值
-    對不起來,不是梯度計算的問題。回傳最後一層的 (fired, s_seq, v_final)。"""
+    """串接多層 _sequential_layer,層與層之間用 (times, step_idx) 排序合併,同 extract_output_events_fc。
+    同時間戳記時處理順序會影響 reset 之後的累加,排序規則不同 forward 就對不起來。
+    回傳最後一層的 (fired, s_seq, v_final)。"""
     times, source_idx, gain = event_times, event_source_idx, None
     result = None
     for li, W in enumerate(weight_matrices):
@@ -144,9 +123,7 @@ def _make_weight_matrices(key, sizes, low, high):
             for i, k in enumerate(keys)]
 
 
-# 調參時已用獨立診斷腳本確認過,這組設定在每一層都有真實 fire,不會退化成
-# 空事件包——下面 _check_gradient_matches_reference 也會在每次呼叫時重新
-# 斷言參考梯度不是全部趨近 0,不是只在調參當下驗證過一次就假設之後都成立。
+# 這組設定每一層都有真的 fire;_check_gradient_matches_reference 每次也會斷言參考梯度不是全部接近 0。
 TAU = 4.0
 V_TH = 1.0
 ALPHA = 2.0

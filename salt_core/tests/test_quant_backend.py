@@ -1,21 +1,14 @@
-"""層在 QuantBackend 下的 forward(整數版,膜電位量化模擬)的驗證:
+"""層在 QuantBackend 下的 forward(整數版,膜電位量化模擬)。
 
-1. **基本正確性**:單一事件、`Δt=0`(identity,跳過衰減)的最簡單案例,
-   `v_final` 應該就是輸入的整數權重碼本身——純驗證佇列建構、權重 gather、
-   dtype 轉型這條管線本身接對了。
-2. **接線正確性**:`FCLayer.forward` 走整數 backend 時內部的每一塊(佇列建構、
-   `apply_decay_table_int`、`quant.scan.run_layer`)都各自有單元
-   測試,這裡驗證組裝起來的結果跟直接呼叫這些元件完全一致。
-3. **conv catch-up**:真 tap 之後的 catch-up 衰減要真的套用到 `v_final`。
-4. **跟訓練容量設定無關**:整數版每步一筆事件,不受 `ConvLayer.max_extra_steps` 影響。
-5. **多層串接**:`run_network` 跟手動逐層呼叫結果一致。
-6. **`f_a` 越粗,結果確實不同**(不是接了一個沒作用的參數)。
-7. **軌跡**:`trace=True` 時每層軌跡的 `v_steps` 最後一欄等於 `v_final`;
-   `chunk_size=1` 時 `event_ms` 跟浮點 backend 逐位相等。
-8. **入口檢查與容量診斷**:`q` 不是整數 dtype 要 raise;佇列/輸出容量出界時
-   `capacity.fits(diag)` 是 False。
-9. **讀出、不 fire、溢位模式**:`QuantBackend.readout` 逐神經元乘回 $s_c$;
-   `v_th_int=None` 的層不 fire;每層的 `overflow_mode` 有生效。
+1. 單一 dt=0 事件:v_final 就是權重碼本身,確認佇列、權重 gather、dtype 接對。
+2. FCLayer.forward 跟直接呼叫佇列建構、apply_decay_table_int、run_layer 的結果一致。
+3. conv 真事件之後的 catch-up 衰減有套用到 v_final。
+4. 整數版每步一筆事件,不受 max_extra_steps 影響。
+5. run_network 多層跟手動逐層呼叫一致。
+6. f_a 變粗結果會變。
+7. trace=True:v_steps 最後一欄等於 v_final;chunk_size=1 時 event_ms 跟浮點 backend 相等。
+8. q 不是整數 dtype 要 raise;佇列、輸出容量出界時 capacity.fits 是 False。
+9. readout 逐神經元乘回 s_c;v_th_int=None 不 fire;每層的 overflow_mode 有生效。
 """
 import dataclasses
 
@@ -66,9 +59,7 @@ def _conv_3x3_setup():
 
 
 def test_fc_forward_quantized_single_identity_event_matches_hand_computation():
-    """單一事件,event_times=[0.0] => Δt=0(is_identity=True,跳過衰減),
-    v0=0,所以 v_final 應該就是這筆事件的整數權重碼本身,不管 f_a/tau/
-    decay_table 是什麼——這是最簡單、零模糊地帶的正確性檢查。"""
+    """單一事件 event_times=[0.0]:dt=0 不衰減,v0=0,v_final 就是這筆事件的權重碼,跟 f_a、tau 無關。"""
     tau = 4.0
     layer = FCLayer(name="out", n_in=1, n_out=2, init_k=5.0, tau=tau, v_th=1.0, chunk_size=1)
     params = _params(jnp.array([[7], [3]]), tau=tau, f_a=4, f_V=0, i_V=16,
@@ -83,9 +74,8 @@ def test_fc_forward_quantized_single_identity_event_matches_hand_computation():
 
 
 def test_fc_forward_quantized_matches_manual_assembly_of_trusted_primitives():
-    """`FCLayer.forward` 走整數 backend 組裝起來的結果,跟直接呼叫
-    佇列建構/`apply_decay_table_int`/`run_layer` 完全一致
-    ——多筆事件、真的會查表衰減的案例(不是上面那個 identity 特例)。"""
+    """FCLayer.forward 走整數 backend 的結果,跟直接呼叫佇列建構、apply_decay_table_int、run_layer
+    一致;多筆事件、真的查表衰減。"""
     tau = 4.0
     layer = _fc_layer(tau)
     params = _params(jnp.array([[5, 3], [2, 1]]), tau=tau, f_a=4, f_V=0, i_V=16,
@@ -104,8 +94,7 @@ def test_fc_forward_quantized_matches_manual_assembly_of_trusted_primitives():
 
     assert np.array_equal(np.asarray(result_q.v_final), np.asarray(expected.v_final))
     assert np.array_equal(np.asarray(result_q.spike_mask), np.asarray(expected.spike_mask))
-    # 這組數字手算過(neuron0 在第三筆事件 fire、neuron1 全程不 fire),
-    # 當一個具體數字的迴歸鎖定,不是只比對「兩條路一致」這個性質。
+    # 手算的數字(neuron0 在第三筆 fire、neuron1 不 fire),不只比兩條路一致
     assert bool(result_q.spike_mask[0].any()), "neuron0 應該 fire 過一次"
     assert not bool(result_q.spike_mask[1].any()), "neuron1 不該 fire"
     assert int(result_q.v_final[0]) == 0, "neuron0 fire 後硬重置成 0"
@@ -113,8 +102,7 @@ def test_fc_forward_quantized_matches_manual_assembly_of_trusted_primitives():
 
 
 def test_fc_forward_quantized_coarser_f_a_changes_result():
-    """`f_a` 越粗(查表精度越低),結果應該確實不同——用跟上面同一組多事件
-    案例,只換 `f_a`。"""
+    """同一組多事件案例只換 f_a:f_a 變粗(查表精度變低)結果要不同。"""
     tau = 4.0
     layer = _fc_layer(tau)
     q = jnp.array([[5, 3], [2, 1]])
@@ -152,9 +140,8 @@ def test_conv_forward_quantized_applies_catchup_decay():
 
 
 def test_conv_forward_quantized_ignores_training_max_extra_steps():
-    """`ConvLayer.max_extra_steps` 是照訓練時的 `chunk_size` 校準出來的;整數版每步
-    一筆事件,掃描長度是佇列長度 `max_queue_len`,不能受它影響。兩個只有 `max_extra_steps`
-    不同的層算出來的結果要完全一樣。"""
+    """整數版掃描長度是 max_queue_len,跟訓練用的 max_extra_steps 無關:只差 max_extra_steps 的兩個層
+    結果完全一樣。"""
     base, in_stream = _conv_3x3_setup()
     q = jnp.round(base.init_weight(jax.random.PRNGKey(0)) * 20).astype(jnp.int32)
     params = _params(q, tau=base.tau, f_a=8, f_V=2, i_V=16,
@@ -170,9 +157,8 @@ def test_conv_forward_quantized_ignores_training_max_extra_steps():
 
 
 def test_run_network_quantized_chains_conv_into_fc_matches_manual_chaining():
-    """conv 接 FC 兩層,`run_network` 跟手動逐層呼叫、手動把輸出流
-    接手,結果要完全一致。conv 的輸出流有 pad 事件(假時間 1e12),FC 的
-    佇列要把它們的 Δt 遮成 0,不然查表入口會 raise。"""
+    """conv 接 FC:run_network 跟手動逐層呼叫、手動接輸出流一致。conv 的輸出流有 pad 事件
+    (時間 1e12),FC 佇列要把它們的 dt 遮成 0,不然查表入口會 raise。"""
     conv, input_stream = _conv_3x3_setup()
     fc = FCLayer(name="out", n_in=conv.n_neurons, n_out=2, init_k=5.0, tau=conv.tau,
                  v_th=1.0, chunk_size=1)
@@ -211,7 +197,7 @@ def test_run_network_quantized_trace_last_v_step_is_v_final():
 
 @pytest.mark.parametrize("setup", ["conv", "fc"])
 def test_quantized_event_ms_matches_float_at_chunk_size_one(setup):
-    """chunk_size=1 時兩種 backend 都是第 t 步處理佇列第 t 欄,event_ms 要逐位相等
+    """chunk_size=1 時兩種 backend 都是第 t 步處理佇列第 t 欄,event_ms 要相等
     (空轉步都是 nan)。"""
     if setup == "conv":
         layer, in_stream = _conv_3x3_setup()

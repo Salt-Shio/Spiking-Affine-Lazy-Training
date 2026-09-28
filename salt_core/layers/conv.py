@@ -17,43 +17,33 @@ from salt_core.trace import LayerForwardTrace, resolve_ms_conv
 
 @dataclass(frozen=True)
 class ConvLayer:
-    """一個壓縮版 conv 層。靜態欄位分五組:輸入面幾何 / 這層幾何 / init_k /
-    神經元動力學 / 容量。
+    """conv 層。每顆神經元的佇列只放落在它感受野裡的事件。
 
-    輸入面幾何(`ic` / `h_in` / `w_in`)= 上一層的輸出:`ic` 要等於上一層的
-    `oc`,`h_in`/`w_in` 要等於上一層的 `h_out`/`w_out`——組層 list 的時候
-    Python 層級檢查一次(就是 PyTorch 要你自己對齊 channel 的那個檢查)。
-    第一層的「上一層」是虛擬輸入網格 `(ic, h_in, w_in)`,由呼叫端把原始事件
-    ravel 成扁平編號餵進來(見 `salt_core.network.Network.input_stream`)。
-
-    輸出面尺寸 `h_out` / `w_out` **不是欄位**,是從 `h_in` / `k` / `s` / `p`
-    算的 property(floor 模式、無 dilation:`(h_in + 2p - k)//s + 1`)——沒有
-    人在任何地方填它,存成欄位只會多一個可能跟其他欄位對不上的數字。
+    輸入面幾何(ic、h_in、w_in)要等於上一層的輸出形狀,Network 建構時檢查;第一層對的是
+    網路的輸入網格。h_out、w_out 由 h_in、w_in、k、s、p 算:(h_in + 2p - k) // s + 1。
     """
     name: str
-    # 輸入面幾何(= 上一層輸出)—— 必填,沒有通用預設
+    # 輸入面幾何
     ic: int
     h_in: int
     w_in: int
-    # 這層幾何 —— 必填(h_out / w_out 是 property,不在這裡)
+    # 這層幾何
     oc: int
     k: int
     s: int
     p: int
-    # 初始權重尺度 —— 必填,不校準,委定值見 docs/問題紀錄.md §12(firing-rate
-    # 目標帶準則廢棄,固定 init_k=5.0)。
+    # 初始權重尺度,選值理由見 docs/math/初始權重尺度推導.md
     init_k: float
-    # 神經元動力學(逐層)—— 有預設,是「起點」,config 要覆蓋就覆蓋。
+    # 神經元動力學
     tau: float = 16.0
     v_th: float = 1.0
     alpha: float = 2.0
     chunk_size: int = 1
-    # 容量 —— 有預設。max_queue_len / max_out_spikes 的值不重要(出界會自己長大),預設只求
-    # 「不要太小、少幾次開頭重編譯」。
+    # 容量。訓練時出界會放大,預設值只影響開頭要重編譯幾次。
     max_queue_len: int = 128
     max_out_spikes: int = 8192
-    # 掃描步數 = ceil(max_queue_len / chunk_size) + max_extra_steps,後者是因為 fire 要多跑的步數
-    # (見 docs/math/掃描步數上界推導.md)。None 時設成一定夠的值(總步數 = max_queue_len)。
+    # 掃描步數 = ceil(max_queue_len / chunk_size) + max_extra_steps,見 docs/math/掃描步數上界推導.md。
+    # None 時設成一定夠的值(總步數 = max_queue_len)。
     max_extra_steps: int | None = None
 
     def __post_init__(self) -> None:
@@ -123,7 +113,7 @@ class ConvLayer:
 
     def forward(self, params, in_stream: EventStream, *, backend=FLOAT,
                 trace: bool = False) -> LayerOutput:
-        """建壓縮佇列 -> backend 算數值段跟掃描 -> 抽輸出流、算診斷。
+        """建佇列 -> backend 算數值段跟掃描 -> 輸出事件流、診斷。
 
         params: 浮點 backend 是權重 (oc, ic, k, k);整數 backend 是 QuantizedLayerParams。
         trace: True 時 LayerOutput.trace 帶逐步軌跡。

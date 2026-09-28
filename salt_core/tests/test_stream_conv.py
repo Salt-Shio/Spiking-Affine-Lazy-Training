@@ -1,23 +1,12 @@
-"""驗證 stream.extract_output_events_fc 的 local_to_global_j 查表(任務7
-第二階段第3段)。對應 docs/math/conv事件佇列壓縮版推導.md 第 5.3 節。
+"""extract_output_events_conv:局部欄查回全域事件 index、排序、打包。
 
-分三類測試:
-1. 直接照推導文件第 5.3 節的手算範例(延續第 2-4 節神經元 5/6/7 那組例子)
-   構造 spike_mask/spike_event_idx/local_to_global_j,驗證查表+排序的結果
-   逐位元對得上文件表格。
-2. tie-break 穩定性:同一個全域 j 觸發兩顆不同神經元同時 fire,確認排序後
-   維持 jnp.nonzero 原始掃描順序(神經元 index 小的排前面),不是隨機順序。
-3. 端到端:build_conv_structure + conv_float_values -> run_layer_forward ->
-   extract_output_events_conv 整條串起來,跟透明參考
-   (_reference.dense_conv_affine_map -> run_layer_forward -> extract_output_events_fc,
-   不給 local_to_global_j)比對 ExtractedEvents **四個欄位全部**(event_times/
-   event_source_idx/event_gain/n_real_events)——只比 v_final 或只比前後
-   兩個欄位,查不到 event_gain(問題紀錄第四節的 s_spike 跨層梯度機制)被
-   搬到錯位置的 bug,這種 bug 不會讓 forward 數值跑掉,只會讓下一層的梯度
-   算錯。
+1. 推導文件(docs/math/conv事件佇列壓縮版推導.md「三個函式的分工」)的手算例子。
+2. 同一筆全域事件讓兩顆神經元同時 fire 時,照神經元 index 由小到大。
+3. build_conv_structure + conv_float_values -> run_layer_forward -> extract_output_events_conv,
+   跟參考實作(_reference.dense_conv_affine_map -> run_layer_forward -> extract_output_events_fc)比
+   EventStream 四個欄位。event_gain 放錯位置不會讓 forward 跑掉,只會讓下一層的梯度算錯,所以四個都比。
 """
 
-import jax
 import jax.numpy as jnp
 
 from salt_core.float.scan import run_layer_forward
@@ -35,27 +24,20 @@ def assert_allclose(actual, expected, msg, tol=TOL):
 
 
 # ============================================================================
-# 第一類:推導文件第 5.3 節手算範例
+# 1. 推導文件的手算例子
 # ============================================================================
 
-def test_extract_output_events_matches_worked_example_section_5_3():
-    """延續文件第 2-4 節事件時間 [1,2,3,5]、神經元 5/6/7、v_th=0.6 那組例子。
-    文件第 5.2 節算出的 spike 結果:神經元5 在局部欄位2 fire(v_final~=0)、
-    神經元7 在局部欄位0 fire(v_final=0)、神經元6 不 fire。查表用第 5.1 節
-    的對照表(神經元5->[j=0,1,3]、神經元6->[j=2,3,pad]、神經元7->[j=1,pad,pad])。
-
-    第 5.3 節預期結果:排序後 event_source_idx=[7,5,...]、event_times=[2,5,...]、
-    n_real_events=2。這裡只需要合成 spike_mask/spike_event_idx/
-    local_to_global_j 三個陣列(不用真的跑 build_conv_structure,
-    這個測試只驗證 extract_output_events_fc 這一步本身),神經元 id 直接用
-    0,1,2 對應文件的 5,6,7(哪個數字當 id 不影響查表/排序邏輯)。
+def test_extract_output_events_conv_matches_worked_example():
+    """推導文件的例子:事件時間 [1,2,3,5]、神經元 5/6/7、v_th=0.6。神經元 5 在局部欄 2 fire、神經元 7
+    在局部欄 0 fire、神經元 6 不 fire;查表 神經元5->[j=0,1,3]、神經元6->[j=2,3,pad]、神經元7->[j=1,pad,pad]。
+    預期:event_source_idx=[7,5,...]、event_times=[2,5,...]、n_real_events=2。
+    直接合成 spike_mask、spike_event_idx、local_to_global_j,神經元 id 用 0,1,2 對應文件的 5,6,7。
     """
     # 神經元 id:0->文件神經元5, 1->文件神經元6, 2->文件神經元7
-    # max_steps=1(每顆神經元最多一步就 fire 或不 fire,這裡只關心有沒有
-    # fire、fire 在哪個局部欄位,不需要多步)
+    # max_steps=1:只關心有沒有 fire、fire 在哪個局部欄
     spike_mask = jnp.array([[True], [False], [True]])
     spike_event_idx = jnp.array([[2], [0], [0]])  # 神經元0 局部欄位2、神經元2 局部欄位0
-    s_spike = jnp.array([[0.9], [0.0], [0.8]])  # 假可微分強度示意值,不是重點
+    s_spike = jnp.array([[0.9], [0.0], [0.8]])  # 隨便挑的強度
     event_times = jnp.array([1.0, 2.0, 3.0, 5.0])  # 這層自己的輸入事件時間(j=0..3)
     local_to_global_j = jnp.array([
         [0, 1, 3],  # 神經元0(文件神經元5)
@@ -80,15 +62,12 @@ def test_extract_output_events_matches_worked_example_section_5_3():
 
 
 # ============================================================================
-# 第二類:tie-break 穩定性——同一個全域 j 觸發多顆神經元同時 fire
+# 2. 同一筆全域事件讓多顆神經元同時 fire
 # ============================================================================
 
 def test_tiebreak_stable_when_multiple_neurons_share_same_global_j():
-    """兩顆不同神經元(id=0,2)的 spike 都查表對應到同一個全域 j=5(物理上是
-    同一個來源事件同時觸發兩個下游神經元,合法情況——例如同一個 conv1 輸出
-    事件同時落在 conv2 兩個不同輸出神經元的感受野內)。順序不重要但需要
-    確定,預期結果:保留 jnp.nonzero 掃描到的原始順序(神經元 id 小的在前),
-    不是任意順序。"""
+    """神經元 0、2 的 spike 都對到全域 j=5(同一筆事件落在兩顆神經元的感受野裡)。
+    順序要確定:照 jnp.nonzero 的掃描順序,神經元 id 小的在前。"""
     spike_mask = jnp.array([[True], [False], [True]])
     spike_event_idx = jnp.array([[0], [0], [0]])
     s_spike = jnp.array([[1.0], [0.0], [1.0]])
@@ -112,7 +91,7 @@ def test_tiebreak_stable_when_multiple_neurons_share_same_global_j():
 
 
 # ============================================================================
-# 第三類:端到端,壓縮版整條串接 vs 密集版整條串接,四個欄位全比
+# 3. 端到端:conv 整條 vs 參考實作整條,四個欄位全比
 # ============================================================================
 
 TAU = 4.0
@@ -148,29 +127,23 @@ def _conv_queue(event_times, x, y, c, W, max_queue_len, n_real_events):
 
 
 def test_end_to_end_matches_dense_all_four_fields():
-    """build_conv_structure + conv_float_values -> run_layer_forward ->
-    extract_output_events_conv 整條串起來,跟密集版整條
-    串起來,ExtractedEvents 四個欄位(event_times/event_source_idx/
-    event_gain/n_real_events)全部比對,不是只比前後兩個。event_gain 對不對
-    是這個測試存在的主要理由:forward v_final 對,不代表 event_gain 排對了
-    位置,但下一層的梯度完全靠這個欄位排對。用跟階段2同一個「會真的 fire」
-    的場景(idx0 在局部欄位1、全域j=2 fire),確保 s_spike 不是全 0/全 1 的
-    退化情況。"""
+    """conv 整條跟參考實作整條比 EventStream 四個欄位。場景會真的 fire(idx0 在局部欄 1、全域 j=2),
+    s_spike 不是全 0 或全 1。"""
     W = _make_weight()
     event_times = jnp.array([1.0, 1.5, 2.0, 2.5, 5.0])
     x = jnp.array([1, 2, 1, 2, 0]); y = jnp.array([1, 2, 1, 2, 0]); c = jnp.array([0, 0, 0, 0, 0])
     v_th = 15.0
     max_queue_len = 5
-    max_spikes = 9 * 5  # 恆安全上界,這個測試不是在驗證 max_total_spikes 怎麼抓
+    max_spikes = 9 * 5  # 一定裝得下
 
-    # 密集版整條串接
+    # 參考實作整條
     maps_dense = dense_conv_affine_map(event_times, x, y, c, W, TAU, S, P, H_OUT, W_OUT)
     result_dense = run_layer_forward(maps_dense, v_th, chunk_size=5, max_steps=5, n_real_events=maps_dense.a.shape[1])
     ev_dense = extract_output_events_fc(result_dense.spike_mask, result_dense.spike_event_idx,
                                         result_dense.s_spike, event_times,
                                         max_total_spikes=max_spikes)
 
-    # 壓縮版整條串接
+    # conv 整條
     maps, n_real_per_neuron, local_to_global_j = _conv_queue(
         event_times, x, y, c, W, max_queue_len, event_times.shape[0])
     result_conv = run_layer_forward(maps, v_th, chunk_size=5, max_steps=5,
@@ -186,9 +159,7 @@ def test_end_to_end_matches_dense_all_four_fields():
 
 
 def test_end_to_end_matches_dense_with_multiple_fires_and_pad_input():
-    """比上一個測試更完整的端到端案例:輸入端本身就帶 n_real_events(模擬
-    上一層 extract_output_events_fc 補的 pad 事件),而且場景會讓不只一顆神經元
-    fire,四個欄位在多筆輸出事件上都要對得起來,不是只驗證單一筆。"""
+    """輸入帶 pad 事件(n_real_events < 陣列長度),而且多顆神經元 fire,多筆輸出事件四個欄位都要對。"""
     W = _make_weight()
     # 前 5 筆是真事件,第 6 筆是 pad(座標偽裝合法、時間超大)
     event_times = jnp.array([1.0, 1.5, 2.0, 2.5, 5.0, 1e12])

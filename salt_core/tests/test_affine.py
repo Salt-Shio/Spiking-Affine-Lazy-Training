@@ -1,11 +1,8 @@
-"""單狀態仿射合成/chunk spike 偵測的驗證。
+"""仿射合成跟一個 chunk 的 fire 偵測(float/affine.py)。
 
-驗證方式:
-1. combine + associative_scan 合成的結果,要跟逐筆序列套用 h = V*a + w 完全一致
-   (驗證平行掃描沒有算錯,不是換一種方式重新定義正確性)。
-2. process_chunk 的 spike 偵測/reset,對照 docs/math/單狀態仿射平行掃描推導.md
-   跟 docs/TODO.md 裡手算過的具體數字例子逐項核對。
-不含佇列建構,事件的 (N, w) 都是測試裡直接給定的假資料。
+1. combine + associative_scan 合成的結果,等於逐筆套用 h = V*a + w。
+2. process_chunk 的 fire 偵測跟 reset,對手算的例子。
+事件的 (N, w) 都直接給,不經過佇列建構。
 """
 
 import jax.numpy as jnp
@@ -83,7 +80,7 @@ def test_chunk_fire_at_first_event():
 
 
 def test_multi_chunk_worked_example():
-    """docs/TODO.md 手算過的例子:tau=4,v_th=1.0,事件 (m=0,w=0.6)(m=1,w=0.6)(m=5,w=0.9)。
+    """手算例子(同 docs/math/不套閘與soft-reset梯度推導.md):tau=4,v_th=1.0,事件 (m=0,w=0.6)(m=1,w=0.6)(m=5,w=0.9)。
 
     手算軌跡:
       event1(m=0,N=0): h=0*1+0.6=0.6,      不 spike, V=0.6

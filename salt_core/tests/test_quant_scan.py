@@ -1,6 +1,6 @@
 """整數版掃描的驗證:process_event(一筆事件的單步更新:衰減捨入、溢位繞回/飽和、
 fire/reset)跟 run_layer/run_layer_traced(整條佇列)。
-直接給 `a_int`/`is_identity`/`q_int`,不經過佇列建構,手算鏈式遞迴對答案。
+直接給 a_int、is_identity、q_int,不經過佇列建構,手算鏈式遞迴對答案。
 """
 
 import jax.numpy as jnp
@@ -47,7 +47,7 @@ def test_run_layer_applies_catchup_decay_after_last_real_tap():
 
 
 def test_run_layer_scan_length_is_queue_length():
-    """掃描長度等於佇列欄數,每欄一步,`spike_event_idx` 就是欄位索引。"""
+    """掃描長度等於佇列欄數,每欄一步,spike_event_idx 就是欄位索引。"""
     a_int = jnp.zeros((2, 3), dtype=jnp.int32)
     is_identity = jnp.ones((2, 3), dtype=bool)
     q_int = jnp.zeros((2, 3), dtype=jnp.int32)

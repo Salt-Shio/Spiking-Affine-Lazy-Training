@@ -1,26 +1,7 @@
-"""逐步軌跡監測(週期性 debug probe,見 docs/監測規格.md §6)。
+"""逐步軌跡:LayerForwardTrace、掃描步指標換成真實毫秒、軌跡摘要。
 
-`LayerForwardTrace` = 一層 traced forward 吐的 `(n, max_steps)` 陣列包,跟
-`LayerForwardResult`(readout 契約)/ `LayerDiag`(容量哨兵)同一套 `Layer...`
-命名,是給人工 debug 自訂 decoder / 動力學用的紀錄。`layers.run_network(...,
-trace=True)` 收集,`stop_gradient` 後回傳;浮點、整數 backend 都用這個型別。
-
-這裡除了結構定義,還有「掃描步指標 -> 真實毫秒」的還原(`resolve_ms_*`)、
-一個對 `LayerForwardTrace` 的純歸約函式(`summarize_trace_scalars`)——只吃
-這個型別,不知道呼叫端是誰,跟 `dormant.py` 的 `dormant_score` 同一個放置
-理由(見 docs/監測規格.md §4.1:「salt_core 放通用 helper」)。
-
-實際跑 traced forward 在 `salt_core.float.scan.run_layer_forward_traced` /
-`salt_core.layers`。
-
-**2026-09-13 拔掉的東西**:`s_value` 欄位、`summarize_trace`、`pack_key`/
-`unpack_key`/`layer_names`。理由:(1) `s_value` 在這個架構下 forward 數值
-恆等於 `spike_mask`(一個 chunk 裡最多一筆事件跨過門檻,`float/scan.py` 的
-`n_valid_in_chunk` 邏輯保證),而 `LayerForwardTrace` 本身又是
-`stop_gradient` 後才回傳,連它在別處才有意義的「可微分」也用不上——留著
-純粹是重複資訊。(2) 這四樣東西唯一的呼叫端是已移除的
-`example/trace_probe.py`(多層攤平存 `summary.npz`),拔掉 `s_value` 之後
-`summarize_trace` 也跟著沒有存在理由。見 docs/監測規格.md §7。
+run_network(..., trace=True) 收集,不進訓練熱路徑;浮點、整數 backend 共用。
+欄位的取捨見 docs/監測規格.md「LayerForwardTrace / run_network(trace=True)(逐步軌跡,已實作)」。
 """
 from typing import NamedTuple
 
@@ -30,14 +11,11 @@ import numpy as np
 
 
 class LayerForwardTrace(NamedTuple):
-    """一層 traced forward 的逐步軌跡。全部 `(n, max_steps)`,n = 該層神經元數。
+    """一層的逐步軌跡。形狀都是 (n, max_steps),n 是這層的神經元數。
 
-    - `spike_mask`:轉抄 `LayerForwardResult` 的同名欄位。
-    - `v_steps`:每步 chunk 結束(套過 soft reset)的膜電位 = 完整膜電位軌跡;
-      最後一欄 = `LayerForwardResult.v_final`。整數 backend 是暫存器的整數值。
-    - `event_ms`:每步消化的(首)事件真實毫秒;空轉步(pointer 已越過該神經元
-      的真實事件數)= `nan`。`chunk_size=1` 時每步剛好對到一筆事件;
-      `chunk_size>1` 時是「這步從哪個時刻開始」。
+    spike_mask: 同 forward 結果的 spike_mask。
+    v_steps: 每步結束(套過 reset)的膜電位,最後一欄等於 v_final。整數 backend 是暫存器值。
+    event_ms: 每步處理的第一筆事件的真實毫秒;空轉步是 nan。chunk_size=1 時每步剛好一筆事件。
     """
     spike_mask: jax.Array   # (n, max_steps) bool
     v_steps: jax.Array      # (n, max_steps) float
@@ -46,10 +24,12 @@ class LayerForwardTrace(NamedTuple):
 
 def resolve_ms_fc(pointer: jax.Array, n_real_per_neuron: jax.Array,
                   event_times: jax.Array) -> jax.Array:
-    """FC 佇列(`build_fc_structure`):`pointer[i, k]` 直接是全域事件 index。
+    """FC 層:每步處理的事件換成真實毫秒。
 
-    pointer / n_real_per_neuron 形狀 `(n,)` 對齊;event_times `(n_events,)`。
-    回傳 `(n, max_steps)`,空轉步(`pointer >= n_real`)= `nan`。
+    pointer: (n, max_steps) 每步開始時的佇列欄位;FC 的欄位就是全域事件 index。
+    n_real_per_neuron: (n,) 逐神經元的真事件數。
+    event_times: (n_events,) 這層的輸入事件時間。
+    回傳 (n, max_steps);空轉步(pointer >= 真事件數)是 nan。
     """
     n_events = event_times.shape[0]
     ms = jnp.asarray(event_times)[jnp.clip(pointer, 0, n_events - 1)]
@@ -60,11 +40,11 @@ def resolve_ms_fc(pointer: jax.Array, n_real_per_neuron: jax.Array,
 def resolve_ms_conv(pointer: jax.Array, local_to_global_j: jax.Array,
                     n_real_per_neuron: jax.Array,
                     event_times: jax.Array) -> jax.Array:
-    """壓縮 conv 佇列(`build_conv_structure`):`pointer[i, k]` 是這顆
-    神經元壓縮佇列的局部欄,要先查 `local_to_global_j[i, col]` 得全域事件 index。
+    """conv 層:每步處理的事件換成真實毫秒。
 
-    `local_to_global_j` `(n, L)`;空欄的哨兵值 = `n_events`(見 connectivity/conv.py)。
-    回傳 `(n, max_steps)`,空轉步 = `nan`。
+    pointer: (n, max_steps) 每步開始時的佇列欄位,是這顆神經元自己佇列的局部欄。
+    local_to_global_j: (n, L) 局部欄 -> 全域事件 index,空欄是 n_events。
+    其餘參數跟回傳同 resolve_ms_fc。
     """
     n_events = event_times.shape[0]
     n_cols = local_to_global_j.shape[1]
@@ -76,15 +56,11 @@ def resolve_ms_conv(pointer: jax.Array, local_to_global_j: jax.Array,
 
 
 def summarize_trace_scalars(trace: LayerForwardTrace) -> dict:
-    """一份 `LayerForwardTrace`(單一樣本)-> 整層純量摘要 dict,給人工讀逐步
-    軌跡用(`example/replay_epoch.py` 的 CLI 用它印報表)。
+    """一筆樣本一層的軌跡 -> 整層的純量摘要,給人讀。
 
-      n / steps       形狀
-      total_spikes    整層總 spike 數
-      fired           有 fire 過的神經元 index,`(k,)` 陣列
-      idle_frac       空轉步比例(對整層平均)
-      v_range         `(v_steps 的 min, max)`
-      nonfinite_v     `v_steps` 裡非有限值的個數
+    回傳 dict:n、steps(形狀)、total_spikes(總 spike 數)、fired(有 fire 過的神經元
+    index)、idle_frac(空轉步比例)、v_range(v_steps 的 (min, max))、nonfinite_v
+    (v_steps 裡非有限值的個數)。
     """
     sm = np.asarray(trace.spike_mask)
     vs = np.asarray(trace.v_steps)
