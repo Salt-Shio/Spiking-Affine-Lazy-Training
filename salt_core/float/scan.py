@@ -29,7 +29,7 @@ class LayerForwardResult(NamedTuple):
                                  # 直接查 event_times;conv 壓縮佇列(conv_float_values)
                                  # 不是,這是「這顆神經元自己壓縮佇列裡的第幾欄」,要先查
                                  # local_to_global_j(見 connectivity/conv.py)才是全域事件
-                                 # index,見 stream.py extract_output_events 的說明
+                                 # index,見 stream.py extract_output_events_fc 的說明
     s_spike: jax.Array          # shape (n_out_neurons, max_steps),spike 事件自己的 s
     s_value: jax.Array          # shape (n_out_neurons, max_steps),視窗內有效事件的 s 加總
     v_final: jax.Array          # shape (n_out_neurons,),消化完 max_steps 步之後的膜電位
@@ -63,7 +63,7 @@ def run_layer_forward(maps: AffineMap, v_th: float, chunk_size: int, max_steps: 
 
     n_real_events:maps 裡「前面幾筆是真實事件」的數量(必填)。沒有 padding
     的呼叫端傳 maps.a.shape[1](整條都當真實事件)。多層串接時,
-    stream.extract_output_events 回傳的佇列是「固定上限、後面補 pad
+    stream.extract_output_events_fc 回傳的佇列是「固定上限、後面補 pad
     事件」的格式(見該檔案說明),這時要把它回傳的真實筆數明確傳進來,不能
     讓這裡自己用 maps 的 shape 反推——不然 n_valid_in_chunk(下面)會把 pad
     事件也當成真實事件去加總 s_value,重演跟 _pad_queue 同一類「padding 步驟

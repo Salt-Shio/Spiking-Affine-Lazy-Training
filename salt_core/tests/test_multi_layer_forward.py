@@ -1,7 +1,7 @@
-"""驗證 stream.extract_output_events 把 layer1 的輸出接成 layer2 的輸入,
+"""驗證 stream.extract_output_events_fc 把 layer1 的輸出接成 layer2 的輸入,
 兩層串起來的數字算對。
 
-stream.extract_output_events 是純 JAX 實作,回傳固定長度(n_source_neurons*
+stream.extract_output_events_fc 是純 JAX 實作,回傳固定長度(n_source_neurons*
 max_steps 這個安全上限)的陣列,不是「剛好幾筆真實事件」的動態長度——前
 n_real_events 筆是真實事件(已排序),後面補 pad 事件(不影響任何下游計算,
 見 stream.py 說明)。下面每個測試都用 n_real_events 切出真正有意義的
@@ -28,7 +28,7 @@ import jax.numpy as jnp
 
 from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.stream import extract_output_events
+from salt_core.stream import extract_output_events_fc
 
 TOL = 1e-4
 
@@ -56,7 +56,7 @@ def test_two_layer_fc_forward():
         layer1_maps, v_th, chunk_size=1, max_steps=n_real_events_1, n_real_events=n_real_events_1)
 
     layer2_event_times, layer2_event_source_idx, layer2_event_gain, n_real_events_2 = \
-        extract_output_events(spike_mask_1, spike_event_idx_1, s_spike_1, layer1_event_times)
+        extract_output_events_fc(spike_mask_1, spike_event_idx_1, s_spike_1, layer1_event_times)
 
     # layer1 只該有一筆輸出事件:(t=4, 來源=b1=index0),固定長度陣列裡
     # 只有前 n_real_events_2 筆算數
@@ -84,7 +84,7 @@ def test_two_layer_fc_forward():
 def test_two_layer_fc_forward_multi_fire_interleaved():
     """比 test_two_layer_fc_forward 更強的例子:layer1 兩顆神經元都會 fire
     (其中一顆 fire 兩次),合併後的時間順序也不是「照神經元編號分組」——
-    b2 先 fire、b1 才 fire、b2 又 fire 一次——用來驗證 extract_output_events
+    b2 先 fire、b1 才 fire、b2 又 fire 一次——用來驗證 extract_output_events_fc
     是真的照時間排序合併,不是碰巧照 nonzero 掃描到的順序排對而已。
     tau=4(a=0.75^N,N 從 t=0 起算),v_th=1.0。
 
@@ -126,7 +126,7 @@ def test_two_layer_fc_forward_multi_fire_interleaved():
     assert_allclose(v_final_1[1], 0.0, "b2 最終電壓(最後一筆事件剛好 fire)")
 
     layer2_event_times, layer2_event_source_idx, layer2_event_gain, n_real_events_2 = \
-        extract_output_events(spike_mask_1, spike_event_idx_1, s_spike_1, layer1_event_times)
+        extract_output_events_fc(spike_mask_1, spike_event_idx_1, s_spike_1, layer1_event_times)
 
     n2 = int(n_real_events_2)
     assert n2 == 3, n2
@@ -157,7 +157,7 @@ def test_two_layer_fc_forward_multi_fire_interleaved():
 
 
 def test_empty_layer_output():
-    """layer1 全部神經元都不 fire 的邊界情況:extract_output_events 回傳的固定
+    """layer1 全部神經元都不 fire 的邊界情況:extract_output_events_fc 回傳的固定
     長度陣列裡 n_real_events=0(全部都是 pad 事件),接著
     FC 佇列建構/run_layer_forward 帶 n_real_events=0 處理這個「語意上等於
     空佇列」的陣列,也不該出錯——這是先前 review 提過、但沒實測過的邊界案例。
@@ -181,7 +181,7 @@ def test_empty_layer_output():
     assert not bool(spike_mask_1.any()), "這組 weights 不該讓任何神經元 fire"
 
     layer2_event_times, layer2_event_source_idx, layer2_event_gain, n_real_events_2 = \
-        extract_output_events(spike_mask_1, spike_event_idx_1, s_spike_1, layer1_event_times)
+        extract_output_events_fc(spike_mask_1, spike_event_idx_1, s_spike_1, layer1_event_times)
 
     assert int(n_real_events_2) == 0, n_real_events_2
     # 固定長度 = n_source_neurons(=2) * max_steps(=3),不是動態長度 0

@@ -73,13 +73,13 @@ class CapacityControl:
     """一次 run 的容量控制。
 
     policies: 層名 -> GrowthPolicy,有容量的層都要有。
-    reestimate_every: 每幾個 epoch 檢查一次縮小,0 不檢查。
+    shrink_check_every: 每幾個 epoch 檢查一次縮小,0 不檢查。
     events: 到目前為止的事件(GrowEvent、ShrinkEvent 的 to_dict()),依發生順序。
     """
 
-    def __init__(self, policies: dict, reestimate_every: int):
+    def __init__(self, policies: dict, shrink_check_every: int):
         self.policies = policies
-        self.reestimate_every = reestimate_every
+        self.shrink_check_every = shrink_check_every
         self.events: list = []
         self._epoch_needed: dict = {}
 
@@ -114,7 +114,7 @@ class CapacityControl:
 
     def shrink(self, layers: list, epoch: int) -> tuple[list, ShrinkEvent | None]:
         """epoch 跑完後照這個 epoch 的最大需求縮小;沒輪到或都沒縮時回傳 (layers, None)。"""
-        if self.reestimate_every <= 0 or epoch % self.reestimate_every != 0:
+        if self.shrink_check_every <= 0 or epoch % self.shrink_check_every != 0:
             return layers, None
         shrunk = shrunk_to_observed(layers, self.policies, self._epoch_needed)
         if shrunk is layers:

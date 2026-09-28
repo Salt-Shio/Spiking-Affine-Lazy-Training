@@ -14,7 +14,7 @@ run_name: baseline
 #
 # batch_size 4→16:純粹是加速,4 對這個資料量太小、GPU 沒有用滿。
 # max_queue_len/max_out_spikes/max_extra_steps 這三個動態容量旋鈕取的是整個 batch 裡最大的
-# 那一筆樣本(example/train_conv_compressed.py 的 reduced diag 用 jnp.max),
+# 那一筆樣本(example/train.py 的 reduced diag 用 jnp.max),
 # 不是加總,所以放大 batch_size 不會讓容量跟著等比例爆開,只是佔用記憶體
 # 隨 batch_size 線性成長(vmap 的 batch 維度)——一般訓練都有的正常關係,先跑
 # 過煙霧測試(3 epoch)確認沒 OOM 才正式跑完整 60 epoch。

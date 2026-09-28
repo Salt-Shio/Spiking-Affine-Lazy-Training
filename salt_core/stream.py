@@ -6,9 +6,9 @@ event_gain),外加真事件數(n_real_events)。對應 docs/math/全連接forwar
 每種 layer 自己負責「怎麼從自己的 forward 結果吐出這條標準流」——不是一個
 認識所有 layer 配對的萬能轉接器:
 
-- `extract_output_events`:FC / 密集 conv。`spike_event_idx` 本身就是全域事件
+- `extract_output_events_fc`:FC / 密集 conv。`spike_event_idx` 本身就是全域事件
   index,直接用。
-- `extract_output_events_compressed`:壓縮 conv。`spike_event_idx` 是「這顆
+- `extract_output_events_conv`:壓縮 conv。`spike_event_idx` 是「這顆
   神經元壓縮佇列的第幾欄」,要先用 `local_to_global_j` 查回全域事件 index。
   這個查表是壓縮 conv 的內部細節,收在這個函式裡,不外洩成別人的參數。
 
@@ -42,7 +42,7 @@ class EventStream(NamedTuple):
     n_real_events),下一層的佇列建構直接讀這四個欄位。
 
     **注意**:這裡的 event_times 是這一層吐出、= 下一層輸入的事件時間,跟
-    `extract_output_events` 的輸入參數 event_times(這一層自己的輸入事件時間)
+    `extract_output_events_fc` 的輸入參數 event_times(這一層自己的輸入事件時間)
     同名但不是同一個陣列,差一層,而且是輸入經 gather + 排序 + 補 pad 後的子集。
     """
     event_times: jax.Array       # (max_total_spikes,) 已排序(遞增),前 n_real_events 筆真、後面補 _PAD_TIME
@@ -108,9 +108,9 @@ def _select_spikes(spike_mask: jax.Array, spike_event_idx: jax.Array,
     return neuron_idx, queue_col, raw_s_spike, n_real_events, max_total_spikes
 
 
-def extract_output_events(spike_mask: jax.Array, spike_event_idx: jax.Array,
-                           s_spike: jax.Array, event_times: jax.Array,
-                           max_total_spikes: int | None = None) -> EventStream:
+def extract_output_events_fc(spike_mask: jax.Array, spike_event_idx: jax.Array,
+                             s_spike: jax.Array, event_times: jax.Array,
+                             max_total_spikes: int | None = None) -> EventStream:
     """FC / 密集 conv 的 emit:`spike_event_idx` 本身就是全域事件 index,
     直接打包。
 
@@ -128,10 +128,10 @@ def extract_output_events(spike_mask: jax.Array, spike_event_idx: jax.Array,
                          n_real_events, max_out)
 
 
-def extract_output_events_compressed(spike_mask: jax.Array, spike_event_idx: jax.Array,
-                                      s_spike: jax.Array, event_times: jax.Array,
-                                      local_to_global_j: jax.Array,
-                                      max_total_spikes: int | None = None) -> EventStream:
+def extract_output_events_conv(spike_mask: jax.Array, spike_event_idx: jax.Array,
+                               s_spike: jax.Array, event_times: jax.Array,
+                               local_to_global_j: jax.Array,
+                               max_total_spikes: int | None = None) -> EventStream:
     """壓縮 conv 的 emit:`spike_event_idx` 是「這顆神經元壓縮佇列的第幾欄」,
     先用 `local_to_global_j` 查回全域事件 index,再走跟密集版完全一樣的打包。
     對應 docs/math/conv事件佇列壓縮版推導.md 第 5.3 節。
@@ -140,7 +140,7 @@ def extract_output_events_compressed(spike_mask: jax.Array, spike_event_idx: jax
       index,就是 connectivity/conv.py ConvQueueStructure.local_to_global_j
       用 tile_channels 展開到每個 channel 的結果。查表前把局部欄
       index 明確夾進 [0, L),不依賴 JAX gather 對越界 index 的預設行為。
-    其餘參數同 `extract_output_events`。
+    其餘參數同 `extract_output_events_fc`。
     """
     neuron_idx, local_col, raw_s_spike, n_real_events, max_out = _select_spikes(
         spike_mask, spike_event_idx, s_spike, max_total_spikes)

@@ -1,7 +1,7 @@
 """訓練期指標紀錄:每個 epoch 的 loss / firing rate / 梯度範數 / 解碼器指標 /
 壓縮容量真實用量,收成 metrics.csv 的一行,順便印進度。
 
-從 `train_conv_compressed.py` 拆出來——原本那支腳本裡有五個平行的 per-epoch
+從 `train.py` 拆出來——原本那支腳本裡有五個平行的 per-epoch
 累加 dict、一段 ~20 行 inline 組 row、一段週期性 print 再從 row 重推字串、
 `_write_experiment` 又自己寫 csv + 跑一輪結尾 print。全部收進這個 class。
 

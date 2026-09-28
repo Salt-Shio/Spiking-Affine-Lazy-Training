@@ -16,7 +16,7 @@
 
 佇列長度 `max_queue_len`、輸出 spike 上界 `max_out_spikes` 都是「起始猜測 + 訓練中偵測
 出界就放大」(見 docs/math/conv事件佇列壓縮版推導.md 第 7.2 節、
-`salt_core.capacity`、`example/train_conv_compressed.py`)。放大縮小的倍率跟門檻
+`salt_core.capacity`、`example/train.py`)。放大縮小的倍率跟門檻
 寫在同一個 layer entry 裡,由 `build_growth_policies` 讀。
 `init_k` 是每層必填欄位,不校準(委定值見 docs/問題紀錄.md §12),layer entry
 沒填會在建層物件那一步直接報錯。

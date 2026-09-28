@@ -23,8 +23,8 @@ from salt_core.float.scan import run_layer_forward, run_layer_forward_traced
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.layers import ConvLayer, FCLayer
 from salt_core.network import Network, RawEvents, run_network
-from salt_core.trace import (LayerForwardTrace, resolve_ms_compressed,
-                                resolve_ms_dense, summarize_trace_scalars)
+from salt_core.trace import (LayerForwardTrace, resolve_ms_conv,
+                                resolve_ms_fc, summarize_trace_scalars)
 
 TOL = 1e-6
 
@@ -116,18 +116,18 @@ def test_traced_pointer_monotone_and_starts_at_zero():
 # B. resolve_ms_*
 # ============================================================================
 
-def test_resolve_ms_dense_hand():
+def test_resolve_ms_fc_hand():
     event_times = jnp.array([10.0, 11.0, 13.0, 20.0, 25.0])
     pointer = jnp.array([[0, 1, 2, 3, 4],
                          [0, 2, 4, 5, 6]])          # 第 2 列後兩步越界(n_real=5)
     n_real = jnp.array([5, 5], dtype=jnp.int32)
-    ms = np.asarray(resolve_ms_dense(pointer, n_real, event_times))
+    ms = np.asarray(resolve_ms_fc(pointer, n_real, event_times))
     np.testing.assert_allclose(ms[0], [10.0, 11.0, 13.0, 20.0, 25.0])
     np.testing.assert_allclose(ms[1][:3], [10.0, 13.0, 25.0])
     assert np.isnan(ms[1][3]) and np.isnan(ms[1][4]), "pointer>=n_real 應為 nan"
 
 
-def test_resolve_ms_compressed_hand():
+def test_resolve_ms_conv_hand():
     event_times = jnp.array([5.0, 7.0, 8.0, 12.0])
     # 神經元 0 佇列局部欄 -> 全域事件 [1, 3, 哨兵];神經元 1 -> [0, 哨兵, 哨兵]
     local_to_global_j = jnp.array([[1, 3, 4],
@@ -135,7 +135,7 @@ def test_resolve_ms_compressed_hand():
     n_real = jnp.array([2, 1], dtype=jnp.int32)
     pointer = jnp.array([[0, 1, 2, 2],
                          [0, 1, 2, 2]], dtype=jnp.int32)
-    ms = np.asarray(resolve_ms_compressed(pointer, local_to_global_j, n_real, event_times))
+    ms = np.asarray(resolve_ms_conv(pointer, local_to_global_j, n_real, event_times))
     np.testing.assert_allclose(ms[0][:2], [7.0, 12.0])          # 事件 1, 3
     assert np.isnan(ms[0][2]) and np.isnan(ms[0][3])
     np.testing.assert_allclose(ms[1][0], 5.0)                   # 事件 0

@@ -12,7 +12,7 @@ from salt_core.layers import FCLayer
 from salt_core.network import Network, RawEvents, run_network
 from salt_core.quant.backend import QuantBackend, QuantizedLayerParams
 from salt_core.quant.codes import build_decay_table_int
-from salt_core.stream import extract_output_events
+from salt_core.stream import extract_output_events_fc
 from salt_core.tests._small_network import INPUT_SHAPE, init_params, raw_batch, small_layers
 
 # 一顆神經元、兩個來源:來源 0 權重 1.0(單獨一筆就 fire),來源 1 權重 0.1。
@@ -96,9 +96,9 @@ def _primitive_fc(layer: FCLayer, w, stream):
                                max_steps=maps.a.shape[1], alpha=layer.alpha,
                                n_real_events=jnp.broadcast_to(stream.n_real_events,
                                                               (layer.n_out,)))
-    out_stream = extract_output_events(result.spike_mask, result.spike_event_idx,
-                                       result.s_spike, stream.event_times,
-                                       max_total_spikes=layer.max_out_spikes)
+    out_stream = extract_output_events_fc(result.spike_mask, result.spike_event_idx,
+                                          result.s_spike, stream.event_times,
+                                          max_total_spikes=layer.max_out_spikes)
     return result, out_stream
 
 

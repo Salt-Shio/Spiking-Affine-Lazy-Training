@@ -1,6 +1,6 @@
 """在 test set(或 val set)上評估一個已完成的訓練 run。
 
-訓練腳本(`example/train_conv_compressed.py`)只在訓練過程中看 val set、用它挑
+訓練腳本(`example/train.py`)只在訓練過程中看 val set、用它挑
 best_params。test set 是刻意分開、只在需要一個「最終、沒被調參污染」的數字時
 才碰的——所以獨立成這支腳本,不焊進訓練迴圈,也不會每次訓練自動跑。
 

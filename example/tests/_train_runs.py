@@ -7,7 +7,7 @@ import numpy as np
 
 from data.src.nmnist import CLASS_NAMES, NMNISTSplit
 from example.models.conv_net import build_network
-from example.train_conv_compressed import TrainResult, load_nmnist_data, train
+from example.train import TrainResult, load_nmnist_data, train
 from example.training.loop import TrainData, epoch_permutation
 from example.training.run_dir import make_exp_dir
 from example.utils import set_seed, split_raw_events, take_raw_events
@@ -167,7 +167,7 @@ def synthetic_cfg(run_name: str, seed: int, *, conv1: dict | None = None,
             ],
         },
         "train": {"lr": 1.0e-2, "epochs": epochs, "batch_size": SYNTH_BATCH_SIZE, "seed": seed,
-                  "max_steps_reestimate_every": 0, "weight_snapshot_every": 1},
+                  "shrink_check_every": 0, "weight_snapshot_every": 1},
     }
 
 

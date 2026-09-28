@@ -1,4 +1,4 @@
-"""驗證 stream.extract_output_events 同一時間戳記多來源並列時的排序規則:
+"""驗證 stream.extract_output_events_fc 同一時間戳記多來源並列時的排序規則:
 用 (times, spike_event_idx) 複合鍵排序,不是只用 times。
 
 反例(源自跟另一個 agent 討論時驗證過的具體案例):$p_0$(layer1 的神經元0)
@@ -32,7 +32,7 @@ import jax.numpy as jnp
 
 from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.stream import extract_output_events
+from salt_core.stream import extract_output_events_fc
 
 TOL = 1e-4
 
@@ -64,7 +64,7 @@ def test_tiebreak_uses_spike_event_idx_not_neuron_order():
     assert int(spike_event_idx[0, 0]) == 1, "p0 應該是被事件索引1(Y)觸發"
     assert int(spike_event_idx[1, 0]) == 0, "p1 應該是被事件索引0(X)觸發"
 
-    times, source_idx, gain, n_real_events = extract_output_events(
+    times, source_idx, gain, n_real_events = extract_output_events_fc(
         spike_mask, spike_event_idx, s_spike, event_times)
 
     assert int(n_real_events) == 2, n_real_events
@@ -115,7 +115,7 @@ def test_tiebreak_with_three_neurons_not_in_row_order():
     assert int(spike_event_idx[1, 0]) == 0, "B 應該是被事件索引0觸發"
     assert int(spike_event_idx[2, 0]) == 1, "C 應該是被事件索引1觸發"
 
-    times, source_idx, gain, n_real_events = extract_output_events(
+    times, source_idx, gain, n_real_events = extract_output_events_fc(
         spike_mask, spike_event_idx, s_spike, event_times)
 
     assert int(n_real_events) == 3, n_real_events

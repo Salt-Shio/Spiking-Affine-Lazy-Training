@@ -14,9 +14,9 @@ from salt_core.io import save_weights
 
 
 def make_exp_dir(run_name: str, exp_root: str) -> str:
-    """建 <exp_root>/conv_compressed_<run_name>_<時間戳>/train/,回傳 run 目錄。"""
+    """建 <exp_root>/<run_name>_<時間戳>/train/,回傳 run 目錄。"""
     date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    exp_dir = os.path.join(exp_root, f"conv_compressed_{run_name}_{date_str}")
+    exp_dir = os.path.join(exp_root, f"{run_name}_{date_str}")
     os.makedirs(os.path.join(exp_dir, TRAIN_DIRNAME), exist_ok=True)
     return exp_dir
 

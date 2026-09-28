@@ -54,7 +54,7 @@ def mask_pad_events(maps: AffineMap,
     identity 映射(a=1, b=0)。
 
     FC/conv 的佇列建構都要處理同一個問題:多層串接時,
-    extract_output_events 用「固定上限、後面補 pad 事件」表示不定長度的佇列,
+    extract_output_events_fc 用「固定上限、後面補 pad 事件」表示不定長度的佇列,
     pad 位置的 event_times/event_gain 不管算出什麼奇怪的值,都不該讓下游
     的膜電位變化或誤觸發 spike。蓋成 identity 之後,pad 位置對 associative
     scan 的合成結果完全沒有貢獻(a=1 表示不衰減、b=0 表示不加權重),純衰減

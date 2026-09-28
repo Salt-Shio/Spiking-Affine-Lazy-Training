@@ -2,7 +2,7 @@
 
 問題:FC 佇列建構用 event_source_idx(離散索引)從 W 查權重——索引操作
 對「被索引的 W」有梯度,但不會讓「產生這個事件的上一層神經元的權重」出現在
-算式裡。就算 stream.extract_output_events 全部改成純 JAX、正確合併排序,
+算式裡。就算 stream.extract_output_events_fc 全部改成純 JAX、正確合併排序,
 只要下一層的佇列還是「單純用索引查權重」,jax.grad 對上一層權重求出來的梯度
 永遠是 0——不是實作沒寫完整,是計算圖裡真的沒有這條邊。
 
@@ -12,7 +12,7 @@ atan_spike 算出來、forward 精確等於 1 的可微分量,乘進權重裡數
 上一層的權重重新出現在算式裡——跟 float/affine.py 的 soft reset (1-s)*x 是同一個技巧。
 
 例子:layer1 一顆神經元 p,三個各自只發一次事件的來源(沿用
-test_chunk_scan_gradient.py 的設定:tau=4,v_th=1.0,event_times=[0,1,5],
+test_scan_gradient.py 的設定:tau=4,v_th=1.0,event_times=[0,1,5],
 W1=[[0.6,0.6,0.9]]),p 在事件 1(t=1)fire。layer2 一顆神經元 q,只接 p 一個
 來源,W2=[[0.5]]。loss 直接用 v_final,q(layer2 沒 fire,純仿射,不用透過
 s_value)。
@@ -36,7 +36,7 @@ import jax.numpy as jnp
 
 from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.stream import extract_output_events
+from salt_core.stream import extract_output_events_fc
 
 TOL = 1e-3
 
@@ -60,7 +60,7 @@ def _two_layer_v_final_q(W1, event_times, event_source_idx, tau, v_th, alpha, W2
         maps1, v_th, chunk_size=1, max_steps=2, alpha=alpha,
         n_real_events=maps1.a.shape[1])
 
-    times2, src2, gain2, n_real_events2 = extract_output_events(
+    times2, src2, gain2, n_real_events2 = extract_output_events_fc(
         spike_mask, spike_event_idx, s_spike, event_times)
 
     maps2 = fc_float_values(build_fc_structure(times2, src2, n_real_events2),

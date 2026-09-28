@@ -1,7 +1,7 @@
 """用一個跟被測系統完全獨立、逐事件跑的序列參考實作(不用 float/affine.py 的
 associative_scan/chunk 化機制),拿中等規模(幾十筆事件、每層好幾顆神經元)
 的隨機資料當 oracle,交叉驗證真正的 FC 佇列建構+run_layer_forward+
-extract_output_events 串接管線,包括:
+extract_output_events_fc 串接管線,包括:
 
   1. 疊加兩次跨層(layer1->layer2->layer3),不是只驗證過一次
   2. 量夠大、多神經元的情況,不是只有手算得動的小例子
@@ -13,8 +13,8 @@ extract_output_events 串接管線,包括:
 當觸發事件時,輸出時間戳記會是精確相等的真同分——事件夠密集時真的會發生
 (不是理論上的邊界案例,調參這份測試資料時就實際踩到過),所以這裡的參考
 實作(_sequential_multi_layer)一樣要用 (times, step_idx) 複合鍵排序,跟
-stream.extract_output_events 用同一條 tie-break 規則,兩邊才對得起來。
-tie-break 規則本身的正確性(該排哪個在前)由 test_layer_chain_tiebreak.py
+stream.extract_output_events_fc 用同一條 tie-break 規則,兩邊才對得起來。
+tie-break 規則本身的正確性(該排哪個在前)由 test_stream_tiebreak.py
 系列獨立、確定性地覆蓋,這裡只是必須讓兩套實作用「同一條」規則,不重複驗證
 規則本身對不對。
 
@@ -32,7 +32,7 @@ import jax.numpy as jnp
 
 from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.stream import extract_output_events
+from salt_core.stream import extract_output_events_fc
 from salt_core.float.surrogate import atan_spike
 
 TOL = 2e-3
@@ -81,7 +81,7 @@ def _sequential_layer(event_times, event_source_idx, event_gain, W, tau, v_th, a
 
 def _sequential_multi_layer(event_times, event_source_idx, weight_matrices, tau, v_th, alpha):
     """串接多層 _sequential_layer,層與層之間用動態長度的 nonzero 手動合併,
-    排序用跟 stream.extract_output_events 完全一樣的 (times, step_idx)
+    排序用跟 stream.extract_output_events_fc 完全一樣的 (times, step_idx)
     複合鍵(lexsort 最後一個 key 是主鍵)——不能只用 times 排序:多個下游神經元
     共用同一顆上游神經元的同一次 fire 當觸發事件時,輸出時間戳記會是精確相等
     的真同分(不是量化造成的假同分),這種情況在事件夠密集時真的會發生
@@ -104,7 +104,7 @@ def _sequential_multi_layer(event_times, event_source_idx, weight_matrices, tau,
 
 
 # ---------------------------------------------------------------------------
-# 真正的 pipeline:FC 佇列建構 + run_layer_forward + extract_output_events
+# 真正的 pipeline:FC 佇列建構 + run_layer_forward + extract_output_events_fc
 # ---------------------------------------------------------------------------
 
 def _real_pipeline_multi_layer(event_times, event_source_idx, weight_matrices, tau, v_th,
@@ -120,7 +120,7 @@ def _real_pipeline_multi_layer(event_times, event_source_idx, weight_matrices, t
             maps, v_th, chunk_size=chunk_size, max_steps=max_steps, alpha=alpha,
             n_real_events=n_real_events)
         if li < len(weight_matrices) - 1:
-            times, source_idx, gain, n_real_events = extract_output_events(
+            times, source_idx, gain, n_real_events = extract_output_events_fc(
                 spike_mask, spike_event_idx, s_spike, times)
     return v_final, s_value
 

@@ -32,7 +32,7 @@ from salt_core.quant.backend import QuantBackend
 from salt_core.quant.calibrate import merge_v_ranges, v_abs_max_per_channel, v_range_per_channel
 from salt_core.quant.convert import LayerQuantSpec, build_quantized_params
 
-RUN_DIR = EXPERIMENTS_DIR / "conv_compressed_compressed_scale_10k_20260919_050446"
+RUN_DIR = EXPERIMENTS_DIR / "scale_10k_20260919_050446"
 GOLDEN_DIR = RUN_DIR / "golden"
 # 跟 e2e 訓練測試同一個容差
 V_FINAL_ATOL = 1e-4

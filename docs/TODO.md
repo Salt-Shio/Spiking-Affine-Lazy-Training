@@ -21,7 +21,7 @@
   量級,兩者都會平移膜電位的動態範圍),不同時做全組合實驗,依序處理、
   用實測準確率當每步的驗收標準,不是憑理論猜:
   1. **權重量化(目前這個 session 的範圍)。** 對現有 checkpoint(
-     `experiments/conv_compressed_compressed_scale_10k_20260919_050446/
+     `experiments/scale_10k_20260919_050446/
      train/params.npz`,val_accuracy 0.9275)做 per-layer/per-channel 權重
      分布分析(histogram、percentile/outlier),決定量化 scheme
      (symmetric/asymmetric、per-tensor vs per-channel、clip range)。先用
@@ -40,7 +40,7 @@
        就是動 25%~35%,邊際效益跟風險不成比例。
      - 只有兩層 conv,channel 耦合(conv1 輸出 channel 數 = conv2 輸入
        channel 數)代表沒有分散吸收的空間,牽一發動全身。
-     - 最新 checkpoint(`conv_compressed_compressed_scale_10k_20260919_050446`)
+     - 最新 checkpoint(`scale_10k_20260919_050446`)
        最後一個 epoch 逐神經元 dormant_frac:conv1≈0.497、conv2≈0.464。
        但這是逐神經元(空間位置 × channel 攤平)不是逐 channel,不能直接
        讀成「一半 channel 可砍」,要靠視覺化才能確定是不是空間稀疏
@@ -64,7 +64,7 @@
   另一個 fork 補跑)**:換到有 JAX/GPU 的環境,`salt_core/tests/test_quantize.py`
   12 個測試全過,`salt_core/quantize.py` 邏輯已確認正確,可以信任。新增
   `example/notebooks/weight_quantization_ptq.ipynb`:對
-  `conv_compressed_compressed_scale_10k_20260919_050446` 這個 checkpoint(
+  `scale_10k_20260919_050446` 這個 checkpoint(
   `best_params.npz`,baseline val_accuracy=0.9275)做權重分布 histogram/
   per-channel outlier 視覺化,再用 `quantize_params` 掃 bit-width/per-channel
   vs per-tensor/clip percentile,已對真實 checkpoint 跑通(不是只跑過
@@ -183,7 +183,7 @@
   用改名後的新版 `metrics.csv`(`archive/configs/verify_maxsteps.yaml`,2026-09-28 已刪除,見 git 歷史 `59d292f`;40 epochs)第一次
   被人眼看出來——這正是欄名改名/`plot_metrics.ipynb` 分組改版想要達成的效果
   (資料本身早就在,只是之前沒對齊、沒疊在一起看不出趨勢)。實際數字(見
-  `experiments/conv_compressed_compressed_maxsteps_verify_20260914_122946/train/metrics.csv`):
+  `experiments/maxsteps_verify_20260914_122946/train/metrics.csv`):
   epoch 26 是全程最好的一個 epoch(`val_accuracy=0.845`、`train_loss≈0.0002`,
   幾乎完美自信的分類器);epoch 27 三層 `grad_norm` 同時放大 10 倍以上
   (`out_grad_norm` 0.0017→0.032);epoch 28 徹底炸開(`out_grad_norm=2.74`、

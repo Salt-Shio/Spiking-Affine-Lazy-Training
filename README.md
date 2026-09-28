@@ -71,7 +71,7 @@ root solver;單狀態模型沒有這個性質(上面的引理),不需要那整�
 
 ```
 pip install -e . --no-deps          # 依賴清單見 requirements.txt
-python -m example.train_conv_compressed configs/conv/baseline.yaml
-python -m example.train_conv_compressed --resume experiments/<run 目錄>   # 行程當掉後接著練
+python -m example.train configs/conv/baseline.yaml
+python -m example.train --resume experiments/<run 目錄>   # 行程當掉後接著練
 pytest
 ```

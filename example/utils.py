@@ -1,7 +1,7 @@
 """共用小工具:決定性種子設定、git commit hash、批次評估、讀 run 紀錄跟權重、
 `experiments/<run>/` 底下的子資料夾命名。
 
-`train_conv_compressed.py`(訓練)跟 `eval_test.py`(事後評估)有兩處各自
+`train.py`(訓練)跟 `eval_test.py`(事後評估)有兩處各自
 刻了一份幾乎一樣的東西,收在這裡單一來源:
 
 - `make_evaluate`:分批 vmap 算 scores、導出 accuracy/loss/preds,兩邊本來

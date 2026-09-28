@@ -19,7 +19,7 @@ from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.conv import (build_conv_structure, conv_float_values, tile_channels,
                                           unravel_conv_source)
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.stream import extract_output_events, extract_output_events_compressed
+from salt_core.stream import extract_output_events_fc, extract_output_events_conv
 from salt_core.tests._reference import dense_conv_affine_map
 
 TOL = 1e-5
@@ -31,7 +31,7 @@ def _tol_close(a, b, tol=TOL):
     return bool(jnp.allclose(jnp.asarray(a), jnp.asarray(b), atol=tol))
 
 
-def _compressed_queue(event_times, x, y, c, W, tau, S, P, H_out, W_out, L, gain, n_real):
+def _conv_queue(event_times, x, y, c, W, tau, S, P, H_out, W_out, L, gain, n_real):
     """結構 + 浮點數值段。回傳 (maps, 逐神經元 n_real_events, 逐神經元 local_to_global_j)。"""
     oc = W.shape[0]
     structure = build_conv_structure(event_times, x, y, c, W.shape[2], S, P, H_out, W_out, L,
@@ -50,11 +50,11 @@ def _run_ref(event_times, x, y, c, W, tau, S, P, H_out, W_out, v_th, max_steps,
                               n_real_events=n_real)
 
 
-def _run_compressed(event_times, x, y, c, W, tau, S, P, H_out, W_out, L, v_th, max_steps,
-                     gain=None, n_real=None):
+def _run_conv(event_times, x, y, c, W, tau, S, P, H_out, W_out, L, v_th, max_steps,
+              gain=None, n_real=None):
     n_real = event_times.shape[0] if n_real is None else n_real
-    maps, n_real_per_neuron, _ = _compressed_queue(event_times, x, y, c, W, tau, S, P,
-                                                   H_out, W_out, L, gain, n_real)
+    maps, n_real_per_neuron, _ = _conv_queue(event_times, x, y, c, W, tau, S, P,
+                                             H_out, W_out, L, gain, n_real)
     return run_layer_forward(maps, v_th, chunk_size=max_steps, max_steps=max_steps,
                               n_real_events=n_real_per_neuron)
 
@@ -120,16 +120,16 @@ def test_reference_anchored_n3_multiple_candidates_per_axis():
 # 3. 壓縮版 vs 參考:幾何變化
 # ============================================================================
 
-def _assert_compressed_matches_ref(et, x, y, c, W, S, P, H_out, W_out, L=None,
-                                    v_th=1e9, gain=None, n_real=None):
+def _assert_conv_matches_ref(et, x, y, c, W, S, P, H_out, W_out, L=None,
+                             v_th=1e9, gain=None, n_real=None):
     n_events = int(et.shape[0])
     L = n_events if L is None else L
     ref = _run_ref(et, x, y, c, W, TAU, S, P, H_out, W_out, v_th, n_events, gain, n_real)
-    comp = _run_compressed(et, x, y, c, W, TAU, S, P, H_out, W_out, L, v_th, L, gain, n_real)
+    comp = _run_conv(et, x, y, c, W, TAU, S, P, H_out, W_out, L, v_th, L, gain, n_real)
     assert _tol_close(ref.v_final, comp.v_final, tol=1e-4), (ref.v_final, comp.v_final)
 
 
-def test_compressed_matches_ref_random_various_geometry():
+def test_matches_ref_random_various_geometry():
     """幾組隨機事件 x 幾種 (K,S,P),壓縮版 v_final 要跟參考一致。"""
     for seed, (K, S, P, H_out, W_out) in enumerate([
         (3, 2, 1, 4, 4), (1, 1, 0, 5, 5), (5, 2, 2, 3, 3), (3, 1, 1, 6, 6),
@@ -143,12 +143,12 @@ def test_compressed_matches_ref_random_various_geometry():
         y = jax.random.randint(k_y, (n_events,), 0, H_in).astype(jnp.int32)
         c = jax.random.randint(k_c, (n_events,), 0, 2).astype(jnp.int32)
         W = jax.random.uniform(k_w, (3, 2, K, K), minval=-1.0, maxval=1.0)
-        _assert_compressed_matches_ref(et, x, y, c, W, S, P, H_out, W_out, L=n_events)
+        _assert_conv_matches_ref(et, x, y, c, W, S, P, H_out, W_out, L=n_events)
 
 
 # ============================================================================
 # 3b. 跨層梯度(atan surrogate 斜率手算)——原 test_conv_queue.py 的
-#     conv->conv / conv->FC 手算梯度,改用壓縮版 + extract_output_events_compressed。
+#     conv->conv / conv->FC 手算梯度,改用壓縮版 + extract_output_events_conv。
 # ============================================================================
 
 # 共用小場景:K=3,S=2,P=1,H_out=W_out=3;W1[0,0,ky,kx]=ky*3+kx+1(1..9)。
@@ -167,15 +167,15 @@ def _atan_slope(z, alpha=2.0):
 
 def _conv1_fire_then_extract(W1):
     """conv1:單一事件 (1,1,c=0,t=1),v_th=8.5 -> 只有 flat id=0(b=9.0)fire,
-    s_spike forward 精確 1.0,觸發時間 t=1。回傳 extract_output_events_compressed
+    s_spike forward 精確 1.0,觸發時間 t=1。回傳 extract_output_events_conv
     的結果。"""
     et = jnp.array([1.0]); x = jnp.array([1]); y = jnp.array([1]); c = jnp.array([0])
-    maps, n_real_per_neuron, local_to_global_j = _compressed_queue(
+    maps, n_real_per_neuron, local_to_global_j = _conv_queue(
         et, x, y, c, W1, TAU, _S, _P, _HW, _HW, 1, None, et.shape[0])
     r = run_layer_forward(maps, v_th=8.5, chunk_size=1, max_steps=1,
                            n_real_events=n_real_per_neuron)
-    return extract_output_events_compressed(r.spike_mask, r.spike_event_idx, r.s_spike, et,
-                                             local_to_global_j, max_total_spikes=9)
+    return extract_output_events_conv(r.spike_mask, r.spike_event_idx, r.s_spike, et,
+                                      local_to_global_j, max_total_spikes=9)
 
 
 def test_conv_to_conv_cross_layer_gradient_matches_hand_calc():
@@ -186,7 +186,7 @@ def test_conv_to_conv_cross_layer_gradient_matches_hand_calc():
         ev = _conv1_fire_then_extract(W1)
         x2, y2, c2 = unravel_conv_source(ev.event_source_idx, _HW, _HW)
         W2 = (10 + jnp.arange(9, dtype=jnp.float32)).reshape(1, 1, 3, 3)
-        maps2, n_real_per_neuron2, _ = _compressed_queue(
+        maps2, n_real_per_neuron2, _ = _conv_queue(
             ev.event_times, x2, y2, c2, W2, TAU, _S, _P, _HW, _HW, 1, ev.event_gain,
             ev.n_real_events)
         r2 = run_layer_forward(maps2, v_th=1e9, chunk_size=1, max_steps=1,

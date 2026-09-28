@@ -22,11 +22,13 @@ from example.checkpoint import Checkpointer
 from example.models.conv_net import build_network
 from example.tests._train_runs import (SYNTH_GROW, batch_needs, first_batch_needed, run_train,
                                        synthetic_cfg, synthetic_setup)
-from example.train_conv_compressed import train
+from example.paths import CONFIGS_DIR
+from example.train import check_config_keys, train
 from example.training.loss import cross_entropy_loss
 from example.training.optim import build_learning_rate, build_optimizer
 from example.training.run_dir import make_exp_dir
-from example.utils import TRAIN_DIRNAME, WEIGHTS_DIRNAME, split_raw_events, weight_snapshot_path
+from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, load_config, split_raw_events,
+                           weight_snapshot_path)
 from salt_core.io import load_weights, network_from_dict
 
 _TRAIN_RESULT_TOL = 1e-4
@@ -234,6 +236,30 @@ def test_unknown_dormant_layer_is_rejected(synth, run_root):
     cfg = synthetic_cfg("bad_dormant", synth.seed, epochs=1)
     cfg["train"]["dormant_layers"] = ["conv1", "nope"]
     with pytest.raises(ValueError, match="nope"):
+        run_train(cfg, synth.data, run_root)
+
+
+# ============================================================================
+# config 的 key 檢查
+# ============================================================================
+
+def test_baseline_config_passes_key_check():
+    check_config_keys(load_config(str(CONFIGS_DIR / "conv" / "baseline.yaml")))
+
+
+@pytest.mark.parametrize("section", ["train", "data", "model"])
+def test_unknown_config_key_is_rejected(section):
+    cfg = load_config(str(CONFIGS_DIR / "conv" / "baseline.yaml"))
+    cfg[section]["weight_decy"] = 1.0e-2
+    with pytest.raises(ValueError, match=f"{section} .*weight_decy"):
+        check_config_keys(cfg)
+
+
+def test_old_shrink_knob_name_is_rejected(synth, run_root):
+    """改名前的 key 不能被靜默忽略,train() 開訓前就要擋下。"""
+    cfg = synthetic_cfg("old_knob", synth.seed, epochs=1)
+    cfg["train"]["max_steps_reestimate_every"] = 1
+    with pytest.raises(ValueError, match="max_steps_reestimate_every"):
         run_train(cfg, synth.data, run_root)
 
 

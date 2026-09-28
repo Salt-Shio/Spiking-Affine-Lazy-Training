@@ -33,7 +33,7 @@ def unravel_conv_source(event_source_idx: jax.Array, H_in: int,
     """扁平 neuron id -> (x,y,c) 三元組,對應推導文件第 9.2 節(第 6 節攤平
     公式的反運算)。上一層的 OC_in 會自動變成這一層的 IC,不用額外傳。
 
-    只在 conv 接 conv 時需要呼叫(上一層 stream.extract_output_events
+    只在 conv 接 conv 時需要呼叫(上一層 stream.extract_output_events_fc
     吐出來的是扁平 id);第一層例外——資料端原生就給 (x,y,c),不經過這個
     函式(第 9.3 節)。
 

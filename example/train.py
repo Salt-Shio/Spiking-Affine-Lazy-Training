@@ -4,8 +4,8 @@
 理由見 docs/math/conv事件佇列壓縮版推導.md;縮小的規則見 docs/規格書.md。
 
 用法(路徑相對於 repo 根目錄,或給絕對路徑):
-  python -m example.train_conv_compressed configs/conv/baseline.yaml
-  python -m example.train_conv_compressed --resume experiments/<run 目錄>    # 從 checkpoint 接著練
+  python -m example.train configs/conv/baseline.yaml
+  python -m example.train --resume experiments/<run 目錄>    # 從 checkpoint 接著練
 """
 import argparse
 import datetime
@@ -39,6 +39,14 @@ from salt_core.network import Network
 # dormant 統計的固定探測樣本數(train split 的前幾筆)
 _N_PROBE = 128
 
+# config 各節認得的 key。model.layers 每一層的 key 由層類別自己檢查。
+_TOP_KEYS = {"run_name", "model", "data", "train"}
+_MODEL_KEYS = {"decoder", "input_shape", "layers"}
+_DATA_KEYS = {"max_events", "seed_train", "seed_val", "train_size", "val_size"}
+_TRAIN_KEYS = {"lr", "epochs", "batch_size", "seed", "weight_decay", "lr_cosine_decay",
+               "lr_cosine_alpha", "grad_clip_norm", "score_cap", "dormant_layers",
+               "weight_snapshot_every", "shrink_check_every"}
+
 
 class TrainResult(NamedTuple):
     exp_dir: str
@@ -55,6 +63,17 @@ def load_nmnist_data(data_cfg: dict) -> TrainData:
                                   which="train"),
         val=dataset.build_split(seed=data_cfg["seed_val"], n_samples=data_cfg["val_size"],
                                 which="val"))
+
+
+def check_config_keys(cfg: dict) -> None:
+    """config 裡有不認得的 key 時 raise ValueError,訊息寫出 key 跟所在的節。"""
+    sections = [("最外層", cfg, _TOP_KEYS), ("model", cfg.get("model") or {}, _MODEL_KEYS),
+                ("data", cfg.get("data") or {}, _DATA_KEYS),
+                ("train", cfg.get("train") or {}, _TRAIN_KEYS)]
+    for where, section, allowed in sections:
+        unknown = sorted(set(section) - allowed)
+        if unknown:
+            raise ValueError(f"config 的 {where} 有不認得的 key:{unknown},認得的是 {sorted(allowed)}")
 
 
 def _make_context(cfg: dict, data: TrainData, network: Network, exp_dir: str) -> RunContext:
@@ -82,7 +101,7 @@ def _make_context(cfg: dict, data: TrainData, network: Network, exp_dir: str) ->
         optimizer=build_optimizer(train_cfg, n_train, batch_size), decoder=decoder,
         score_cap=train_cfg.get("score_cap"), dormant_names=dormant_names,
         capacity=CapacityControl(build_growth_policies(model_cfg, layers),
-                                 int(train_cfg.get("max_steps_reestimate_every", 1))),
+                                 int(train_cfg.get("shrink_check_every", 1))),
         metrics_log=MetricsLog([layer.name for layer in layers], dormant_names,
                                total_epochs=train_cfg["epochs"]),
         checkpointer=Checkpointer(os.path.join(exp_dir, TRAIN_DIRNAME, "checkpoint.npz")),
@@ -113,8 +132,10 @@ def train(cfg: dict, data: TrainData, exp_dir: str) -> TrainResult:
     """照 cfg(model、train 區塊)在 data 上訓練,產出寫進 exp_dir(要先建好 train/ 子目錄)。
 
     exp_dir 有 checkpoint 時從它接著練。開訓時先寫一份 run.yaml(config 快照),
-    結束時整份覆寫成完整紀錄。exp_dir 的 run 已經跑完(有 params.npz)時 raise ValueError。
+    結束時整份覆寫成完整紀錄。exp_dir 的 run 已經跑完(有 params.npz)、config 有不認得的
+    key 時 raise ValueError。
     """
+    check_config_keys(cfg)
     if os.path.isfile(params_path(exp_dir)):
         raise ValueError(f"{exp_dir} 已經跑完,不能再接著練")
     network = build_network(cfg["model"])

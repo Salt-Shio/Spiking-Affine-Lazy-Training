@@ -193,8 +193,8 @@ def _run_ref(event_times, x, y, c, W, v_th, max_steps, n_real_events=None, event
                               n_real_events=n_real_events)
 
 
-def _run_compressed(event_times, x, y, c, W, v_th, max_queue_len, max_steps,
-                     n_real_events=None, event_gain=None):
+def _run_conv(event_times, x, y, c, W, v_th, max_queue_len, max_steps,
+              n_real_events=None, event_gain=None):
     """回傳 (result, structure);W 的 oc 都是 1 時,structure 的列就是神經元。"""
     n_real_events = event_times.shape[0] if n_real_events is None else n_real_events
     structure = build_conv_structure(event_times, x, y, c, K, S, P, H_OUT, W_OUT,
@@ -219,11 +219,11 @@ def _ref_vfinal_all_affine(event_times, x, y, c, W, n_real_events=None, event_ga
     return v
 
 
-def _grad_compressed(event_times, x, y, c, v_th, max_queue_len, max_steps, neuron_idx=0,
-                      n_real_events=None, event_gain=None):
+def _grad_conv(event_times, x, y, c, v_th, max_queue_len, max_steps, neuron_idx=0,
+               n_real_events=None, event_gain=None):
     def loss_fn(W):
-        result, _ = _run_compressed(event_times, x, y, c, W, v_th, max_queue_len, max_steps,
-                                     n_real_events, event_gain)
+        result, _ = _run_conv(event_times, x, y, c, W, v_th, max_queue_len, max_steps,
+                              n_real_events, event_gain)
         return result.v_final[neuron_idx]
     return jax.grad(loss_fn)
 
@@ -255,7 +255,7 @@ def _grad_ref_autodiff_firing(event_times, x, y, c, v_th, max_steps, neuron_idx=
 _GRAD_TOL = 2e-4  # 有限差分(eps=1e-4、參考 forward numpy float64)的精度量級
 
 
-def test_compressed_matches_dense_single_event():
+def test_matches_dense_single_event():
     """單一事件、4 個候選都合法(跟 test_conv_queue.py 的
     test_single_event_all_four_candidates_valid 同一個場景)。"""
     W = _make_weight()
@@ -263,7 +263,7 @@ def test_compressed_matches_dense_single_event():
     x = jnp.array([1]); y = jnp.array([1]); c = jnp.array([0])
 
     ref = _run_ref(event_times, x, y, c, W, v_th=1e9, max_steps=1)
-    result, structure = _run_compressed(event_times, x, y, c, W, v_th=1e9,
+    result, structure = _run_conv(event_times, x, y, c, W, v_th=1e9,
                                   max_queue_len=1, max_steps=1)
 
     assert bool(jnp.allclose(ref.v_final, result.v_final, atol=TOL)), \
@@ -274,7 +274,7 @@ def test_compressed_matches_dense_single_event():
     assert bool(jnp.allclose(result.v_final, expected, atol=TOL)), result.v_final
 
 
-def test_compressed_matches_dense_two_events_with_degenerate_catchup():
+def test_matches_dense_two_events_with_degenerate_catchup():
     """兩筆事件、邊界事件只有 1/4 候選合法(跟 test_conv_queue.py 的
     test_two_events_boundary_event_has_fewer_valid_candidates 同一個場景)。
     max_queue_len 刻意取 3(比任何神經元真正需要的 2 還多),逼出 catch-up
@@ -286,7 +286,7 @@ def test_compressed_matches_dense_two_events_with_degenerate_catchup():
     x = jnp.array([1, 0]); y = jnp.array([1, 0]); c = jnp.array([0, 0])
 
     ref = _run_ref(event_times, x, y, c, W, v_th=1e9, max_steps=2)
-    result, structure = _run_compressed(event_times, x, y, c, W, v_th=1e9,
+    result, structure = _run_conv(event_times, x, y, c, W, v_th=1e9,
                                   max_queue_len=3, max_steps=3)
 
     assert bool(jnp.allclose(ref.v_final, result.v_final, atol=TOL)), \
@@ -297,7 +297,7 @@ def test_compressed_matches_dense_two_events_with_degenerate_catchup():
     assert bool(jnp.allclose(result.v_final, expected, atol=TOL)), result.v_final
 
 
-def test_compressed_matches_dense_with_genuine_non_degenerate_catchup():
+def test_matches_dense_with_genuine_non_degenerate_catchup():
     """三筆事件,刻意讓某個神經元的最後相關事件早於全域最後一筆事件,逼出
     真正非退化的 catch-up(不是上一個測試那種剛好等於 0 的退化情況)。
 
@@ -309,7 +309,7 @@ def test_compressed_matches_dense_with_genuine_non_degenerate_catchup():
     x = jnp.array([1, 0, 2]); y = jnp.array([1, 0, 2]); c = jnp.array([0, 0, 0])
 
     ref = _run_ref(event_times, x, y, c, W, v_th=1e9, max_steps=3)
-    result, structure = _run_compressed(event_times, x, y, c, W, v_th=1e9,
+    result, structure = _run_conv(event_times, x, y, c, W, v_th=1e9,
                                   max_queue_len=3, max_steps=3)
 
     assert bool(jnp.allclose(ref.v_final, result.v_final, atol=TOL)), \
@@ -321,7 +321,7 @@ def test_compressed_matches_dense_with_genuine_non_degenerate_catchup():
     assert_allclose(result.v_final[1], 2.21484375, "idx1 用到非退化 catch-up")
 
 
-def test_compressed_matches_dense_with_pad_events():
+def test_matches_dense_with_pad_events():
     """加一筆 pad 事件(座標 (0,0,0),偽裝合法座標,密集版第 8.1 節的危險
     在壓縮版一樣要擋)。用 n_real_events=2 告訴兩個版本只有前兩筆事件是真的,
     第三筆(pad)不該被壓縮版當成任何神經元的真 tap。"""
@@ -332,7 +332,7 @@ def test_compressed_matches_dense_with_pad_events():
 
     ref = _run_ref(event_times, x, y, c, W, v_th=1e9, max_steps=3,
                         n_real_events=n_real_events)
-    result, structure = _run_compressed(event_times, x, y, c, W, v_th=1e9,
+    result, structure = _run_conv(event_times, x, y, c, W, v_th=1e9,
                                   max_queue_len=3, max_steps=3,
                                   n_real_events=n_real_events)
 
@@ -349,7 +349,7 @@ def test_compressed_matches_dense_with_pad_events():
         "idx0 的兩個真實 tap 應該是事件 0、事件 1,pad 事件(j=2)不該出現"
 
 
-def test_compressed_neuron_with_zero_real_events_matches_dense_zero():
+def test_neuron_with_zero_real_events_matches_dense_zero():
     """邊界情況:某個神經元完全沒有相關事件(第 1 階段測試重點之一)。單一
     事件只碰得到 4 個角落神經元,中心以外、四角以外的神經元(例如 idx2)
     完全沒有候選,n_real 應該是 0,v_final 應該是 0,不該 crash/NaN。"""
@@ -358,7 +358,7 @@ def test_compressed_neuron_with_zero_real_events_matches_dense_zero():
     x = jnp.array([1]); y = jnp.array([1]); c = jnp.array([0])
 
     ref = _run_ref(event_times, x, y, c, W, v_th=1e9, max_steps=1)
-    result, structure = _run_compressed(event_times, x, y, c, W, v_th=1e9,
+    result, structure = _run_conv(event_times, x, y, c, W, v_th=1e9,
                                   max_queue_len=1, max_steps=1)
 
     assert int(structure.n_real_events[2]) == 0
@@ -367,7 +367,7 @@ def test_compressed_neuron_with_zero_real_events_matches_dense_zero():
     assert not bool(jnp.any(jnp.isnan(result.v_final))), "不該出現 NaN"
 
 
-def test_compressed_exactly_fills_max_queue_len_no_padding_needed():
+def test_exactly_fills_max_queue_len_no_padding_needed():
     """邊界情況:某個神經元收到的真實 tap 數剛好等於 max_queue_len,完全
     沒有 catch-up/identity 欄位可補(第 1 階段測試重點之一)。用兩筆事件都
     落在 idx0,max_queue_len 剛好設成 2。"""
@@ -376,7 +376,7 @@ def test_compressed_exactly_fills_max_queue_len_no_padding_needed():
     x = jnp.array([1, 1]); y = jnp.array([1, 1]); c = jnp.array([0, 0])  # 兩筆都在同一個像素
 
     ref = _run_ref(event_times, x, y, c, W, v_th=1e9, max_steps=2)
-    result, structure = _run_compressed(event_times, x, y, c, W, v_th=1e9,
+    result, structure = _run_conv(event_times, x, y, c, W, v_th=1e9,
                                   max_queue_len=2, max_steps=2)
 
     assert int(structure.n_real_events[0]) == 2, "idx0 應該收到剛好 2 筆真實事件,等於 max_queue_len"
@@ -384,7 +384,7 @@ def test_compressed_exactly_fills_max_queue_len_no_padding_needed():
         (ref.v_final, result.v_final)
 
 
-def test_compressed_oc_independent_candidacy_only_weight_differs():
+def test_oc_independent_candidacy_only_weight_differs():
     """第 1 節:候選篩選/local_to_global_j/n_real_events 應該完全不受 oc
     影響,只有 b(權重)不同——用 OC=2、兩個 channel 權重值差很多,確認
     a、local_to_global_j、n_real_events 在兩個 oc 對應的 row 上完全一樣,
@@ -421,7 +421,7 @@ def test_compressed_oc_independent_candidacy_only_weight_differs():
     assert abs(float(b_oc0) - float(b_oc1)) > 1.0, "不同 oc 的權重差很大,b 應該明顯不同"
 
 
-def test_compressed_matches_dense_on_realistic_random_case():
+def test_matches_dense_on_realistic_random_case():
     """比手算例子更大規模的隨機案例(第 1 階段測試重點:「壓縮版 vs 密集版
     v_final 一致性(隨機案例)」)。多筆事件、隨機座標/權重,max_queue_len
     留寬(等於全域事件數,保證不會截斷),驗證壓縮版跟密集版逐神經元
@@ -444,21 +444,21 @@ def test_compressed_matches_dense_on_realistic_random_case():
         W = jax.random.uniform(k_w, (OC, IC, K, K), minval=-1.0, maxval=1.0)
 
         ref = _run_ref(event_times, x, y, c, W, v_th=1e9, max_steps=n_events)
-        result, structure = _run_compressed(event_times, x, y, c, W, v_th=1e9,
+        result, structure = _run_conv(event_times, x, y, c, W, v_th=1e9,
                                       max_queue_len=n_events, max_steps=n_events)
 
         assert bool(jnp.allclose(ref.v_final, result.v_final, atol=1e-4)), \
             (seed, ref.v_final, result.v_final)
 
         grad_ref = _fd_grad_ref_wrt_W(event_times, x, y, c, W, reduce=lambda v: v[0])
-        grad_compressed = _grad_compressed(event_times, x, y, c, v_th=1e9,
-                                            max_queue_len=n_events, max_steps=n_events)(W)
-        assert bool(jnp.allclose(grad_ref, grad_compressed, atol=_GRAD_TOL)), \
-            (seed, grad_ref, grad_compressed)
+        grad_conv = _grad_conv(event_times, x, y, c, v_th=1e9,
+                               max_queue_len=n_events, max_steps=n_events)(W)
+        assert bool(jnp.allclose(grad_ref, grad_conv, atol=_GRAD_TOL)), \
+            (seed, grad_ref, grad_conv)
 
 
-def test_compressed_gradient_matches_dense_pure_affine():
-    """沿用 test_compressed_matches_dense_two_events_with_degenerate_catchup
+def test_gradient_matches_dense_pure_affine():
+    """沿用 test_matches_dense_two_events_with_degenerate_catchup
     的兩事件邊界場景(v_th=1e9,不 fire,純仿射),loss=v_final[0]。比對
     整個 W 的梯度陣列(不是只挑密集版原本手算過的兩個位置)——壓縮版正確
     與否要看每個位置都對,不能只挑巧合對的位置。密集版本身已經被驗證過,
@@ -467,14 +467,14 @@ def test_compressed_gradient_matches_dense_pure_affine():
     x = jnp.array([1, 0]); y = jnp.array([1, 0]); c = jnp.array([0, 0])
 
     grad_ref = _fd_grad_ref_wrt_W(event_times, x, y, c, _make_weight(), reduce=lambda v: v[0])
-    grad_compressed = _grad_compressed(event_times, x, y, c, v_th=1e9,
-                                        max_queue_len=3, max_steps=3)(_make_weight())
+    grad_conv = _grad_conv(event_times, x, y, c, v_th=1e9,
+                           max_queue_len=3, max_steps=3)(_make_weight())
 
-    assert bool(jnp.allclose(grad_ref, grad_compressed, atol=_GRAD_TOL)), \
-        (grad_ref, grad_compressed)
+    assert bool(jnp.allclose(grad_ref, grad_conv, atol=_GRAD_TOL)), \
+        (grad_ref, grad_conv)
 
 
-def test_compressed_dropped_candidate_gradient_matches_dense():
+def test_dropped_candidate_gradient_matches_dense():
     """沿用密集版 test_dropped_candidate_gradient_is_exactly_zero 的邊界事件
     場景(單一事件 (0,0,c=0,t=1),k=-1 wraparound,3 個候選會被判定不合法、
     丟進 _compress_candidates 的 sentinel/trash 那組)。這條路徑(候選被排序
@@ -486,21 +486,21 @@ def test_compressed_dropped_candidate_gradient_matches_dense():
     x = jnp.array([0]); y = jnp.array([0]); c = jnp.array([0])
 
     grad_ref = _fd_grad_ref_wrt_W(event_times, x, y, c, _make_weight(), reduce=lambda v: v[0])
-    grad_compressed = _grad_compressed(event_times, x, y, c, v_th=1e9,
-                                        max_queue_len=1, max_steps=1)(_make_weight())
+    grad_conv = _grad_conv(event_times, x, y, c, v_th=1e9,
+                           max_queue_len=1, max_steps=1)(_make_weight())
 
     # 唯一真實 tap W[0,0,1,1] 梯度 1.0;3 個只被丟棄候選(k=-1 wraparound)碰過的
     # 位置,壓縮版 autodiff 要精確給 0(mode='drop' 不留梯度)。
-    assert_allclose(grad_compressed[0, 0, 1, 1], 1.0, "唯一真實 tap 的梯度")
+    assert_allclose(grad_conv[0, 0, 1, 1], 1.0, "唯一真實 tap 的梯度")
     for ky, kx in [(1, 2), (2, 1), (2, 2)]:
-        assert_allclose(grad_compressed[0, 0, ky, kx], 0.0,
+        assert_allclose(grad_conv[0, 0, ky, kx], 0.0,
                          f"W[0,0,{ky},{kx}] 只被丟棄候選碰過,壓縮版梯度應該精確是 0")
-    assert bool(jnp.allclose(grad_ref, grad_compressed, atol=_GRAD_TOL)), \
-        (grad_ref, grad_compressed)
+    assert bool(jnp.allclose(grad_ref, grad_conv, atol=_GRAD_TOL)), \
+        (grad_ref, grad_conv)
 
 
-def test_compressed_gradient_matches_dense_with_genuine_catchup():
-    """沿用 test_compressed_matches_dense_with_genuine_non_degenerate_catchup
+def test_gradient_matches_dense_with_genuine_catchup():
+    """沿用 test_matches_dense_with_genuine_non_degenerate_catchup
     的三事件場景(idx1 真正用到非退化 catch-up:a 只依賴時間差、不依賴 W)。
     確認 catch-up 那一格不會意外洩漏梯度給某個 W 位置、也不會意外阻斷本來
     該有的梯度——密集版同一個場景本來就會算出正確梯度,直接拿來比。"""
@@ -508,15 +508,15 @@ def test_compressed_gradient_matches_dense_with_genuine_catchup():
     x = jnp.array([1, 0, 2]); y = jnp.array([1, 0, 2]); c = jnp.array([0, 0, 0])
 
     grad_ref = _fd_grad_ref_wrt_W(event_times, x, y, c, _make_weight(), reduce=lambda v: v[1])
-    grad_compressed = _grad_compressed(event_times, x, y, c, v_th=1e9, max_queue_len=3,
-                                        max_steps=3, neuron_idx=1)(_make_weight())
+    grad_conv = _grad_conv(event_times, x, y, c, v_th=1e9, max_queue_len=3,
+                           max_steps=3, neuron_idx=1)(_make_weight())
 
-    assert bool(jnp.allclose(grad_ref, grad_compressed, atol=_GRAD_TOL)), \
-        (grad_ref, grad_compressed)
+    assert bool(jnp.allclose(grad_ref, grad_conv, atol=_GRAD_TOL)), \
+        (grad_ref, grad_conv)
 
 
-def test_compressed_gradient_matches_dense_with_pad_events():
-    """沿用 test_compressed_matches_dense_with_pad_events 的 pad 事件場景
+def test_gradient_matches_dense_with_pad_events():
+    """沿用 test_matches_dense_with_pad_events 的 pad 事件場景
     (n_real_events)。確認這階段自己延伸補的「事件必須是真的」判斷,沒有讓
     假事件的座標意外洩漏梯度進 W(pad 事件座標 (0,0) 跟事件 1 相同,如果
     pad 過濾漏做,pad 事件會被當成第 3 個真 tap,梯度會多算進一條不該有的
@@ -527,11 +527,11 @@ def test_compressed_gradient_matches_dense_with_pad_events():
 
     grad_ref = _fd_grad_ref_wrt_W(event_times, x, y, c, _make_weight(), reduce=lambda v: v[0],
                                    n_real_events=n_real_events)
-    grad_compressed = _grad_compressed(event_times, x, y, c, v_th=1e9, max_queue_len=3,
-                                        max_steps=3, n_real_events=n_real_events)(_make_weight())
+    grad_conv = _grad_conv(event_times, x, y, c, v_th=1e9, max_queue_len=3,
+                           max_steps=3, n_real_events=n_real_events)(_make_weight())
 
-    assert bool(jnp.allclose(grad_ref, grad_compressed, atol=_GRAD_TOL)), \
-        (grad_ref, grad_compressed)
+    assert bool(jnp.allclose(grad_ref, grad_conv, atol=_GRAD_TOL)), \
+        (grad_ref, grad_conv)
 
 
 # ============================================================================
@@ -542,7 +542,7 @@ def test_compressed_gradient_matches_dense_with_pad_events():
 # 真的 fire、經過 atan_spike surrogate 那條梯度路徑,完全沒被驗證過。
 # ============================================================================
 
-def test_compressed_matches_dense_spike_details_and_gradient_when_neuron_fires():
+def test_matches_dense_spike_details_and_gradient_when_neuron_fires():
     """5 筆事件,v_th 調到會讓 idx0 在佇列中段(不是第一筆)真的 fire、
     reset,之後還有更多欄位要繼續處理(真 tap、catch-up、identity 都有)。
 
@@ -568,7 +568,7 @@ def test_compressed_matches_dense_spike_details_and_gradient_when_neuron_fires()
     max_queue_len = 5  # 留寬到等於全域事件數,這個測試的重點不是 L 太小截斷
 
     ref = _run_ref(event_times, x, y, c, W, v_th, max_steps=5)
-    result, structure = _run_compressed(event_times, x, y, c, W, v_th, max_queue_len, max_steps=5)
+    result, structure = _run_conv(event_times, x, y, c, W, v_th, max_queue_len, max_steps=5)
 
     # 前置確認:idx0 真的如預期在局部欄位1(不是欄位0)fire,且局部欄位1
     # 對應的全域 j 是 2,不是 1——這是這個測試場景成立的前提。
@@ -588,18 +588,18 @@ def test_compressed_matches_dense_spike_details_and_gradient_when_neuron_fires()
     # spike_event_idx 只在 spike_mask=True 的位置有意義(docstring 明講)。
     # 把壓縮版的局部欄位透過 structure.local_to_global_j 轉成全域 j,拿去跟密集版
     # (本來就是全域 j)比對,只比 spike_mask 為真的位置。
-    global_j_from_compressed = jnp.take_along_axis(
+    global_j_from_conv = jnp.take_along_axis(
         structure.local_to_global_j, result.spike_event_idx, axis=1)
     assert bool(jnp.all(jnp.where(
-        result.spike_mask, global_j_from_compressed == ref.spike_event_idx, True))), \
-        (global_j_from_compressed, ref.spike_event_idx, result.spike_mask)
+        result.spike_mask, global_j_from_conv == ref.spike_event_idx, True))), \
+        (global_j_from_conv, ref.spike_event_idx, result.spike_mask)
 
     grad_ref = _grad_ref_autodiff_firing(event_times, x, y, c, v_th, max_steps=5,
                                           neuron_idx=0)(W)
-    grad_compressed = _grad_compressed(event_times, x, y, c, v_th, max_queue_len, max_steps=5,
-                                        neuron_idx=0)(W)
-    assert bool(jnp.allclose(grad_ref, grad_compressed, atol=1e-4)), \
-        (grad_ref, grad_compressed)
+    grad_conv = _grad_conv(event_times, x, y, c, v_th, max_queue_len, max_steps=5,
+                           neuron_idx=0)(W)
+    assert bool(jnp.allclose(grad_ref, grad_conv, atol=1e-4)), \
+        (grad_ref, grad_conv)
 
 
 # ============================================================================
@@ -609,7 +609,7 @@ def test_compressed_matches_dense_spike_details_and_gradient_when_neuron_fires()
 # build_conv_queue(event_gain=g) 已驗證過」當基準,比對壓縮版帶同一個 g。
 # ============================================================================
 
-def test_compressed_matches_dense_with_event_gain():
+def test_matches_dense_with_event_gain():
     """隨機多事件案例,帶一個非全 1 的 event_gain(每個全域事件一個增益)。
     比對壓縮版 vs 密集版:v_final 逐神經元一致、整個 W 的梯度一致(多個
     seed——event_gain 用 safe_j gather,跟座標/權重 gather 同一個索引,某些
@@ -632,22 +632,22 @@ def test_compressed_matches_dense_with_event_gain():
 
         ref = _run_ref(event_times, x, y, c, W, v_th=1e9, max_steps=n_events,
                             event_gain=event_gain)
-        result, _ = _run_compressed(event_times, x, y, c, W, v_th=1e9,
-                                     max_queue_len=n_events, max_steps=n_events,
-                                     event_gain=event_gain)
+        result, _ = _run_conv(event_times, x, y, c, W, v_th=1e9,
+                              max_queue_len=n_events, max_steps=n_events,
+                              event_gain=event_gain)
         assert bool(jnp.allclose(ref.v_final, result.v_final, atol=1e-4)), \
             (seed, ref.v_final, result.v_final)
 
         grad_ref = _fd_grad_ref_wrt_W(event_times, x, y, c, W, reduce=lambda v: v[0],
                                        event_gain=event_gain)
-        grad_compressed = _grad_compressed(event_times, x, y, c, v_th=1e9,
-                                            max_queue_len=n_events, max_steps=n_events,
-                                            event_gain=event_gain)(W)
-        assert bool(jnp.allclose(grad_ref, grad_compressed, atol=_GRAD_TOL)), \
-            (seed, grad_ref, grad_compressed)
+        grad_conv = _grad_conv(event_times, x, y, c, v_th=1e9,
+                               max_queue_len=n_events, max_steps=n_events,
+                               event_gain=event_gain)(W)
+        assert bool(jnp.allclose(grad_ref, grad_conv, atol=_GRAD_TOL)), \
+            (seed, grad_ref, grad_conv)
 
 
-def test_compressed_event_gain_gradient_matches_dense():
+def test_event_gain_gradient_matches_dense():
     """dL/d(event_gain) 一致——這是 event_gain 存在的理由:跨層時它是上一層
     的 s_spike,梯度要能穿過它傳回上一層權重。W 固定,對整個 event_gain 向量
     求導,壓縮版跟密集版必須給出同一個梯度。"""
@@ -662,17 +662,17 @@ def test_compressed_event_gain_gradient_matches_dense():
     W = jax.random.uniform(k_w, (2, 1, K, K), minval=-1.0, maxval=1.0)
     event_gain0 = jax.random.uniform(k_g, (n_events,), minval=0.3, maxval=1.3)
 
-    def compressed_loss(g):
-        result, _ = _run_compressed(event_times, x, y, c, W, v_th=1e9,
-                                     max_queue_len=n_events, max_steps=n_events, event_gain=g)
+    def conv_loss(g):
+        result, _ = _run_conv(event_times, x, y, c, W, v_th=1e9,
+                              max_queue_len=n_events, max_steps=n_events, event_gain=g)
         return jnp.sum(result.v_final)
 
     grad_ref = finite_diff_grad(
         lambda g: float(_ref_vfinal_all_affine(event_times, x, y, c, W, event_gain=g).sum()),
         np.asarray(event_gain0), eps=0.1)  # v_final 對 gain 也是線性,中央差分精確
-    grad_compressed = jax.grad(compressed_loss)(event_gain0)
-    assert bool(jnp.allclose(grad_ref, grad_compressed, atol=_GRAD_TOL)), \
-        (grad_ref, grad_compressed)
+    grad_conv = jax.grad(conv_loss)(event_gain0)
+    assert bool(jnp.allclose(grad_ref, grad_conv, atol=_GRAD_TOL)), \
+        (grad_ref, grad_conv)
 
 
 def test_conv_weight_codes_are_int32_and_match_float_values_b():

@@ -44,8 +44,8 @@ class LayerForwardTrace(NamedTuple):
     event_ms: jax.Array     # (n, max_steps) float
 
 
-def resolve_ms_dense(pointer: jax.Array, n_real_per_neuron: jax.Array,
-                      event_times: jax.Array) -> jax.Array:
+def resolve_ms_fc(pointer: jax.Array, n_real_per_neuron: jax.Array,
+                  event_times: jax.Array) -> jax.Array:
     """FC 佇列(`build_fc_structure`):`pointer[i, k]` 直接是全域事件 index。
 
     pointer / n_real_per_neuron 形狀 `(n,)` 對齊;event_times `(n_events,)`。
@@ -57,9 +57,9 @@ def resolve_ms_dense(pointer: jax.Array, n_real_per_neuron: jax.Array,
     return jnp.where(idle, jnp.nan, ms)
 
 
-def resolve_ms_compressed(pointer: jax.Array, local_to_global_j: jax.Array,
-                           n_real_per_neuron: jax.Array,
-                           event_times: jax.Array) -> jax.Array:
+def resolve_ms_conv(pointer: jax.Array, local_to_global_j: jax.Array,
+                    n_real_per_neuron: jax.Array,
+                    event_times: jax.Array) -> jax.Array:
     """壓縮 conv 佇列(`build_conv_structure`):`pointer[i, k]` 是這顆
     神經元壓縮佇列的局部欄,要先查 `local_to_global_j[i, col]` 得全域事件 index。
 

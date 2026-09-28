@@ -1,4 +1,4 @@
-"""驗證 stream.extract_output_events 的 local_to_global_j 查表(任務7
+"""驗證 stream.extract_output_events_fc 的 local_to_global_j 查表(任務7
 第二階段第3段)。對應 docs/math/conv事件佇列壓縮版推導.md 第 5.3 節。
 
 分三類測試:
@@ -8,8 +8,8 @@
 2. tie-break 穩定性:同一個全域 j 觸發兩顆不同神經元同時 fire,確認排序後
    維持 jnp.nonzero 原始掃描順序(神經元 index 小的排前面),不是隨機順序。
 3. 端到端:build_conv_structure + conv_float_values -> run_layer_forward ->
-   extract_output_events_compressed 整條串起來,跟透明參考
-   (_reference.dense_conv_affine_map -> run_layer_forward -> extract_output_events,
+   extract_output_events_conv 整條串起來,跟透明參考
+   (_reference.dense_conv_affine_map -> run_layer_forward -> extract_output_events_fc,
    不給 local_to_global_j)比對 ExtractedEvents **四個欄位全部**(event_times/
    event_source_idx/event_gain/n_real_events)——只比 v_final 或只比前後
    兩個欄位,查不到 event_gain(問題紀錄第四節的 s_spike 跨層梯度機制)被
@@ -23,7 +23,7 @@ import jax.numpy as jnp
 from salt_core.float.scan import run_layer_forward
 from salt_core.connectivity.conv import build_conv_structure, conv_float_values, tile_channels
 from salt_core.tests._reference import dense_conv_affine_map
-from salt_core.stream import extract_output_events, extract_output_events_compressed
+from salt_core.stream import extract_output_events_fc, extract_output_events_conv
 
 TOL = 1e-6
 
@@ -46,8 +46,8 @@ def test_extract_output_events_matches_worked_example_section_5_3():
 
     第 5.3 節預期結果:排序後 event_source_idx=[7,5,...]、event_times=[2,5,...]、
     n_real_events=2。這裡只需要合成 spike_mask/spike_event_idx/
-    local_to_global_j 三個陣列(不用真的跑 build_conv_queue_compressed,
-    這個測試只驗證 extract_output_events 這一步本身),神經元 id 直接用
+    local_to_global_j 三個陣列(不用真的跑 build_conv_structure,
+    這個測試只驗證 extract_output_events_fc 這一步本身),神經元 id 直接用
     0,1,2 對應文件的 5,6,7(哪個數字當 id 不影響查表/排序邏輯)。
     """
     # 神經元 id:0->文件神經元5, 1->文件神經元6, 2->文件神經元7
@@ -63,8 +63,8 @@ def test_extract_output_events_matches_worked_example_section_5_3():
         [1, 4, 4],  # 神經元2(文件神經元7)
     ])
 
-    result = extract_output_events_compressed(spike_mask, spike_event_idx, s_spike, event_times,
-                                             local_to_global_j, max_total_spikes=4)
+    result = extract_output_events_conv(spike_mask, spike_event_idx, s_spike, event_times,
+                                        local_to_global_j, max_total_spikes=4)
 
     assert int(result.n_real_events) == 2, result.n_real_events
     # 排序後應該是 [神經元2(全域j=1,t=2), 神經元0(全域j=3,t=5)]
@@ -100,8 +100,8 @@ def test_tiebreak_stable_when_multiple_neurons_share_same_global_j():
         [5],
     ])
 
-    result = extract_output_events_compressed(spike_mask, spike_event_idx, s_spike, event_times,
-                                             local_to_global_j, max_total_spikes=4)
+    result = extract_output_events_conv(spike_mask, spike_event_idx, s_spike, event_times,
+                                        local_to_global_j, max_total_spikes=4)
 
     assert int(result.n_real_events) == 2, result.n_real_events
     assert list(map(int, result.event_source_idx[:2])) == [0, 2], \
@@ -137,7 +137,7 @@ def _extracted_events_equal(a, b, tol=1e-4):
         (a.event_gain[:n], b.event_gain[:n])
 
 
-def _compressed_queue(event_times, x, y, c, W, max_queue_len, n_real_events):
+def _conv_queue(event_times, x, y, c, W, max_queue_len, n_real_events):
     """結構 + 浮點數值段。回傳 (maps, 逐神經元 n_real_events, 逐神經元 local_to_global_j)。"""
     oc = W.shape[0]
     structure = build_conv_structure(event_times, x, y, c, K, S, P, H_OUT, W_OUT,
@@ -147,9 +147,9 @@ def _compressed_queue(event_times, x, y, c, W, max_queue_len, n_real_events):
             tile_channels(structure.local_to_global_j, oc))
 
 
-def test_end_to_end_compressed_matches_dense_all_four_fields():
+def test_end_to_end_matches_dense_all_four_fields():
     """build_conv_structure + conv_float_values -> run_layer_forward ->
-    extract_output_events_compressed 整條串起來,跟密集版整條
+    extract_output_events_conv 整條串起來,跟密集版整條
     串起來,ExtractedEvents 四個欄位(event_times/event_source_idx/
     event_gain/n_real_events)全部比對,不是只比前後兩個。event_gain 對不對
     是這個測試存在的主要理由:forward v_final 對,不代表 event_gain 排對了
@@ -166,28 +166,28 @@ def test_end_to_end_compressed_matches_dense_all_four_fields():
     # 密集版整條串接
     maps_dense = dense_conv_affine_map(event_times, x, y, c, W, TAU, S, P, H_OUT, W_OUT)
     result_dense = run_layer_forward(maps_dense, v_th, chunk_size=5, max_steps=5, n_real_events=maps_dense.a.shape[1])
-    ev_dense = extract_output_events(result_dense.spike_mask, result_dense.spike_event_idx,
-                                      result_dense.s_spike, event_times,
-                                      max_total_spikes=max_spikes)
+    ev_dense = extract_output_events_fc(result_dense.spike_mask, result_dense.spike_event_idx,
+                                        result_dense.s_spike, event_times,
+                                        max_total_spikes=max_spikes)
 
     # 壓縮版整條串接
-    maps, n_real_per_neuron, local_to_global_j = _compressed_queue(
+    maps, n_real_per_neuron, local_to_global_j = _conv_queue(
         event_times, x, y, c, W, max_queue_len, event_times.shape[0])
-    result_compressed = run_layer_forward(maps, v_th, chunk_size=5, max_steps=5,
+    result_conv = run_layer_forward(maps, v_th, chunk_size=5, max_steps=5,
                                            n_real_events=n_real_per_neuron)
-    ev_compressed = extract_output_events_compressed(result_compressed.spike_mask,
-                                           result_compressed.spike_event_idx,
-                                           result_compressed.s_spike, event_times,
-                                           local_to_global_j,
-                                           max_total_spikes=max_spikes)
+    ev_conv = extract_output_events_conv(result_conv.spike_mask,
+                                               result_conv.spike_event_idx,
+                                               result_conv.s_spike, event_times,
+                                               local_to_global_j,
+                                               max_total_spikes=max_spikes)
 
     assert int(ev_dense.n_real_events) >= 1, "前置確認:這個場景至少要有一筆真的輸出事件"
-    _extracted_events_equal(ev_dense, ev_compressed)
+    _extracted_events_equal(ev_dense, ev_conv)
 
 
-def test_end_to_end_compressed_matches_dense_with_multiple_fires_and_pad_input():
+def test_end_to_end_matches_dense_with_multiple_fires_and_pad_input():
     """比上一個測試更完整的端到端案例:輸入端本身就帶 n_real_events(模擬
-    上一層 extract_output_events 補的 pad 事件),而且場景會讓不只一顆神經元
+    上一層 extract_output_events_fc 補的 pad 事件),而且場景會讓不只一顆神經元
     fire,四個欄位在多筆輸出事件上都要對得起來,不是只驗證單一筆。"""
     W = _make_weight()
     # 前 5 筆是真事件,第 6 筆是 pad(座標偽裝合法、時間超大)
@@ -203,21 +203,21 @@ def test_end_to_end_compressed_matches_dense_with_multiple_fires_and_pad_input()
                                        n_real=n_real_events)
     result_dense = run_layer_forward(maps_dense, v_th, chunk_size=6, max_steps=6,
                                       n_real_events=n_real_events)
-    ev_dense = extract_output_events(result_dense.spike_mask, result_dense.spike_event_idx,
-                                      result_dense.s_spike, event_times,
-                                      max_total_spikes=max_spikes)
+    ev_dense = extract_output_events_fc(result_dense.spike_mask, result_dense.spike_event_idx,
+                                        result_dense.s_spike, event_times,
+                                        max_total_spikes=max_spikes)
 
-    maps, n_real_per_neuron, local_to_global_j = _compressed_queue(
+    maps, n_real_per_neuron, local_to_global_j = _conv_queue(
         event_times, x, y, c, W, max_queue_len, n_real_events)
-    result_compressed = run_layer_forward(maps, v_th, chunk_size=max_queue_len,
+    result_conv = run_layer_forward(maps, v_th, chunk_size=max_queue_len,
                                            max_steps=max_queue_len,
                                            n_real_events=n_real_per_neuron)
-    ev_compressed = extract_output_events_compressed(result_compressed.spike_mask,
-                                           result_compressed.spike_event_idx,
-                                           result_compressed.s_spike, event_times,
-                                           local_to_global_j,
-                                           max_total_spikes=max_spikes)
+    ev_conv = extract_output_events_conv(result_conv.spike_mask,
+                                               result_conv.spike_event_idx,
+                                               result_conv.s_spike, event_times,
+                                               local_to_global_j,
+                                               max_total_spikes=max_spikes)
 
     assert int(ev_dense.n_real_events) >= 2, \
         f"前置確認:這個場景至少要有兩顆神經元 fire 才夠測排序,實際 {int(ev_dense.n_real_events)}"
-    _extracted_events_equal(ev_dense, ev_compressed)
+    _extracted_events_equal(ev_dense, ev_conv)
