@@ -22,8 +22,8 @@ _C2 = dict(ic=8, h_in=17, w_in=17, oc=16, k=3, s=2, p=1)
 
 
 def _layers():
-    conv1 = ConvLayer(name="conv1", **_C1, L=185, max_out_spikes=4000, init_k=5.0)
-    conv2 = ConvLayer(name="conv2", **_C2, L=400, max_out_spikes=12000, init_k=5.0)
+    conv1 = ConvLayer(name="conv1", **_C1, max_queue_len=185, max_out_spikes=4000, init_k=5.0)
+    conv2 = ConvLayer(name="conv2", **_C2, max_queue_len=400, max_out_spikes=12000, init_k=5.0)
     out = FCLayer(name="out", n_in=conv2.n_neurons, n_out=10, chunk_size=512, init_k=5.0)
     return [conv1, conv2, out]
 
@@ -154,7 +154,7 @@ def _assert_regrow_matches_generous(knob: str):
 
 
 def test_dormant_report_regrows_on_queue_overflow():
-    _assert_regrow_matches_generous("L")
+    _assert_regrow_matches_generous("max_queue_len")
 
 
 def test_dormant_report_regrows_on_output_spike_overflow():

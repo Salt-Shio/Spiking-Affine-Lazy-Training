@@ -22,20 +22,17 @@ import os
 
 from data.src.nmnist import NMNISTDataset
 from example.paths import DATASET_ROOT
-from example.utils import (WEIGHTS_DIRNAME, load_params_npz, load_run_record,
-                           rebuild_network, weight_snapshot_path)
+from example.utils import WEIGHTS_DIRNAME, load_run_record, weight_snapshot_path
+from salt_core.io import load_weights
 from salt_core.network import Network, RawEvents
 from salt_core.monitor import summarize_trace_scalars
 
 
 def load_epoch_weights(exp_dir: str, epoch: int) -> tuple[Network, tuple]:
-    """回傳 `(每層 chunk_size=1 的 Network, 那個 epoch 存的權重)`。"""
-    run_record = load_run_record(exp_dir)
-    network = rebuild_network(run_record)
-    network = network.replace_layers([layer.with_chunk_size(1) for layer in network.layers])
+    """回傳 (那個 epoch 當下的網路,每層換成 chunk_size=1, 那個 epoch 存的權重)。"""
     weights_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
-    params = load_params_npz(weight_snapshot_path(weights_dir, epoch), network.layers)
-    return network, params
+    network, params = load_weights(weight_snapshot_path(weights_dir, epoch))
+    return network.replace_layers([layer.with_chunk_size(1) for layer in network.layers]), params
 
 
 def replay_sample(exp_dir: str, epoch: int, event_times, x, y, c, n_real_events) -> list:

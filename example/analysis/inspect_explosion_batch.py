@@ -11,7 +11,6 @@ loss/spike 數離群的樣本;再重建該 epoch 實際的 batch 切法(PRNG spl
       --snapshot-epoch N --target-epoch M [--top-k K]
 """
 import argparse
-import csv
 import os
 
 import jax
@@ -20,40 +19,18 @@ import numpy as np
 import optax
 
 from data.src.nmnist import NMNISTDataset
-from example.metrics_log import KNOB_COLUMNS
-from example.models.conv_net import build_decoder, build_network
+from example.models.conv_net import build_decoder
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
-from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, load_params_npz,
-                           load_run_record, take_raw_events, split_raw_events,
+from example.utils import (WEIGHTS_DIRNAME, load_run_record, take_raw_events, split_raw_events,
                            weight_snapshot_path)
-from salt_core.capacity import Capacity
-
-
-def _rebuild_network_at_epoch(run_record: dict, exp_dir: str, epoch: int):
-    """跟 `example.utils.rebuild_network`的差別:那個函式還原的是**整個 run
-    結束時**的最終容量(`run.yaml` 的 `final_capacity`),但 `max_steps`/
-    `max_out_spikes` 訓練中途可能縮小過(`GrowthPolicy.shrunk`,見
-    docs/問題紀錄.md §十五 踩過的坑)——要重建
-    「某個中途 epoch 當下」的權重,必須用那個 epoch **當下**的容量,不能用
-    run 結束時的容量(可能已經比當下小,會把還沒縮小前的真實輸出/掃描步數
-    截斷)。這裡改成直接讀 `metrics.csv` 裡對應 epoch 那一列的容量欄位。"""
-    network = build_network(run_record["config"]["model"])
-    metrics_path = os.path.join(exp_dir, TRAIN_DIRNAME, "metrics.csv")
-    with open(metrics_path, newline="", encoding="utf-8") as f:
-        rows = {int(row["epoch"]): row for row in csv.DictReader(f)}
-    row = rows[epoch]
-    return network.replace_layers(
-        [layer if layer.capacity is None else layer.with_capacity(Capacity(**{
-            knob: int(row[f"{layer.name}_{KNOB_COLUMNS[knob].capacity}"])
-            for knob in layer.capacity}))
-         for layer in network.layers])
+from salt_core.io import load_weights
 
 
 def _load_network_and_params(exp_dir: str, snapshot_epoch: int):
+    """快照自帶那個 epoch 當下的網路(含容量)。"""
     run_record = load_run_record(exp_dir)
-    network = _rebuild_network_at_epoch(run_record, exp_dir, snapshot_epoch)
     weights_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
-    params = load_params_npz(weight_snapshot_path(weights_dir, snapshot_epoch), network.layers)
+    network, params = load_weights(weight_snapshot_path(weights_dir, snapshot_epoch))
     return run_record, network, params
 
 

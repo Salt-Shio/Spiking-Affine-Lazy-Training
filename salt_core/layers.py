@@ -161,23 +161,23 @@ class ConvLayer:
     v_th: float = 1.0
     alpha: float = 2.0
     chunk_size: int = 1
-    # 容量 —— 有預設。L / max_out_spikes 的值不重要(出界會自己長大),預設只求
+    # 容量 —— 有預設。max_queue_len / max_out_spikes 的值不重要(出界會自己長大),預設只求
     # 「不要太小、少幾次開頭重編譯」。
-    L: int = 128
+    max_queue_len: int = 128
     max_out_spikes: int = 8192
-    # 跟 L 脫鉤的掃描步數上界(見 docs/math/掃描步數上界推導.md)。`None`
-    # (預設)代表「沒特別設起始猜測」,`__post_init__` 落到 `self.L`,對齊這個
+    # 跟 max_queue_len 脫鉤的掃描步數上界(見 docs/math/掃描步數上界推導.md)。`None`
+    # (預設)代表「沒特別設起始猜測」,`__post_init__` 落到 `self.max_queue_len`,對齊這個
     # 欄位存在之前的行為(safe fallback,永遠夠用)——這是給**沒有經過**
     # `example/train_conv_compressed.py` 動態放大迴圈的呼叫端(例如
     # 直接用 `build_network` 的分析腳本)用的安全預設,
     # 不會因為這個欄位的新增而默默截斷掃描、算出錯的結果。訓練腳本要用小
-    # 起始值讓它自己長(跟 `L`/`max_out_spikes` 同一種「config 給起始猜測」
+    # 起始值讓它自己長(跟 `max_queue_len`/`max_out_spikes` 同一種「config 給起始猜測」
     # 的用法),config 就直接填這個欄位,不要靠這個 fallback。
     max_steps: int | None = None
 
     def __post_init__(self) -> None:
         if self.max_steps is None:
-            object.__setattr__(self, "max_steps", self.L)
+            object.__setattr__(self, "max_steps", self.max_queue_len)
 
     @property
     def h_out(self) -> int:
@@ -209,7 +209,8 @@ class ConvLayer:
 
     @property
     def capacity(self) -> Capacity:
-        return Capacity(L=self.L, max_out_spikes=self.max_out_spikes, max_steps=self.max_steps)
+        return Capacity(max_queue_len=self.max_queue_len, max_out_spikes=self.max_out_spikes,
+                        max_steps=self.max_steps)
 
     def with_capacity(self, capacity: Capacity) -> "ConvLayer":
         """換成 capacity 的容量值,其他欄位不變。"""
@@ -252,7 +253,7 @@ class ConvLayer:
             scan.result.spike_mask, scan.result.spike_event_idx, scan.spike_gain,
             in_stream.event_times, local_to_global_j, max_total_spikes=self.max_out_spikes)
         diag = _layer_diag(scan.result.spike_mask, self.n_neurons, in_stream.n_real_events,
-                           needed={"L": jnp.max(structure.n_real_events),
+                           needed={"max_queue_len": jnp.max(structure.n_real_events),
                                    "max_out_spikes": out_stream.n_real_events,
                                    "max_steps": scan.steps_needed})
         layer_trace = None
@@ -269,19 +270,19 @@ class ConvLayer:
         x, y, c = unravel_conv_source(in_stream.event_source_idx, self.h_in, self.w_in)
         return build_conv_structure(
             in_stream.event_times, x, y, c, self.k, self.s, self.p, self.h_out, self.w_out,
-            self.L, in_stream.n_real_events)
+            self.max_queue_len, in_stream.n_real_events)
 
     def float_values(self, structure: ConvQueueStructure, w: jax.Array,
                      event_gain: jax.Array | None) -> AffineMap:
-        """浮點數值段,a、b 形狀 (n_neurons, L)。"""
+        """浮點數值段,a、b 形狀 (n_neurons, max_queue_len)。"""
         return conv_float_values(structure, w, self.tau, event_gain)
 
     def gather_weight_codes(self, structure: ConvQueueStructure, q: jax.Array) -> jax.Array:
-        """整數數值段,int32,(n_neurons, L)。"""
+        """整數數值段,int32,(n_neurons, max_queue_len)。"""
         return conv_weight_codes(structure, q)
 
     def neuron_delta_t(self, structure: ConvQueueStructure) -> jax.Array:
-        """逐神經元的 Δt,(n_neurons, L)。"""
+        """逐神經元的 Δt,(n_neurons, max_queue_len)。"""
         return tile_channels(structure.delta_t, self.oc)
 
     def neuron_n_real(self, structure: ConvQueueStructure) -> jax.Array:
@@ -293,12 +294,12 @@ class ConvLayer:
         return self.max_steps
 
     def with_chunk_size(self, chunk_size: int) -> "ConvLayer":
-        """換 chunk_size,max_steps 退回 L。
+        """換 chunk_size,max_steps 退回 max_queue_len。
 
         訓練時 max_steps 是照舊 chunk_size 的需求縮小過的,換成更小的 chunk_size
-        可能不夠;L 步一定夠,因為每一步至少處理一筆事件。
+        可能不夠;max_queue_len 步一定夠,因為每一步至少處理一筆事件。
         """
-        return replace(self, chunk_size=chunk_size, max_steps=self.L)
+        return replace(self, chunk_size=chunk_size, max_steps=self.max_queue_len)
 
 
 @dataclass(frozen=True)

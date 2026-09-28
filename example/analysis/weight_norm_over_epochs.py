@@ -13,9 +13,9 @@ import re
 
 import numpy as np
 
-from example.models.conv_net import build_network
 from example.paths import EXPERIMENTS_DIR
-from example.utils import WEIGHTS_DIRNAME, load_params_npz, load_run_record
+from example.utils import WEIGHTS_DIRNAME
+from salt_core.io import load_weights
 
 EXPLOSION_EPOCHS = [39, 49, 64, 75]
 
@@ -26,19 +26,16 @@ def main() -> None:
     args = parser.parse_args()
 
     exp_dir = os.path.join(EXPERIMENTS_DIR, args.exp_dir_name)
-    run_record = load_run_record(exp_dir)
-    layers = build_network(run_record["config"]["model"]).layers
-    names = [layer.name for layer in layers]
-
     weights_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
     paths = sorted(glob.glob(os.path.join(weights_dir, "epoch_*.npz")))
     epochs = sorted(int(re.search(r"epoch_(\d+)\.npz", p).group(1)) for p in paths)
 
+    names = [layer.name for layer in load_weights(paths[0])[0].layers]
     print(f"找到 {len(epochs)} 份權重快照(epoch {epochs[0]}..{epochs[-1]})")
     print(f"\n{'epoch':>6} " + " ".join(f"{n + '_norm':>14}" for n in names))
     for epoch in epochs:
         path = os.path.join(weights_dir, f"epoch_{epoch:03d}.npz")
-        params = load_params_npz(path, layers)
+        _network, params = load_weights(path)
         norms = [float(np.linalg.norm(np.asarray(w))) for w in params]
         marker = " <-- 爆炸點" if epoch in EXPLOSION_EPOCHS else ""
         print(f"{epoch:>6} " + " ".join(f"{v:>14.4f}" for v in norms) + marker)

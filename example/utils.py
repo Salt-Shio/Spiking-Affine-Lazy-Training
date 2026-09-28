@@ -1,4 +1,4 @@
-"""共用小工具:決定性種子設定、git commit hash、批次評估、params npz 存讀、
+"""共用小工具:決定性種子設定、git commit hash、批次評估、讀 run 紀錄跟權重、
 `experiments/<run>/` 底下的子資料夾命名。
 
 `train_conv_compressed.py`(訓練)跟 `eval_test.py`(事後評估)有兩處各自
@@ -6,12 +6,8 @@
 
 - `make_evaluate`:分批 vmap 算 scores、導出 accuracy/loss/preds,兩邊本來
   各刻一份。`describe_growth` 是它跟訓練共用的容量放大訊息格式。
-- `save_params_npz`/`load_params_npz`:`params.npz`/`best_params.npz` 的
-  寫讀,key = 層名——訓練那邊寫、eval_test 這邊讀,約定只靠人記得對齊,
-  現在收進同一份函式。
-- `load_run_record`/`rebuild_network`/`load_run_params`:從 `exp_dir` 重建
-  一次訓練 run 的網路/params,給任何要重建幾何/權重的呼叫端共用(例如逐 epoch
-  重跑 traced forward 的分析工具)。
+- `load_run_record`/`load_run_params`:讀一次訓練 run 的紀錄、權重。權重檔自帶
+  網路描述(`salt_core.io`),讀回來就是存檔當下的網路。
 - `split_raw_events`/`take_raw_events`:資料端的 split 轉成檢查過的 `RawEvents`、
   從裡面取一批(`data/` 不依賴 `salt_core`,轉換寫在這裡)。
 - `weight_snapshot_path`:`experiments/<run>/weights/epoch_XXX.npz` 的命名
@@ -35,10 +31,9 @@ import numpy as np
 import optax
 import yaml
 
-from salt_core.capacity import Capacity, grown_to_fit_batch, reduce_over_batch
+from salt_core.capacity import grown_to_fit_batch, reduce_over_batch
+from salt_core.io import load_weights
 from salt_core.network import Network, RawEvents
-
-from example.models.conv_net import build_network
 
 TRAIN_DIRNAME = "train"
 WEIGHTS_DIRNAME = "weights"
@@ -72,27 +67,9 @@ def get_git_commit_hash(repo_dir: str | None = None) -> str:
         return "unknown"
 
 
-def save_params_npz(path: str, layers: list, params: tuple) -> None:
-    """`params`(對齊 `layers` 的位置 tuple)存成 npz,key = 層名。訓練結束
-    (`train_conv_compressed._write_experiment`)寫 `params.npz`/`best_params.npz`,
-    `eval_test.py` 讀回——兩邊靠層名對齊,不是位置,收在同一份函式才不會
-    兩邊 key 命名各自漂移。"""
-    names = [layer.name for layer in layers]
-    np.savez(path, **{n: np.asarray(w) for n, w in zip(names, params)})
-
-
-def load_params_npz(path: str, layers: list) -> tuple:
-    """`save_params_npz` 的反函式:讀回對齊 `layers` 的位置 tuple。"""
-    data = np.load(path)
-    return tuple(data[layer.name] for layer in layers)
-
-
 def weight_snapshot_path(weights_dir: str, epoch: int) -> str:
-    """`experiments/<run>/weights/epoch_XXX.npz` 的路徑命名慣例(不含 optimizer
-    state,格式跟 `params.npz`/`best_params.npz` 一樣是 `save_params_npz` 存的
-    純權重)——訓練那邊每 `train.weight_snapshot_every` 個 epoch 存一份,事後
-    要精確重現某個 epoch 當下的 forward(例如強制 `chunk_size=1` 重跑
-    `run_network(..., trace=True)` 拿逐事件軌跡)就讀對應的這一份。"""
+    """`experiments/<run>/weights/epoch_XXX.npz` 的路徑:那個 epoch 的權重連同當下的網路
+    (salt_core.io.save_weights 的格式,不含 optimizer state)。"""
     return os.path.join(weights_dir, f"epoch_{epoch:03d}.npz")
 
 
@@ -100,17 +77,6 @@ def load_run_record(exp_dir: str) -> dict:
     """讀 `<exp_dir>/train/run.yaml`,回傳整份 config 快照 + 訓練中繼資料。"""
     with open(os.path.join(exp_dir, TRAIN_DIRNAME, "run.yaml"), "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-
-def rebuild_network(run_record: dict) -> Network:
-    """從 `run.yaml` 重建網路:形狀吃 config 快照,有容量的層換成訓練結束時的
-    容量(`final_capacity`)。只用來讀取幾何/評估權重,不重新初始化。"""
-    network = build_network(run_record["config"]["model"])
-    final_capacity = run_record.get("final_capacity", {})
-    return network.replace_layers(
-        [layer.with_capacity(Capacity(**final_capacity[layer.name]))
-         if layer.capacity is not None and layer.name in final_capacity else layer
-         for layer in network.layers])
 
 
 def split_raw_events(split) -> RawEvents:
@@ -124,10 +90,11 @@ def take_raw_events(raw: RawEvents, idx) -> RawEvents:
     return jax.tree_util.tree_map(lambda a: a[idx], raw)
 
 
-def load_run_params(exp_dir: str, layers: list, which_params: str) -> tuple:
-    """`which_params` 是 `"best"`(`best_params.npz`)或其他(`params.npz`)。"""
+def load_run_params(exp_dir: str, which_params: str) -> tuple[Network, tuple]:
+    """回傳 (Network, 權重)。which_params 是 "best"(best_params.npz,best epoch 當下的網路)
+    或其他(params.npz,訓練結束時的網路)。"""
     fname = "best_params.npz" if which_params == "best" else "params.npz"
-    return load_params_npz(os.path.join(exp_dir, TRAIN_DIRNAME, fname), layers)
+    return load_weights(os.path.join(exp_dir, TRAIN_DIRNAME, fname))
 
 
 def capacity_changes(old_layers: list, new_layers: list):
@@ -144,7 +111,7 @@ def describe_growth(old_layers: list, new_layers: list, reduced_diags: list) -> 
     """哪些層的哪些容量旋鈕從多少放大到多少,一個旋鈕一行。
 
     reduced_diags: 對齊層的 LayerDiag,needed 是這個 batch 的最大值。
-    格式:conv2 L 32->2100(觀察 1401)。
+    格式:conv2 max_queue_len 32->2100(觀察 1401)。
     """
     return [f"{old_layers[i].name} {knob} {old}->{new}"
             f"(觀察 {int(reduced_diags[i].needed[knob])})"

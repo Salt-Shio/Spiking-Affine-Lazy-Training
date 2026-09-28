@@ -73,14 +73,14 @@ class GrowthPolicy:
     放大、縮小共用同一個倍率:需求沒變時兩邊算出的目標值相等,不會來回震盪。
     縮小門檻:候選值要掉到現值乘這個比例以下才縮,值得付一次重編譯。
     """
-    L_grow_factor: float = 1.5
+    max_queue_len_grow_factor: float = 1.5
     out_grow_factor: float = 1.5
     max_steps_grow_factor: float = 1.5
     out_shrink_threshold: float = 0.5
     max_steps_shrink_threshold: float = 0.5
 
     def _grow_factor(self, knob: str) -> float:
-        return {"L": self.L_grow_factor, "max_out_spikes": self.out_grow_factor,
+        return {"max_queue_len": self.max_queue_len_grow_factor, "max_out_spikes": self.out_grow_factor,
                 "max_steps": self.max_steps_grow_factor}[knob]
 
     def _shrink_threshold(self, knob: str) -> float | None:
@@ -91,21 +91,22 @@ class GrowthPolicy:
         """needed 超過容量的旋鈕放大到 ceil(needed * 倍率),其他不變。
 
         needed: 旋鈕名 -> 需求量(純量)。
-        L 放大時 max_steps 直接設成新的 L:這批的 max_steps 需求是在裝不下的佇列上算的,
-        不可信;L 步一定夠,因為每一步至少處理一筆事件。
+        max_queue_len 放大時 max_steps 直接設成新的 max_queue_len:這批的 max_steps 需求是在裝不下的佇列上算的,
+        不可信;max_queue_len 步一定夠,因為每一步至少處理一筆事件。
         """
         new = {knob: _grow(needed[knob], self._grow_factor(knob))
                      if int(needed[knob]) > value else value
                for knob, value in capacity.items()}
-        if "L" in new and "max_steps" in new and new["L"] != capacity["L"]:
-            new["max_steps"] = new["L"]
+        if ("max_queue_len" in new and "max_steps" in new
+                and new["max_queue_len"] != capacity["max_queue_len"]):
+            new["max_steps"] = new["max_queue_len"]
         return Capacity(**new)
 
     def shrunk(self, capacity: Capacity, observed: dict) -> Capacity:
         """用一整個 epoch 的最大需求決定要不要縮。
 
         observed: 旋鈕名 -> 這個 epoch 所有 batch 的最大需求。
-        候選值 ceil(observed * 倍率) 掉到現值 * 縮小門檻以下才縮;沒有縮小門檻的旋鈕(L)不縮。
+        候選值 ceil(observed * 倍率) 掉到現值 * 縮小門檻以下才縮;沒有縮小門檻的旋鈕(max_queue_len)不縮。
         候選值至少是 1:整層一個 epoch 都沒 fire 時觀察值是 0,容量 0 會讓下一層拿到
         長度 0 的輸入流,建佇列時直接出錯。
         """

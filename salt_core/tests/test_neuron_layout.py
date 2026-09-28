@@ -10,7 +10,7 @@ from salt_core.layers import ConvLayer, FCLayer
 def _conv():
     # 輸出 3 channel x 2 x 3 = 18 顆神經元
     return ConvLayer(name="conv", ic=1, h_in=2, w_in=3, oc=3, k=1, s=1, p=0,
-                     init_k=5.0, v_th=1.0, chunk_size=1, L=8, max_out_spikes=64)
+                     init_k=5.0, v_th=1.0, chunk_size=1, max_queue_len=8, max_out_spikes=64)
 
 
 def _fc():

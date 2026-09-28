@@ -13,7 +13,7 @@ run_name: baseline
 # 更新次數也跟著變多,實際會不會需要再調,這次還沒驗證過。
 #
 # batch_size 4→16:純粹是加速,4 對這個資料量太小、GPU 沒有用滿。
-# L/max_out_spikes/max_steps 這三個動態容量旋鈕取的是整個 batch 裡最大的
+# max_queue_len/max_out_spikes/max_steps 這三個動態容量旋鈕取的是整個 batch 裡最大的
 # 那一筆樣本(example/train_conv_compressed.py 的 reduced diag 用 jnp.max),
 # 不是加總,所以放大 batch_size 不會讓容量跟著等比例爆開,只是佔用記憶體
 # 隨 batch_size 線性成長(vmap 的 batch 維度)——一般訓練都有的正常關係,先跑
@@ -34,11 +34,11 @@ model:
       v_th: 1.0
       alpha: 2.0
       chunk_size: 4
-      L: 185
+      max_queue_len: 185
       max_out_spikes: 1
       max_steps: 1
       init_k: 5.0
-      L_grow_factor: 1.5
+      max_queue_len_grow_factor: 1.5
       out_grow_factor: 1.5
       out_shrink_threshold: 0.5
       max_steps_grow_factor: 1.5
@@ -52,11 +52,11 @@ model:
       v_th: 1.0
       alpha: 2.0
       chunk_size: 4
-      L: 32
+      max_queue_len: 32
       max_out_spikes: 1
       max_steps: 1
       init_k: 5.0
-      L_grow_factor: 1.5
+      max_queue_len_grow_factor: 1.5
       out_grow_factor: 1.5
       out_shrink_threshold: 0.5
       max_steps_grow_factor: 1.5

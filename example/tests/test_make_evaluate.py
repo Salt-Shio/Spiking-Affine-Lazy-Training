@@ -42,7 +42,7 @@ def test_generous_capacity_does_not_regrow():
 
 def test_overflow_regrows_and_matches_generous():
     layers, params, split, (acc, loss, preds, _) = _generous_case()
-    small = with_conv_knob(layers, "L", 1)
+    small = with_conv_knob(layers, "max_queue_len", 1)
     net = Network(INPUT_SHAPE, small)
     evaluate = make_evaluate(net, MembraneRegressionDecoder(), EVAL_BATCH, small_policies(small))
 

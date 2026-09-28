@@ -57,7 +57,7 @@ def _conv_3x3_setup():
     """3x3 輸入、3x3 kernel、單一輸出神經元,9 筆事件依序打在 9 個 synapse 上。"""
     tau = 4.0
     conv = ConvLayer(name="conv", ic=1, h_in=3, w_in=3, oc=1, k=3, s=1, p=0,
-                     init_k=5.0, tau=tau, v_th=1.0, chunk_size=1, L=9, max_out_spikes=9)
+                     init_k=5.0, tau=tau, v_th=1.0, chunk_size=1, max_queue_len=9, max_out_spikes=9)
     n = 9
     in_stream = EventStream(event_times=jnp.arange(1.0, n + 1.0),
                             event_source_idx=jnp.arange(n),  # ic=1 時 flat index = y*w_in+x
@@ -139,7 +139,7 @@ def test_conv_forward_quantized_applies_catchup_decay():
     - 神經元 1:真 tap 就是全域最後一筆,catch-up Δt=0,維持 80。"""
     tau = 16.0
     conv = ConvLayer(name="c", ic=1, h_in=1, w_in=2, oc=1, k=1, s=1, p=0,
-                     init_k=5.0, tau=tau, v_th=1.0, chunk_size=1, L=2, max_out_spikes=2)
+                     init_k=5.0, tau=tau, v_th=1.0, chunk_size=1, max_queue_len=2, max_out_spikes=2)
     params = _params(jnp.array([[[[5]]]]), tau=tau, f_a=4, f_V=4, i_V=16,
                      v_th_int=jnp.array(10 ** 5))
     in_stream = EventStream(event_times=jnp.array([2.0, 5.0]),
@@ -153,7 +153,7 @@ def test_conv_forward_quantized_applies_catchup_decay():
 
 def test_conv_forward_quantized_ignores_training_max_steps():
     """`ConvLayer.max_steps` 是照訓練時的 `chunk_size` 校準出來的;整數版每步
-    一筆事件,掃描長度是佇列長度 `L`,不能受它影響。兩個只有 `max_steps`
+    一筆事件,掃描長度是佇列長度 `max_queue_len`,不能受它影響。兩個只有 `max_steps`
     不同的層算出來的結果要完全一樣。"""
     base, in_stream = _conv_3x3_setup()
     q = jnp.round(base.init_weight(jax.random.PRNGKey(0)) * 20).astype(jnp.int32)
@@ -204,7 +204,7 @@ def test_run_network_quantized_trace_last_v_step_is_v_final():
     out = run_network([conv], [params], input_stream, backend=QUANT, trace=True)
     v_steps = out.traces[0].v_steps
 
-    assert v_steps.shape == (conv.n_neurons, conv.L)
+    assert v_steps.shape == (conv.n_neurons, conv.max_queue_len)
     assert int(v_steps[0, -1]) == int(out.results[0].v_final[0])
     assert bool(conv.capacity.fits(out.diags[0]))
 
@@ -237,17 +237,17 @@ def test_forward_quantized_rejects_non_integer_weight_codes():
 
 
 def test_conv_forward_quantized_reports_queue_truncation():
-    """神經元需要 9 欄的佇列,L=4 裝不下,後面的輸入事件被截掉,capacity.fits 要是 False。"""
+    """神經元需要 9 欄的佇列,max_queue_len=4 裝不下,後面的輸入事件被截掉,capacity.fits 要是 False。"""
     conv, in_stream = _conv_3x3_setup()
-    small_L = dataclasses.replace(conv, L=4)
+    small_queue = dataclasses.replace(conv, max_queue_len=4)
     q = jnp.ones(conv.weight_shape, dtype=jnp.int32)
     params = _params(q, tau=conv.tau, f_a=8, f_V=2, i_V=16, v_th_int=jnp.array([1000]))
 
-    diag = small_L.forward(params, in_stream, backend=QUANT).diag
+    diag = small_queue.forward(params, in_stream, backend=QUANT).diag
     diag_ok = conv.forward(params, in_stream, backend=QUANT).diag
 
-    assert int(diag.needed["L"]) == 9
-    assert not bool(small_L.capacity.fits(diag))
+    assert int(diag.needed["max_queue_len"]) == 9
+    assert not bool(small_queue.capacity.fits(diag))
     assert bool(conv.capacity.fits(diag_ok))
 
 

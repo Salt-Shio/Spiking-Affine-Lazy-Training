@@ -3,7 +3,7 @@
 這支腳本比一般訓練多的東西,是所有壓縮容量旋鈕的**動態放大**機制(完整設計
 見 docs/math/conv事件佇列壓縮版推導.md 第 7.2 節):
 
-- 每個 conv 層有三個會出界的容量:壓縮佇列長度 `L`、輸出 spike 上界
+- 每個 conv 層有三個會出界的容量:壓縮佇列長度 `max_queue_len`、輸出 spike 上界
   `max_out_spikes`、掃描步數上界 `max_steps`。三個出界訊號都在 forward 裡算
   出來、由 `LayerDiag` 帶出。
 - 沒有「靜態精算一次永久有效」的做法(原本 `conv_param_search.py` 的 L1 靜態
@@ -19,7 +19,7 @@
   確定沒問題的當下權重),但重編譯這件事借用同一條 while 外圈。`max_steps`
   用的觀察值是 `LayerDiag.needed["max_steps"]`(理論上界,數學推導見
   docs/math/掃描步數上界推導.md,因為 `max_steps` 沒有天然的經驗值可用——設
-  太小是掃描提早停止、靜默算錯,不像 `L`/`max_out_spikes` 是真實資料裝不下
+  太小是掃描提早停止、靜默算錯,不像 `max_queue_len`/`max_out_spikes` 是真實資料裝不下
   的被動事實);`max_out_spikes` 用的是 `LayerDiag.needed["max_out_spikes"]`(真實觀察值,
   跟長大訊號同一個量,理由見 docs/問題紀錄.md 第十四節——曾經嘗試過讓
   `max_out_spikes` 也用理論上界,實測太鬆、已撤回)。長大/縮小的目標值都用
@@ -50,6 +50,7 @@ import yaml
 
 from data.src.nmnist import NMNISTDataset
 from salt_core.capacity import grown_to_fit, reduce_over_batch, shrunk_to_observed
+from salt_core.io import network_to_dict, save_weights
 from salt_core.layers import ConvLayer
 from example.checkpoint import Checkpointer
 from example.dormant import dormant_report
@@ -57,7 +58,7 @@ from example.metrics_log import MetricsLog
 from example.models.conv_net import build_decoder, build_growth_policies, build_network
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR, REPO_ROOT, resolve_config
 from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, capacity_changes, describe_growth,
-                           get_git_commit_hash, make_evaluate, save_params_npz,
+                           get_git_commit_hash, make_evaluate,
                            set_seed, split_raw_events, take_raw_events, weight_snapshot_path)
 
 
@@ -164,6 +165,7 @@ def _describe_shrink(old_layers: list, new_layers: list) -> list[str]:
 class Best(NamedTuple):
     """跨 run_epochs 呼叫累積的「val_accuracy 最好的那個 epoch」。"""
     params: object
+    network: object       # 那個 epoch 當下的網路(含容量),跟 params 一起存
     val_accuracy: float
     epoch: int
 
@@ -248,7 +250,8 @@ def run_epochs(*, network, policies, train_step, evaluate, params, opt_state,
 
         val_accuracy, _val_loss, _, val_regrows = evaluate(params, val_split)
         if val_accuracy > best.val_accuracy:
-            best = Best(params=params, val_accuracy=val_accuracy, epoch=epoch)
+            best = Best(params=params, network=network, val_accuracy=val_accuracy,
+                        epoch=epoch)
         dormant, dormant_regrows = dormant_report(network, params, probe, policies,
                                                   layer_names=dormant_names)
         if dormant_regrows:
@@ -256,16 +259,16 @@ def run_epochs(*, network, policies, train_step, evaluate, params, opt_state,
         metrics_log.finish_epoch(epoch=epoch, val_accuracy=val_accuracy, layers=layers,
                                   dormant=dormant, val_capacity_regrows=val_regrows,
                                   dormant_capacity_regrows=dormant_regrows)
-        checkpointer.save(params=params, opt_state=opt_state,
+        checkpointer.save(network=network, params=params, opt_state=opt_state,
                           shuffle_key=shuffle_key, epoch=epoch)
 
-        # 逐 epoch 權重快照(純權重,不含 optimizer state):給事後分析工具用
+        # 逐 epoch 權重快照(權重 + 當下的網路,不含 optimizer state):給事後分析工具用
         # (例如強制 chunk_size=1 重跑 run_network(..., trace=True) 拿逐事件精確軌跡,
         # 見 docs/監測規格.md)。跟 checkpointer 的 checkpoint.npz 是兩回事——
         # checkpoint.npz 只為了續練,每個 epoch 覆寫;這裡逐 epoch 各自保留
         # 一份,才能事後回頭看任何一個存過的 epoch。
         if weight_snapshot_every > 0 and epoch % weight_snapshot_every == 0:
-            save_params_npz(weight_snapshot_path(weights_dir, epoch), layers, params)
+            save_weights(weight_snapshot_path(weights_dir, epoch), network, params)
 
         # 縮小檢查:只在這個 epoch 真正成功跑完、checkpoint 也存完之後才問,
         # 用的是這個 epoch 累積的真實觀察值,不是探測批。
@@ -342,7 +345,7 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
     exp_dir = _make_exp_dir(run_name, exp_root)
 
     # 逐 epoch 權重快照(docs/監測規格.md):train.weight_snapshot_every > 0 才開。
-    # 只存純權重(save_params_npz,跟 params.npz 同格式),不含 optimizer state——
+    # 只存權重跟當下的網路(save_weights,跟 params.npz 同格式),不含 optimizer state——
     # 事後要精確重現某個 epoch 當下的 forward,只需要權重,不需要訓練狀態。
     weight_snapshot_every = int(train_cfg.get("weight_snapshot_every", 0))
     weights_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
@@ -358,7 +361,7 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
     # while 外圈 = 自動長大控制系統:setup params(fresh / checkpoint)→ 跑
     # run_epochs → 沒出界就結束、出界就換成放大後的 layers 重編譯再繞。
     # 「跑 epoch」本身完全在 run_epochs 裡,不知道長大這回事。
-    best = Best(params=None, val_accuracy=-1.0, epoch=-1)
+    best = Best(params=None, network=None, val_accuracy=-1.0, epoch=-1)
     while True:
         net = network.replace_layers(layers)
         # 優化器組裝(`weight_decay`/`grad_clip_norm`)見 `_build_optimizer`。
@@ -371,13 +374,13 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
             shuffle_key = jax.random.PRNGKey(train_cfg["seed"] + 1)
             start_epoch = 0
             if best.params is None:  # 一個 epoch 都還沒完成過的 fallback
-                best = best._replace(params=params)
+                best = best._replace(params=params, network=net)
         else:
-            template_params = net.init(jax.random.PRNGKey(0))
-            params, opt_state, shuffle_key, ckpt_epoch = checkpointer.load(
-                params_template=template_params,
-                opt_state_template=optimizer.init(template_params))
-            start_epoch = ckpt_epoch + 1
+            # checkpoint 存的網路是出界前的容量;續練用放大後的 net,只取權重跟訓練狀態
+            state = checkpointer.load(
+                opt_state_template=optimizer.init(net.init(jax.random.PRNGKey(0))))
+            params, opt_state, shuffle_key = state.params, state.opt_state, state.shuffle_key
+            start_epoch = state.epoch + 1
 
         outcome = run_epochs(
             network=net, policies=policies,
@@ -398,36 +401,34 @@ def train(config_path: str, exp_root=EXPERIMENTS_DIR):
             break
         layers = outcome.grown_layers
 
-    best_params, best_val_accuracy, best_epoch = best
-    # 一份 write-once 的 run 紀錄:輸入 config 快照 + commit + 最終容量 + 最佳
+    # 一份 write-once 的 run 紀錄:輸入 config 快照 + commit + 結束時的網路 + 最佳
     # 指標。輸入(raw_cfg)不被改;結果不塞回它。
     run_record = {
         "config": raw_cfg,
         "git_commit": get_git_commit_hash(str(REPO_ROOT)),
         "xla_flags": os.environ.get("XLA_FLAGS", ""),
         "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
-        "best": {"val_accuracy": best_val_accuracy, "epoch": best_epoch},
-        "final_capacity": {layer.name: dict(layer.capacity)
-                           for layer in layers if layer.capacity is not None},
+        "best": {"val_accuracy": best.val_accuracy, "epoch": best.epoch},
+        "network": network_to_dict(net),
         "last_epoch_obs": ({layer.name: metrics_log.last_needed(layer)
                             for layer in layers if layer.capacity is not None}
                            if metrics_log.rows else {}),
     }
     metrics_log.write_csv(os.path.join(exp_dir, TRAIN_DIRNAME, "metrics.csv"))
-    _write_experiment(run_record, params, best_params, exp_dir, layers)
+    _write_experiment(run_record, net, params, best, exp_dir)
     metrics_log.print_summary(layers)
     return exp_dir, net, params, train_split, val_split, run_record
 
 
-def _write_experiment(run_record: dict, params, best_params, exp_dir: str,
-                       layers: list) -> None:
-    """把 run 紀錄 + 權重寫進 exp_dir。metrics.csv 跟結尾的逐層用量摘要由
-    MetricsLog 負責(見 example/metrics_log.py)。"""
+def _write_experiment(run_record: dict, network, params, best: Best, exp_dir: str) -> None:
+    """把 run 紀錄 + 權重寫進 exp_dir:params.npz 帶 network(結束時的網路),best_params.npz 帶
+    best epoch 當下的網路。metrics.csv 跟結尾的逐層用量摘要由 MetricsLog 負責。"""
     with open(os.path.join(exp_dir, TRAIN_DIRNAME, "run.yaml"), "w", encoding="utf-8") as f:
         yaml.safe_dump(run_record, f, allow_unicode=True, sort_keys=False)
 
-    save_params_npz(os.path.join(exp_dir, TRAIN_DIRNAME, "params.npz"), layers, params)
-    save_params_npz(os.path.join(exp_dir, TRAIN_DIRNAME, "best_params.npz"), layers, best_params)
+    save_weights(os.path.join(exp_dir, TRAIN_DIRNAME, "params.npz"), network, params)
+    save_weights(os.path.join(exp_dir, TRAIN_DIRNAME, "best_params.npz"), best.network,
+                 best.params)
 
     best = run_record["best"]
     print(f"訓練結束,結果存到 {exp_dir}")

@@ -10,7 +10,7 @@ from salt_core.quant.calibrate import merge_v_ranges, v_abs_max_per_channel, v_r
 
 # conv:2 channel x 1 x 2 = 4 顆神經元;FC:3 顆
 CONV = ConvLayer(name="conv", ic=1, h_in=1, w_in=2, oc=2, k=1, s=1, p=0, init_k=5.0,
-                 chunk_size=1, L=3)
+                 chunk_size=1, max_queue_len=3)
 FC = FCLayer(name="out", n_in=4, n_out=3, init_k=5.0)
 
 

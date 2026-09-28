@@ -1,8 +1,13 @@
 """example/replay_epoch.py 的測試:用共用的參考訓練(conftest.py 的 reference_run)重跑 epoch 0。"""
+import csv
+import os
+
 import numpy as np
 
+from example.metrics_log import KNOB_COLUMNS
 from example.replay_epoch import load_epoch_weights, load_train_sample, replay_sample
-from example.utils import load_run_record, rebuild_network
+from example.utils import TRAIN_DIRNAME, WEIGHTS_DIRNAME, load_run_record, weight_snapshot_path
+from salt_core.io import load_weights
 from salt_core.network import RawEvents
 
 # chunk_size 不同,浮點加總的順序就不同。這組資料 FC 吃約 2.2 萬筆事件,
@@ -15,6 +20,24 @@ def test_load_epoch_weights_forces_chunk_size_one(reference_run):
     network, params = load_epoch_weights(exp_dir, 0)
     assert [layer.chunk_size for layer in network.layers] == [1] * len(network.layers)
     assert len(params) == len(network.layers)
+
+
+def test_snapshot_carries_capacity_of_its_epoch(reference_run):
+    """每個 epoch 的權重快照帶的容量,等於 metrics.csv 那個 epoch 記的容量。"""
+    (exp_dir, *_), _stdout = reference_run
+    with open(os.path.join(exp_dir, TRAIN_DIRNAME, "metrics.csv"), newline="",
+              encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    for row in rows:
+        epoch = int(row["epoch"])
+        network, _ = load_weights(weight_snapshot_path(os.path.join(exp_dir, WEIGHTS_DIRNAME),
+                                                       epoch))
+        for layer in network.layers:
+            if layer.capacity is None:
+                continue
+            expected = {knob: int(row[f"{layer.name}_{KNOB_COLUMNS[knob].capacity}"])
+                        for knob in layer.capacity}
+            assert dict(layer.capacity) == expected, f"epoch {epoch} {layer.name}"
 
 
 def test_replay_matches_training_forward(reference_run):
@@ -33,6 +56,8 @@ def test_replay_matches_training_forward(reference_run):
         assert trace.v_steps.shape[0] == layer.n_neurons
         assert trace.spike_mask.shape == trace.v_steps.shape == trace.event_ms.shape
 
-    result = rebuild_network(run_record).apply(params, RawEvents.checked(*sample)).last
+    training_network, _ = load_weights(
+        weight_snapshot_path(os.path.join(exp_dir, WEIGHTS_DIRNAME), 0))
+    result = training_network.apply(params, RawEvents.checked(*sample)).last
     np.testing.assert_allclose(np.asarray(traces[-1].v_steps[:, -1]),
                                np.asarray(result.v_final), rtol=RTOL)

@@ -25,8 +25,7 @@ import yaml
 from data.src.nmnist import NMNISTDataset
 from example.models.conv_net import build_decoder, build_growth_policies
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
-from example.utils import (load_run_params, load_run_record, rebuild_network, split_raw_events,
-                           take_raw_events)
+from example.utils import load_run_params, load_run_record, split_raw_events, take_raw_events
 from salt_core.capacity import Capacity, LayerDiag, grown_to_fit
 from salt_core.network import Network
 from salt_core.quant.backend import QuantBackend
@@ -47,10 +46,9 @@ def load_run():
     """回傳 (network, decoder, params, val_split, batch_size),全部照那次 run 的設定。"""
     run_record = load_run_record(str(RUN_DIR))
     data_cfg = run_record["config"]["data"]
-    network = rebuild_network(run_record)
+    network, params = load_run_params(str(RUN_DIR), "best")
     decoder = build_decoder(run_record["config"]["model"], network.layers)
     decoder.validate(network.layers[-1])
-    params = load_run_params(str(RUN_DIR), network.layers, "best")
     dataset = NMNISTDataset(DATASET_ROOT, max_events=int(data_cfg["max_events"]))
     split = dataset.build_split(seed=int(data_cfg["seed_val"]),
                                 n_samples=int(data_cfg["val_size"]), which="val")

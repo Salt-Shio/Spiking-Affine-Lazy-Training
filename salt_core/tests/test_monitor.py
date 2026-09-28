@@ -33,8 +33,8 @@ _C2 = dict(ic=8, h_in=17, w_in=17, oc=16, k=3, s=2, p=1)
 
 
 def _layers():
-    conv1 = ConvLayer(name="conv1", **_C1, L=185, max_out_spikes=4000, init_k=5.0)
-    conv2 = ConvLayer(name="conv2", **_C2, L=400, max_out_spikes=12000, init_k=5.0)
+    conv1 = ConvLayer(name="conv1", **_C1, max_queue_len=185, max_out_spikes=4000, init_k=5.0)
+    conv2 = ConvLayer(name="conv2", **_C2, max_queue_len=400, max_out_spikes=12000, init_k=5.0)
     out = FCLayer(name="out", n_in=conv2.n_neurons, n_out=10, chunk_size=64, init_k=5.0)
     return [conv1, conv2, out]
 
@@ -158,7 +158,7 @@ def test_traced_event_ms_within_input_range_or_nan():
     finite = ms[np.isfinite(ms)]
     assert finite.min() >= real.min() - TOL
     assert finite.max() <= real.max() + TOL
-    assert np.isnan(ms).any(), "L=185 遠大於事件數,應該有空轉步 = nan"
+    assert np.isnan(ms).any(), "max_queue_len=185 遠大於事件數,應該有空轉步 = nan"
 
 
 def test_run_network_trace_shape_and_alignment():

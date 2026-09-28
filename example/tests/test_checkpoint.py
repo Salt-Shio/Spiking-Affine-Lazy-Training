@@ -1,7 +1,7 @@
 """example/checkpoint.py 的存讀測試。
 
 每種 optimizer 先走兩步,存檔、讀回,檢查權重、optimizer 狀態、shuffle key、epoch
-逐值相同,而且讀回後的下一步 update 跟沒存讀過的一樣。
+逐值相同、網路描述相同,而且讀回後的下一步 update 跟沒存讀過的一樣。
 AdamW、梯度裁剪、餘弦退火用訓練腳本的 _build_optimizer 建,跟實際訓練同一條路。
 """
 import jax
@@ -10,8 +10,17 @@ import optax
 
 from example.checkpoint import Checkpointer
 from example.train_conv_compressed import _build_optimizer
+from salt_core.layers import ConvLayer, FCLayer
+from salt_core.network import Network
 
 _SHAPES = ((8, 2, 3, 3), (16, 8, 3, 3), (10, 1296))
+# 權重形狀是 _SHAPES 的網路,容量用非預設值,確認讀回的是存進去的容量
+_NETWORK = Network(input_shape=(2, 34, 34), layers=(
+    ConvLayer(name="conv1", ic=2, h_in=34, w_in=34, oc=8, k=3, s=2, p=1, init_k=5.0,
+              max_queue_len=185, max_out_spikes=5361, max_steps=146),
+    ConvLayer(name="conv2", ic=8, h_in=17, w_in=17, oc=16, k=3, s=2, p=1, init_k=5.0,
+              max_queue_len=1083, max_out_spikes=3417, max_steps=540),
+    FCLayer(name="out", n_in=1296, n_out=10, init_k=5.0)))
 _DATA_CFG = {"train_size": 16}
 _BATCH_SIZE = 4
 
@@ -42,17 +51,18 @@ def _assert_roundtrip(optimizer, path: str) -> None:
     shuffle_key = jax.random.PRNGKey(999)
 
     ckpt = Checkpointer(path)
-    ckpt.save(params=params, opt_state=opt_state, shuffle_key=shuffle_key, epoch=7)
+    ckpt.save(network=_NETWORK, params=params, opt_state=opt_state,
+              shuffle_key=shuffle_key, epoch=7)
     assert ckpt.exists() and ckpt.last_epoch == 7
 
-    template = _params(0)
-    loaded_params, loaded_opt_state, loaded_key, loaded_epoch = ckpt.load(
-        params_template=template, opt_state_template=optimizer.init(template))
+    loaded = ckpt.load(opt_state_template=optimizer.init(_params(0)))
+    loaded_params, loaded_opt_state = loaded.params, loaded.opt_state
 
+    assert loaded.network == _NETWORK
     _assert_trees_equal(params, loaded_params, "params")
     _assert_trees_equal(opt_state, loaded_opt_state, "opt_state")
-    assert jnp.array_equal(shuffle_key, loaded_key)
-    assert loaded_epoch == 7
+    assert jnp.array_equal(shuffle_key, loaded.shuffle_key)
+    assert loaded.epoch == 7
 
     next_update, _ = optimizer.update(_grad(params), opt_state, params)
     loaded_next_update, _ = optimizer.update(_grad(loaded_params), loaded_opt_state, loaded_params)

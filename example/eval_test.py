@@ -9,9 +9,7 @@ best_params。test set 是刻意分開、只在需要一個「最終、沒被調
                           [--params best|final]
 
 <exp_dir> 是一次訓練的輸出目錄(裡面要有 train/run.yaml + train/best_params.npz /
-train/params.npz)。網路形狀從 run.yaml 的 config 快照重建,壓縮容量(L /
-max_out_spikes)用 run.yaml 記的訓練結束時的最終值(訓練中可能長大過),
-權重從 npz 載入。
+train/params.npz)。網路(含容量)跟權重都從 npz 讀,npz 自帶存檔當下的網路。
 
 輸出(獨立的 eval/ 子資料夾,不改 train/ 底下任何東西):
   <exp_dir>/eval/<which>.yaml       accuracy / loss / confusion_matrix + 中繼資料
@@ -33,8 +31,7 @@ import yaml
 from data.src.nmnist import NMNISTDataset
 from example.models.conv_net import N_CLASSES, build_decoder, build_growth_policies
 from example.paths import DATASET_ROOT
-from example.utils import (EVAL_DIRNAME, load_run_params, load_run_record,
-                           make_evaluate, rebuild_network)
+from example.utils import EVAL_DIRNAME, load_run_params, load_run_record, make_evaluate
 
 
 def _confusion_matrix(labels: np.ndarray, preds: np.ndarray, n_classes: int) -> np.ndarray:
@@ -50,11 +47,10 @@ def evaluate_run(exp_dir: str, which: str, n_samples: int | None,
     model_cfg = run_record["config"]["model"]
     data_cfg = run_record["config"]["data"]
 
-    network = rebuild_network(run_record)
+    network, params = load_run_params(exp_dir, which_params)
     layers = network.layers
     decoder = build_decoder(model_cfg, layers)
     decoder.validate(layers[-1])
-    params = load_run_params(exp_dir, layers, which_params)
 
     dataset = NMNISTDataset(DATASET_ROOT, max_events=int(data_cfg["max_events"]))
     if n_samples is None:
