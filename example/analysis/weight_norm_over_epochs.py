@@ -1,7 +1,7 @@
-"""驗證候選機制表格(docs/問題紀錄.md §十五)第一條「輸出無上限,曲率無界
-增長」:逐 epoch 讀權重快照(`weight_snapshot_every=1` 存了 epoch_000~099),
-算每層 ||W||(Frobenius norm),看是否隨 epoch 持續增長、增長時間點是否對得上
-爆炸點(epoch38→39、48→49、62→64、73→75)。
+"""驗證 docs/問題紀錄.md「洞見:訓練中期梯度突然爆炸」
+候選機制表格的第一條「輸出無上限,曲率無界增長」:
+逐 epoch 讀權重快照(weight_snapshot_every=1),算每層 ||W||(Frobenius norm),看是否隨 epoch 增長、
+增長的時間點是否對得上爆炸點(epoch 38->39、48->49、62->64、73->75)。
 
 用法:
   python -m example.analysis.weight_norm_over_epochs <exp_dir_name>

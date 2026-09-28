@@ -1,6 +1,6 @@
-"""`viz/replay_panels.py` 的 `InputChannelPanel` 測試(合成事件,不需要訓練
-run)。跟 `ConvChannelPanel`/`FCWindowPanel` 的測試(`test_replay_panels.py`)
-分開放,因為 `InputChannelPanel` 不需要 `salt_core` 的層/trace,只吃原始
+"""viz/replay_panels.py 的 InputChannelPanel 測試(合成事件,不需要訓練
+run)。跟 ConvChannelPanel/FCWindowPanel 的測試(test_replay_panels.py)
+分開放,因為 InputChannelPanel 不需要 salt_core 的層/trace,只吃原始
 事件陣列——不用拖一次真實訓練當 fixture。"""
 import numpy as np
 

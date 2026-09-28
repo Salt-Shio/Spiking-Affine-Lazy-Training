@@ -1,10 +1,7 @@
-"""路徑 A/B(docs/問題紀錄.md §十五)通用版:給一個實驗目錄 + 爆炸前一個
-epoch 的權重快照 + 爆炸發生的 epoch,對整個 train split 做 forward,找
-loss/spike 數離群的樣本;再重建該 epoch 實際的 batch 切法(PRNG split,
-跟浮點非決定性無關,可精確重算),看那些離群樣本落在哪個 batch。
-
-`snapshot_epoch` 若剛好是 `target_epoch - 1`(權重存夠密,`weight_snapshot_every=1`),
-就是路徑 B——這份快照是真正爆炸前一刻的權重,不是近似值。
+"""docs/問題紀錄.md「洞見:訓練中期梯度突然爆炸」
+路徑 A/B 的通用版:給實驗目錄、爆炸前一個 epoch 的權重快照、爆炸的 epoch,對整個 train split
+做 forward 找 loss、spike 數離群的樣本,再重建那個 epoch 的 batch 切法(PRNG split,可以精確重算),
+看離群樣本落在哪個 batch。snapshot_epoch 等於 target_epoch - 1 時就是路徑 B(爆炸前一刻的權重)。
 
 用法:
   python -m example.analysis.inspect_explosion_batch <exp_dir_name> \
@@ -44,9 +41,8 @@ def _rebuild_train_split(run_record: dict):
 
 def per_sample_forward(run_record: dict, network, params: tuple, split,
                        batch_size: int = 20):
-    """對整個 train split 分批 forward(分批純粹省記憶體,跟訓練 batch_size
-    無關),回傳每筆樣本的 loss、預測類別、每層 spike 數(shape 皆
-    `(n_samples,)`/`{層名: (n_samples,)}`)。"""
+    """整個 train split 分批 forward(分批只為省記憶體),回傳每筆樣本的 loss、預測類別、每層 spike 數
+    (形狀 (n_samples,) 或 {層名: (n_samples,)})。"""
     layers = network.layers
     decoder = build_decoder(run_record["config"]["model"], layers)
     n = split.labels.shape[0]

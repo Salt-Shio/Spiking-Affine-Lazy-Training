@@ -1,5 +1,5 @@
 """viz/epoch_series.py 的單元測試(合成 csv/rows,不需要訓練 run,不碰任何
-`example`/`salt_core` 的知識——這個套件本來就不依賴它們)。"""
+example/salt_core 的知識——這個套件本來就不依賴它們)。"""
 import math
 import os
 

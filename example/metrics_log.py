@@ -1,12 +1,5 @@
-"""訓練期指標紀錄:每個 epoch 的 loss / firing rate / 梯度範數 / 解碼器指標 /
-壓縮容量真實用量,收成 metrics.csv 的一行,順便印進度。
-
-從 `train.py` 拆出來——原本那支腳本裡有五個平行的 per-epoch
-累加 dict、一段 ~20 行 inline 組 row、一段週期性 print 再從 row 重推字串、
-`_write_experiment` 又自己寫 csv + 跑一輪結尾 print。全部收進這個 class。
-
-不管:`best_params` / `best_val_accuracy` 的挑選(那是 checkpoint 選擇、留在
-`train()`)、`val_accuracy` 怎麼算(`train()` 算好傳進來)。
+"""訓練時的逐 epoch 指標:loss、firing rate、梯度範數、解碼器指標、容量跟用量,寫成 metrics.csv 的一列,
+順便印進度。best 的挑選跟 val_accuracy 的計算不在這裡。
 """
 import csv
 from typing import NamedTuple
@@ -28,16 +21,15 @@ KNOB_COLUMNS = {"max_queue_len": KnobColumns("max_event_queue", "obs_event_queue
 
 
 def _ratio(obs: int, cap: int) -> str:
-    """`已用/容量(百分比)`,`cap` 是 0(理論上不會發生,防禦性處理)就不算百分比。"""
+    """「已用/容量(百分比)」;cap 是 0 時不算百分比。"""
     return f"{obs}/{cap}({100.0 * obs / cap:.0f}%)" if cap else f"{obs}/{cap}"
 
 
 class MetricsLog:
     """一次訓練 run 的逐 epoch 指標。
 
-    `layer_names` / `dormant_names` 在建構時固定(動態放大重建 layer list 不改層名、
-    不改順序),之後每個 batch / epoch 把「當前的 layers」傳進來取容量的即時值。
-    dormant_names:有 dormant 欄位的層。
+    layer_names、dormant_names: 建構時固定;容量放大重建層時不改層名跟順序。
+    每個 batch、epoch 傳進當下的 layers,讀容量的現值。
     """
 
     def __init__(self, layer_names: list, dormant_names: list, total_epochs: int,
@@ -57,9 +49,7 @@ class MetricsLog:
 
     def record_batch(self, *, loss, layers: list, reduced_diags: list,
                      grad_norms: dict, decoder_metrics: dict) -> None:
-        """一個成功(沒出界)的 batch。`reduced_diags` 對齊 `layers`,元素是
-        `salt_core.layers.LayerDiag`(值是 device 純量,這裡 float/int 轉)。
-        """
+        """一個沒出界的 batch。reduced_diags 對齊 layers,是合併過的 LayerDiag。"""
         self._losses.append(float(loss))
         for k, v in decoder_metrics.items():
             self._dec.setdefault(k, []).append(float(v))
@@ -71,15 +61,13 @@ class MetricsLog:
     def finish_epoch(self, *, epoch: int, val_accuracy: float, layers: list, needed: dict,
                      val_capacity_regrows: int, dormant_capacity_regrows: int,
                      dormant: dict | None = None) -> None:
-        """組這個 epoch 的 row(欄位順序:epoch/loss/val → 有容量的層的容量+用量 →
-        逐層 firing rate → 逐層 grad norm → dormant 層的指標 → 解碼器指標),
-        append,該印就印。
+        """組這個 epoch 的一列、加進紀錄,輪到時印進度。
 
-        needed:層名 -> 旋鈕名 -> 這個 epoch 的最大需求,有容量的層都要有。
-        `dormant`:{層名: {"dormant_frac": float}}(見
-        salt_core/dormant.py),沒傳則對應欄位填 nan。
-        val_capacity_regrows / dormant_capacity_regrows:val 評估、dormant 統計
-        因為容量出界重算的次數。
+        欄位順序:epoch、loss、val,有容量的層的容量跟用量,逐層 firing rate,逐層梯度範數,dormant 層,
+        解碼器指標。
+        needed: 層名 -> 旋鈕名 -> 這個 epoch 的最大需求,有容量的層都要有。
+        dormant: {層名: {"dormant_frac": float}},沒給的欄位填 nan。
+        val_capacity_regrows、dormant_capacity_regrows: val 評估、dormant 統計因為容量出界重算的次數。
         """
         row = {"epoch": epoch, "train_loss": float(np.mean(self._losses)),
                "val_accuracy": val_accuracy, "val_capacity_regrows": val_capacity_regrows}
@@ -106,8 +94,7 @@ class MetricsLog:
             self._print_progress(row, layers)
 
     def _print_progress(self, row: dict, layers: list) -> None:
-        """人看的進度輸出,每層一行,固定 `已用/容量(百分比)` 格式(不用逗號
-        分隔,cap=0 時退化成 `已用/0`,避免除以零)。"""
+        """進度輸出,每層一行,「已用/容量(百分比)」。"""
         dec_str = " ".join(f"{k}={row[f'decoder_{k}']:.4f}" for k in self._dec)
         print(f"epoch {row['epoch']}: loss={row['train_loss']:.4f} "
               f"val_acc={row['val_accuracy']:.4f}"
@@ -146,7 +133,7 @@ class MetricsLog:
             writer.writerows(self._rows)
 
     def print_summary(self, layers: list) -> None:
-        """訓練結束的逐層容量 + 最後一個 epoch 的真實用量比例。"""
+        """訓練結束時印逐層容量跟最後一個 epoch 的用量比例。"""
         capacity_layers = [layer for layer in layers if layer.capacity is not None]
         for layer in capacity_layers:
             values = " ".join(f"{knob}={value}" for knob, value in layer.capacity.items())

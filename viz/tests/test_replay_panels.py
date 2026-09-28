@@ -1,4 +1,4 @@
-"""`viz/replay_panels.py` 的 ConvChannelPanel、FCWindowPanel 測試:用手工建的層跟
+"""viz/replay_panels.py 的 ConvChannelPanel、FCWindowPanel 測試:用手工建的層跟
 逐步軌跡,驗證 frame(t) 的形狀、值跟層的幾何,以及 AnimatedPanel 介面
 (viz/channel_grid.py)要求的屬性都對得上。
 """

@@ -104,9 +104,7 @@ def test_optimizer_knobs_run_through_training(synth, run_root):
 
 
 def test_grad_clip_norm_none_matches_plain_adamw():
-    """`train.grad_clip_norm` 不填(預設)時,`build_optimizer` 要跟原本的
-    `optax.adamw` 逐位元一致——「不設就是原樣通過」的慣例,跟
-    `score_cap=None`/`weight_decay=0` 同一套。"""
+    """train.grad_clip_norm 不填時,build_optimizer 跟 optax.adamw 的 update 逐位元相同。"""
     train_cfg = {"lr": 1e-2, "weight_decay": 0.0}
     built = build_optimizer(train_cfg, n_train=40, batch_size=4)
     plain = optax.adamw(1e-2, weight_decay=0.0)
@@ -119,13 +117,11 @@ def test_grad_clip_norm_none_matches_plain_adamw():
 
 
 def test_grad_clip_norm_changes_update_relative_to_unclipped():
-    """驗證 `grad_clip_norm` 真的接進 optimizer chain、且順序在 `adamw` 前面
-    (docs/math/梯度下降曲率穩定性推導.md §8.1)。Adam 對非零梯度的 update
-    大小本身是比例縮放不變的(踩過的坑:單純把梯度縮小一點,Adam 會自己把
-    update 正規化回同一個量級,測不出差異)——要把 `grad_clip_norm` 設到讓
-    夾完的梯度掉到 Adam 內部 `eps`(1e-8)量級以下,`m/sqrt(v+eps)` 的行為
-    才會明顯偏離未夾版本,才算真的驗證到 clip 有接進管線、不是被 Adam
-    悄悄吃掉。"""
+    """grad_clip_norm 有接進 optimizer chain,而且在 adamw 前面(見 docs/math/梯度下降曲率穩定性推導.md「症狀層:gradient clipping」)。
+
+    Adam 的 update 對梯度大小有比例不變性,只把梯度縮小一點測不出差異;要夾到 Adam 內部 eps(1e-8)
+    以下,m/sqrt(v+eps) 才會明顯不同。
+    """
     params = {"w": jnp.array([1.0, 1.0, 1.0])}
     huge_grad = {"w": jnp.array([1e6, 1e6, 1e6])}
 
@@ -139,9 +135,7 @@ def test_grad_clip_norm_changes_update_relative_to_unclipped():
 
 
 def test_score_cap_none_matches_plain_cross_entropy():
-    """`score_cap=None`(預設)時,`cross_entropy_loss` 要跟原始
-    `optax.softmax_cross_entropy` 逐位元一致——這是「不設就是原樣通過」的
-    基本保證。"""
+    """score_cap=None 時跟 optax.softmax_cross_entropy 逐位元相同。"""
     scores = jnp.array([[0.0, 3.0, -1.0]])
     labels_onehot = jax.nn.one_hot(jnp.array([1]), 3)
 
@@ -152,9 +146,8 @@ def test_score_cap_none_matches_plain_cross_entropy():
 
 
 def test_score_cap_does_not_distort_scores_far_below_the_cap():
-    """`score_cap` 只在分數逼近上限時才該生效(docs/math/梯度下降曲率穩定性
-    推導.md §8.4)——分數遠小於 cap 時,`tanh(x/C) ≈ x/C`,loss 應該幾乎跟
-    不設 cap 時一樣,不能連正常訓練階段的推力都跟著打折。"""
+    """分數遠小於 cap 時 tanh(x/C) ≈ x/C,loss 幾乎跟不設 cap 一樣
+    (見 docs/math/梯度下降曲率穩定性推導.md「根因層之三:夾住輸出上限(score cap)」)。"""
     scores = jnp.array([[0.0, 1.0, 0.0]])  # logit 差距只有 1,遠低於 cap
     labels_onehot = jax.nn.one_hot(jnp.array([1]), 3)
 
@@ -165,9 +158,7 @@ def test_score_cap_does_not_distort_scores_far_below_the_cap():
 
 
 def test_score_cap_saturates_extreme_scores_to_a_fixed_loss():
-    """分數遠超過 cap 時,`tanh` 飽和到 ±1,不管原始分數多誇張,轉換後的分數
-    都趨近同一個值——loss 因此不再隨原始分數繼續下降,不像沒有 cap 時
-    logit 差距可以無界增長、loss 可以無界壓向 0。"""
+    """分數遠超過 cap 時 tanh 飽和到 ±1,原始分數再大 loss 都趨近同一個值,不會無界壓向 0。"""
     labels_onehot = jax.nn.one_hot(jnp.array([1]), 3)
     loss_1e6 = cross_entropy_loss(jnp.array([[0.0, 1e6, 0.0]]), labels_onehot, 6.0)
     loss_1e9 = cross_entropy_loss(jnp.array([[0.0, 1e9, 0.0]]), labels_onehot, 6.0)
@@ -177,19 +168,15 @@ def test_score_cap_saturates_extreme_scores_to_a_fixed_loss():
 
 
 def test_build_learning_rate_without_cosine_decay_returns_plain_float():
-    """`train.lr_cosine_decay` 不填(預設)時,`build_learning_rate` 原樣
-    傳回 `train.lr` 這個純量,不包成 schedule——這是「不設就是原樣通過」的
-    基本保證,跟 `score_cap=None`/`weight_decay=0` 同一個慣例。"""
+    """train.lr_cosine_decay 不填時,build_learning_rate 原樣回傳 train.lr 這個純量。"""
     train_cfg = {"lr": 1e-2, "epochs": 10}
     lr = build_learning_rate(train_cfg, n_train=40, batch_size=4)
     assert lr == 1e-2
 
 
 def test_build_learning_rate_cosine_decay_starts_high_ends_low():
-    """`lr_cosine_decay=True` 時,回傳的是 schedule(呼叫得出值的函式),
-    第 0 步等於 `train.lr`,退火到最後一步時降到接近 `alpha` 那個下限比例
-    (docs/math/梯度下降曲率穩定性推導.md 第 5 節:讓 $2/\\eta$ 隨訓練進行
-    升高)。"""
+    """lr_cosine_decay=True 時回傳 schedule:第 0 步等於 train.lr,最後一步降到接近 alpha 的下限比例
+    (見 docs/math/梯度下降曲率穩定性推導.md「穩定條件與 2/eta 門檻」)。"""
     train_cfg = {"lr": 1e-2, "epochs": 10, "lr_cosine_decay": True, "lr_cosine_alpha": 0.0}
     schedule = build_learning_rate(train_cfg, n_train=40, batch_size=4)
     total_steps = train_cfg["epochs"] * (40 // 4)  # 10 * 10 = 100

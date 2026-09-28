@@ -13,7 +13,7 @@ _DISCRETE_OFF_RGB = to_rgb("#d9d9d9")
 
 
 def _grid_axes(fig):
-    """`fig.axes` 混了 `colorbar()` 額外加的 axes,只留網格本體那些。"""
+    """fig.axes 混了 colorbar() 額外加的 axes,只留網格本體那些。"""
     return [ax for ax in fig.axes if ax.get_label() != "<colorbar>"]
 
 
@@ -143,8 +143,7 @@ def test_render_nan_pixel_uses_pad_color_for_discrete_image():
 
 
 class _FakePanel:
-    """`AnimatedPanel` 介面的最小測試替身——不代表 conv 或 FC 的任何真實語意,
-    純粹用來驗證 `ChannelGridAnimation` 這個共用機制本身的行為。"""
+    """AnimatedPanel 的測試替身,驗證 ChannelGridAnimation 本身的行為。"""
 
     def __init__(self, frames, discrete: bool = False, title: str | None = None,
                  extent: tuple | None = None, xlabel: str | None = None,
@@ -295,11 +294,8 @@ def test_animation_rows_are_independent_of_each_other():
 
 
 def test_animation_row_height_weight_scales_row_relative_to_others():
-    # 兩排各一個 panel,第二排 height=0.5:第二排的實際物理高度應該接近第一
-    # 排的一半。用 window_extent(畫布的絕對像素座標)量,不是用
-    # get_position()——後者對「axes 在 subfigure 裡面」回傳的是相對那個
-    # subfigure 自己的座標,不是相對整張畫布,兩排會量出一樣的比例,測不出
-    # height 這個參數有沒有真的生效。
+    # 第二排 height=0.5,物理高度應該約是第一排的一半。用 window_extent(整張畫布的像素座標)量;
+    # get_position() 回傳相對 subfigure 的座標,兩排量出來一樣,測不出 height 有沒有生效。
     tall = _FakePanel(np.zeros((3, 4, 4)))
     short = _FakePanel(np.zeros((3, 4, 4)))
 

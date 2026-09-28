@@ -1,30 +1,15 @@
-"""`event_ms`(逐神經元、逐步的真實事件時間戳)攤成一條等距的真實時間軸。
+"""逐神經元、逐步的事件時間 event_ms 攤成等距的真實時間軸,給動畫用。
 
-`example/replay_epoch.py` 保證 `chunk_size=1`,所以每個非 idle 步剛好對應
-一筆真實事件——同一顆神經元的 `event_ms`(忽略 `nan` 的 idle 尾巴)嚴格遞增。
-這裡不用再處理「一步吃到 chunk 裡好幾筆事件中的哪一筆」的模糊地帶。
-
-離散量(`spike_mask`)用 `resample_pulse` 做瞬時顯示:spike 是一個時間點上
-發生的瞬時事件,事件跟事件之間這個 neuron 根本沒有被計算過(不是「還在
-fire」,是單純沒發生任何事),所以某個 frame 有沒有落到真實事件就是有/沒有,
-不會沿用前一個 frame 的值。連續量(`v_steps`)用 `resample_decay` 做衰減插值
-(用該層的 `tau` 算 `decay = 1 - 1/tau`,frame 落在兩筆事件中間時從上一筆事件
-的值往前衰減——電位是真的連續存在、持續衰減的物理量,「沿用前一筆事件的值
-再衰減」才有意義,這點跟 spike 不一樣)。兩者都不知道 `spike_mask`/`v_steps`
-這些字眼,只吃 `(event_ms, values)` 這組通用資料。
-
-`sliding_windows` 是給「神經元數量/時間範圍不受控制地變大,整張圖擠成一片
-看不出誰是誰」這個問題用的:不試圖把全部神經元、全部時間塞進一張圖,而是
-在已經算好的 `(n_neurons, n_frames)` 整段結果上,逐 frame 只切一小塊窗口
-(選定的神經元範圍 x 目前播放時間附近的一小段時間)出來畫,窗口本身夠小,
-每個 pixel 才有意義。
+輸入要是 chunk_size=1 跑出來的軌跡:每個非空轉步剛好一筆事件,同一顆神經元的 event_ms 嚴格遞增。
+- resample_pulse(離散量,例如 spike):每幀只看自己時間窗裡有沒有事件,沒有就填背景值。
+- resample_decay(連續量,例如膜電位):從上一筆事件的值用 decay = 1 - 1/tau 衰減到這一幀。
+- sliding_windows:從整段結果逐幀切一小塊窗口,神經元多、時間長時才看得清楚。
 """
 import numpy as np
 
 
 def build_frame_grid(t_start: float, t_end: float, dt: float) -> np.ndarray:
-    """`[t_start, t_end]` 之間、間隔 `dt` 的等距時間格(單位跟 `event_ms` 一樣
-    是毫秒)。`t_end` 落在格子之間時,最後一格 <= `t_end`,不會超出去。"""
+    """[t_start, t_end] 之間間隔 dt 的等距時間格(毫秒),最後一格 <= t_end。"""
     if dt <= 0:
         raise ValueError(f"dt 必須 > 0,收到 {dt}")
     if t_end < t_start:
@@ -34,15 +19,11 @@ def build_frame_grid(t_start: float, t_end: float, dt: float) -> np.ndarray:
 
 
 def pad_events_by_neuron(neuron_idx: np.ndarray, event_ms: np.ndarray, n_neurons: int) -> np.ndarray:
-    """把一串扁平的事件(每筆事件一個 `(neuron_idx, event_ms)`,例如原始輸入
-    的 AER 事件流——不是逐神經元先分好的)按 `neuron_idx` 分組、組內按時間
-    遞增排序,重排成 `resample_pulse` 吃的 `(n_neurons, max_steps)` 形狀(跟
-    `LayerForwardTrace.event_ms` 同一種形狀;不夠長的神經元用 `nan` 補
-    滿)。純粹重排,不做任何模擬——每筆事件屬於哪個神經元、幾點發生已經
-    直接給定。"""
+    """扁平的事件串(每筆一個 neuron_idx、event_ms)按神經元分組、組內照時間排序,
+    重排成 (n_neurons, max_steps),不夠長的補 nan。形狀同 LayerForwardTrace.event_ms。"""
     neuron_idx = np.asarray(neuron_idx).astype(np.int64)
     event_ms = np.asarray(event_ms, dtype=np.float64)
-    order = np.lexsort((event_ms, neuron_idx))  # 先按 neuron_idx,同神經元內再按時間遞增
+    order = np.lexsort((event_ms, neuron_idx))  # 先照神經元,同神經元內照時間
     sorted_idx = neuron_idx[order]
     sorted_ms = event_ms[order]
     counts = np.bincount(neuron_idx, minlength=n_neurons)
@@ -58,10 +39,8 @@ def pad_events_by_neuron(neuron_idx: np.ndarray, event_ms: np.ndarray, n_neurons
 
 def _last_event_before(event_ms_row: np.ndarray, values_row: np.ndarray,
                         frame_ms: np.ndarray, before_first):
-    """單一神經元:對每個 frame 找「最後一筆 `<= frame_ms` 的真實事件」,回傳
-    `(該事件的 t, 該事件的 value, 該 frame 是否真的找到事件)`。找不到(frame
-    早於第一筆事件,或這顆神經元整條軌跡都沒有真實事件)時,`t=0`(LIF 的
-    起始時刻)、`value=before_first`。"""
+    """單一神經元:每一幀找最後一筆 <= frame_ms 的事件,回傳 (t, value, 有沒有找到)。
+    找不到時 t=0、value=before_first。"""
     valid = ~np.isnan(event_ms_row)
     valid_ms = event_ms_row[valid]
     valid_vals = values_row[valid]
@@ -79,13 +58,11 @@ def _last_event_before(event_ms_row: np.ndarray, values_row: np.ndarray,
 
 def resample_pulse(event_ms: np.ndarray, values: np.ndarray, frame_ms: np.ndarray,
                     dt: float, background) -> np.ndarray:
-    """離散量的瞬時顯示重取樣。`event_ms`/`values` 形狀 `(n, steps)`,
-    `frame_ms` 形狀 `(frames,)`(`build_frame_grid` 產生的等距格,間距就是
-    `dt`)。回傳 `(n, frames)`:每個 frame 只看自己的時間窗
-    `[frame_ms[f], frame_ms[f]+dt)` 裡有沒有真實事件——有,填那筆事件的值
-    (窗內不只一筆就用最晚的一筆);沒有,填 `background`。**不會**像
-    `resample_decay` 那樣往前找更早的事件——事件跟事件之間沒有「持續狀態」
-    這種東西可以沿用。"""
+    """離散量的重取樣。event_ms、values: (n, steps);frame_ms: (frames,),build_frame_grid 產生。
+
+    回傳 (n, frames):第 f 幀只看 [frame_ms[f], frame_ms[f] + dt) 裡的事件,有就填值(多筆取最晚的),
+    沒有就填 background,不沿用前面的事件。
+    """
     event_ms = np.asarray(event_ms)
     values = np.asarray(values)
     frame_ms = np.asarray(frame_ms)
@@ -106,12 +83,10 @@ def resample_pulse(event_ms: np.ndarray, values: np.ndarray, frame_ms: np.ndarra
 
 
 def sliding_windows(array: np.ndarray, center_indices, half_width: int, pad_value) -> np.ndarray:
-    """對 `array`(形狀 `(rows, n_frames)`,任何逐欄資料——不知道欄位代表
-    毫秒還是別的)的欄位軸,對每個 `center_indices` 裡的欄位索引切出
-    `[center-half_width, center+half_width]`(寬 `2*half_width+1`)的窗口。
-    超出 `array` 邊界的部分填 `pad_value`,不夾住、不循環——邊界附近的窗口
-    本來就該比較短,填洞讓呼叫端一眼看出「這裡沒有真實資料」,不是悄悄拿
-    別的欄位頂替。回傳 `(len(center_indices), rows, 2*half_width+1)`。"""
+    """array: (rows, n_frames)。對每個 center_indices 切出欄 [center - half_width, center + half_width]。
+
+    超出邊界的欄填 pad_value,不夾、不循環。回傳 (len(center_indices), rows, 2 * half_width + 1)。
+    """
     array = np.asarray(array)
     center_indices = np.asarray(center_indices)
     rows, n_frames = array.shape
@@ -130,11 +105,9 @@ def sliding_windows(array: np.ndarray, center_indices, half_width: int, pad_valu
 
 def resample_decay(event_ms: np.ndarray, values: np.ndarray, frame_ms: np.ndarray,
                     tau: float, before_first: float = 0.0) -> np.ndarray:
-    """連續量的衰減插值重取樣。先找「最後一筆 `<= frame_ms` 的 `(t_last,
-    v_last)`」,再用 `decay = 1 - 1/tau` 算 `v_last * decay**(frame_ms -
-    t_last)`(對齊 `salt_core/float/affine.py` 的仿射衰減)。早於第一筆事件的 frame
-    從 `t=0, v=before_first` 開始衰減——`before_first` 預設 0,對齊神經元真正
-    的起始電位(不是拿 `nan` 隨便填)。"""
+    """連續量的重取樣:找最後一筆 <= frame_ms 的 (t_last, v_last),值是
+    v_last * (1 - 1/tau) ** (frame_ms - t_last)。早於第一筆事件時從 t=0、v=before_first(預設 0)開始衰減。
+    """
     event_ms = np.asarray(event_ms)
     values = np.asarray(values)
     frame_ms = np.asarray(frame_ms)

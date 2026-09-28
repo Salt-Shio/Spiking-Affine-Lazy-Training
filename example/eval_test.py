@@ -1,23 +1,12 @@
-"""在 test set(或 val set)上評估一個已完成的訓練 run。
-
-訓練腳本(`example/train.py`)只在訓練過程中看 val set、用它挑
-best_params。test set 是刻意分開、只在需要一個「最終、沒被調參污染」的數字時
-才碰的——所以獨立成這支腳本,不焊進訓練迴圈,也不會每次訓練自動跑。
+"""在 test set(或 val set)上評估一個跑完的訓練 run。訓練時只看 val;test 只在要最終數字時跑。
 
 用法:
-  python -m example.eval_test <exp_dir> [--which test|val] [--n N] [--seed S]
-                          [--params best|final]
+  python -m example.eval_test <exp_dir> [--which test|val] [--n N] [--seed S] [--params best|final]
 
-<exp_dir> 是一次訓練的輸出目錄(裡面要有 train/run.yaml + train/best_params.npz /
-train/params.npz)。網路(含容量)跟權重都從 npz 讀,npz 自帶存檔當下的網路。
-
-輸出(獨立的 eval/ 子資料夾,不改 train/ 底下任何東西):
-  <exp_dir>/eval/<which>.yaml       accuracy / loss / confusion_matrix + 中繼資料
-  <exp_dir>/eval/<which>_preds.npz  逐樣本的 preds + labels,要重算別的東西不用重跑整個評估
-
-評估用的 `make_evaluate`(`example/utils.py`)跟訓練熱路徑(`run_epochs` 每個
-epoch 對 val split 的檢查)共用同一份——兩邊要的計算完全一樣(分批 vmap 算
-scores、導出 accuracy/loss/preds),只是誰用哪個回傳值不同。
+exp_dir 裡要有 train/run.yaml 跟 train/best_params.npz、train/params.npz;網路跟權重從 npz 讀。
+輸出在 exp_dir/eval/,不改 train/:
+  <which>.yaml       accuracy、loss、confusion_matrix 跟中繼資料
+  <which>_preds.npz  逐樣本的 preds 跟 labels
 """
 import argparse
 import datetime
@@ -35,7 +24,7 @@ from example.utils import EVAL_DIRNAME, load_run_params, load_run_record, make_e
 
 
 def _confusion_matrix(labels: np.ndarray, preds: np.ndarray, n_classes: int) -> np.ndarray:
-    """列 = 真實類別、欄 = 預測類別,標籤就是類別的數字 index(N-MNIST 是 0–9)。"""
+    """列是真實類別、欄是預測類別。"""
     cm = np.zeros((n_classes, n_classes), dtype=np.int64)
     np.add.at(cm, (labels, preds), 1)
     return cm

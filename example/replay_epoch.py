@@ -1,18 +1,8 @@
-"""重跑某個 epoch 存下來的權重,強制 `chunk_size=1`,拿逐事件精確軌跡。
+"""重跑某個 epoch 存下的權重,chunk_size 覆蓋成 1,拿每一步對應一筆事件的軌跡。
 
-`docs/監測規格.md`「事後精確重現」的決定(2026-09-13):不再存
-`summary.npz`/`full_epoch_XXX.npz`。理由:forward 的計算結果跟 `chunk_size`
-無關(逐位元相同,見 `salt_core/float/affine.py`)——`chunk_size>1` 時,一個 scan 步
-會把最多 `chunk_size` 筆真實事件的 `(a,b)` 仿射映射一次合成掉,trace 只留得住
-「這步開始的第一筆事件時間」+「合成完的結果」,中間那幾筆各自的時間/貢獻
-在合成的當下就已經不可逆地混在一起,無法事後從結果反推。
-
-與其為了保留這個粒度另外設計新的存檔格式(例如存逐事件的 `(a,b)`),不如
-直接利用「權重 + 原始樣本」本身就能唯一決定整條軌跡這件事:只要某個 epoch
-的權重還在(`train.weight_snapshot_every` 存的 `weights/epoch_XXX.npz`),把
-`chunk_size` 覆蓋成 1 重跑 `run_network(..., trace=True)`,就能拿到跟訓練當下(不管
-原本用哪個 `chunk_size`)逐位元一致、但完全精確、每一步對應一筆真實事件的
-軌跡——不需要另存任何逐步/逐事件格式,也不用碰 `salt_core` 的核心運算。
+chunk_size > 1 時一步會合成好幾筆事件,軌跡看不到中間那幾筆。權重加原始樣本就能決定整條軌跡,所以
+訓練只存權重,要看時用 chunk_size=1 重跑。結果跟訓練時的 chunk_size 算的只差 float32 捨入。
+理由見 docs/監測規格.md「讀端:example/replay_epoch.py(已實作)」。
 
 用法:
   python -m example.replay_epoch <exp_dir> <epoch> [--sample S]
@@ -36,18 +26,14 @@ def load_epoch_weights(exp_dir: str, epoch: int) -> tuple[Network, tuple]:
 
 
 def replay_sample(exp_dir: str, epoch: int, event_times, x, y, c, n_real_events) -> list:
-    """給一筆原始樣本(跟訓練資料同格式的
-    `(event_times, x, y, c, n_real_events)`),回傳每層的 `LayerForwardTrace`
-    (`chunk_size=1`,逐事件精確)。"""
+    """一筆原始樣本 (event_times, x, y, c, n_real_events) -> 每層的 LayerForwardTrace(chunk_size=1)。"""
     network, params = load_epoch_weights(exp_dir, epoch)
     raw = RawEvents.checked(event_times, x, y, c, n_real_events)
     return list(network.apply(params, raw, trace=True).traces)
 
 
 def load_train_sample(run_record: dict, sample: int):
-    """從 `run.yaml` 存的 config 快照重建同一份決定性 train split,取第
-    `sample` 筆——跟訓練時 `dataset.build_split` 用的 seed/n_samples 完全對齊,
-    才能保證重跑的是同一筆原始資料。"""
+    """用 run.yaml 的 config 快照重建同一份 train split,取第 sample 筆,跟訓練時是同一筆資料。"""
     data_cfg = run_record["config"]["data"]
     dataset = NMNISTDataset(DATASET_ROOT, max_events=data_cfg["max_events"])
     split = dataset.build_split(seed=data_cfg["seed_train"],

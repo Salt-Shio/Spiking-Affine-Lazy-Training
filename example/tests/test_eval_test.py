@@ -1,10 +1,8 @@
-"""`example/eval_test.py` 的測試。
+"""example/eval_test.py。
 
-- `_confusion_matrix`:純函式,手算小例子驗證。
-- `evaluate_run`:對共用的參考訓練(conftest.py 的 reference_run)跑評估,檢查
-  accuracy/loss/confusion_matrix/`eval_<which>_preds.npz` 彼此一致——不重算
-  loss 本身的數值對不對(跟 `train_step` 用同一個 `optax.softmax_cross_entropy`,
-  信任 optax),只驗證這幾個輸出是不是從同一份 `preds`/`labels` 導出的。
+- _confusion_matrix:手算小例子。
+- evaluate_run:對共用的參考訓練(conftest.py 的 reference_run)跑評估,accuracy、loss、confusion_matrix、
+  eval_<which>_preds.npz 要從同一份 preds、labels 導出。loss 的數值本身信任 optax,不重算。
 """
 import os
 

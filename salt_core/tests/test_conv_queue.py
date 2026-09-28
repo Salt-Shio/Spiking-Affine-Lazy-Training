@@ -91,9 +91,7 @@ def test_delta_t_and_float_values_match_worked_example():
     (衰減底數 0.75)。神經元 7 的最後一筆事件 t=2 早於全域最後一筆 t=5,就是「補位不能直接補
     identity」的反例;神經元 6 的最後一筆剛好是全域最後一筆,catch-up 退化成 identity。
     """
-    # 用 3 個 row 直接對應神經元 5/6/7(這個函式本身不在乎 n 的實際數值,
-    # 只在乎每一 row 自己的子序列跟 n_real,所以不需要真的建 n_out_spatial=8
-    # 的完整陣列)。t_gathered 在 pad 欄位(不影響結果)填任意值示意。
+    # 3 列對應神經元 5、6、7;這個函式只看每列自己的時間跟 n_real。pad 欄的時間填什麼都不影響結果
     t_gathered = jnp.array([
         [1.0, 2.0, 5.0],   # 神經元 5:j=0,1,3 -> t=1,2,5
         [3.0, 5.0, 5.0],   # 神經元 6:j=2,3 -> t=3,5;第三欄是 pad,填什麼都無所謂

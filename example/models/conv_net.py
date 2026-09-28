@@ -1,25 +1,7 @@
-"""從訓練 yaml 組出一個壓縮版 conv SNN。
+"""從 config 的 model 區塊組出網路、解碼器、容量放大縮小的策略。
 
-實際運算全部在 `salt_core`(`ConvLayer` / `FCLayer` / `Network`)。
-這個檔案是 `src`(開發者)這端的組裝碼,做三件事:
-
-- `build_network(model_cfg)`:讀 model config 的 `input_shape` + `layers`
-  (一列 layer entry),照 `salt_core` 的 layer 約定把層物件串出來,包成 `Network`。`ic` 串接、
-  空間尺寸的往下傳(`h_out` / `w_out` 是 `ConvLayer` 自己的 property)、FC 的
-  `n_in` 全部由這裡推導,yaml 不必填。**網路形狀完全由 config 決定,這個
-  檔案沒有寫死的幾何。**
-- `build_decoder(model_cfg, layers)`:從 model config 的 `decoder` 建輸出
-  解碼器(膜電位回歸 / 頻率 / 群體),把最後一層的 `LayerForwardResult` 讀成
-  預測分數。網路本身不挑 readout,見 `salt_core.decoder`。
-- `build_growth_policies(model_cfg, layers)`:同一份 layer entry 裡的容量放大縮小
-  倍率、門檻,建成每層的 `GrowthPolicy`。
-
-佇列長度 `max_queue_len`、輸出 spike 上界 `max_out_spikes` 都是「起始猜測 + 訓練中偵測
-出界就放大」(見 docs/math/conv事件佇列壓縮版推導.md 第 7.2 節、
-`salt_core.capacity`、`example/train.py`)。放大縮小的倍率跟門檻
-寫在同一個 layer entry 裡,由 `build_growth_policies` 讀。
-`init_k` 是每層必填欄位,不校準(委定值見 docs/問題紀錄.md §12),layer entry
-沒填會在建層物件那一步直接報錯。
+網路形狀完全由 config 決定:ic 串接、空間尺寸、FC 的 n_in 都由 build_network 推導。
+容量旋鈕是起始值,訓練中出界會放大;倍率跟門檻寫在同一個 layer entry,由 build_growth_policies 讀。
 """
 import dataclasses
 import math
@@ -32,15 +14,13 @@ from salt_core.network import Network
 
 from data.src.nmnist import CLASS_NAMES
 
-# 類別數是資料集的事實,不是網路形狀。單一來源取自 data.src.nmnist.CLASS_NAMES,
-# 給 build_decoder 的群體分組用。
+# 類別數取自資料集,給群體編碼分組用
 N_CLASSES = len(CLASS_NAMES)
 
 __all__ = ["N_CLASSES", "build_network", "build_growth_policies", "build_decoder"]
 
-# layer entry 裡這些 key 轉型後才傳給層類別(yaml 的 `1.0e9` 之類會被 parse
-# 成字串——PyYAML 遵 YAML 1.1,指數要 `1.0e+9` 才算 float)。不認得的 key
-# 原樣傳,讓層類別自己 TypeError。
+# 這些 key 轉型後才傳給層類別:PyYAML 把 1.0e9 讀成字串(要寫 1.0e+9 才是 float)。
+# 不認得的 key 原樣傳,由層類別 raise TypeError。
 _LAYER_INT_FIELDS = ("chunk_size", "max_queue_len", "max_out_spikes", "max_extra_steps")
 _LAYER_FLOAT_FIELDS = ("tau", "v_th", "alpha", "init_k")
 # layer entry 裡屬於 GrowthPolicy 的 key,不傳給層類別
@@ -64,22 +44,14 @@ def _coerce_layer_opts(e: dict) -> dict:
 
 
 def build_network(model_cfg: dict) -> Network:
-    """`cfg["model"]` 這個 dict -> `Network`(輸入網格 + 一列 layer 物件)。
+    """model config -> Network(輸入網格加一列層)。
 
-    需要:
-      - `input_shape`: `[C, H, W]`,虛擬輸入網格。
-      - `layers`: 一列 entry,每個 `{type: conv|fc, ...}`。
-        - `conv` 必填 `oc` / `k` / `s` / `p`;空間尺寸由這裡算、`ic` 從上一層
-          串。前一層是 FC(輸出沒有空間形狀)時 raise ValueError。
-        - `fc` 必填 `n_out`;`n_in` = 上一層攤平(前一層是 FC 時就是它的 `n_out`)。
-        - `GrowthPolicy` 的欄位(`max_queue_len_grow_factor` 這些)留給 `build_growth_policies`。
-        - 其餘 key(`tau` / `v_th` / `alpha` / `chunk_size` / `max_queue_len` /
-          `max_out_spikes` / `max_extra_steps` / `init_k`)直接當關鍵字傳給層類別,
-          沒填就吃類別預設(見 `salt_core.layers`)。
-        - `name` 選填,沒填自動 `conv1` / `conv2` / ... / `fc1` / ...。
-
-    config 的格式 / key 命名 / 版本管理是開發者的事:entry 少了必填 key、或
-    多了層類別不認得的 key,都會在這裡直接炸出來,不做寬容處理。
+    input_shape: [C, H, W]。
+    layers: 一列 entry,每個有 type(conv 或 fc)。conv 必填 oc、k、s、p;fc 必填 n_out。name 選填,
+        沒填是 conv1、conv2、fc1 ...。GrowthPolicy 的 key 留給 build_growth_policies,其餘 key 傳給層類別。
+    ic、空間尺寸、FC 的 n_in 由前一層推導。
+    input_shape 格式不對、layers 是空的、type 不認得、conv 接在 FC 後面、幾何退化時 raise ValueError;
+    少了必填 key 或多了層類別不認得的 key 時由層類別 raise。
     """
     try:
         c, h, w = (int(v) for v in model_cfg["input_shape"])
@@ -103,7 +75,6 @@ def build_network(model_cfg: dict) -> Network:
                 name=name or f"conv{counts['conv']}",
                 ic=c, h_in=h, w_in=w, oc=oc, k=k, s=s, p=p,
                 **_coerce_layer_opts(e))
-            # h_out / w_out 是 ConvLayer 自己算的 property(見 salt_core.layers)。
             if layer.h_out < 1 or layer.w_out < 1:
                 raise ValueError(
                     f"layers[{i}] 幾何退化:輸入 {h}x{w}、k={k} s={s} p={p} -> "
@@ -136,11 +107,8 @@ def build_growth_policies(model_cfg: dict, layers: list) -> dict:
 
 
 def build_decoder(model_cfg: dict, layers: list):
-    """從 model config 的 `decoder` 建輸出解碼器(見 `salt_core.decoder`)。
-    三選一:`membrane_regression`(預設,不填也是它)/ `rate` / `population`。
-    `population` 用最後一層的 `n_out`(必須整除 `N_CLASSES`),輸出神經元
-    連續等分成 `N_CLASSES` 組。
-    """
+    """model config 的 decoder 建解碼器:membrane_regression(預設)、rate、population。
+    population 把最後一層的 n_out 依序分成 N_CLASSES 組。"""
     kind = model_cfg.get("decoder", "membrane_regression")
     if kind == "membrane_regression":
         return MembraneRegressionDecoder()

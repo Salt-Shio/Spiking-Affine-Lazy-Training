@@ -1,21 +1,7 @@
-"""「逐 epoch 純量表」這種資料性質的讀取 + 繪圖。
+"""逐 epoch 的純量表:讀檔跟繪圖。
 
-這種形狀:一列一個 epoch,每一欄是一個純量隨 epoch 累積的序列(`metrics.csv`
-現在的樣子,也是 `MetricsLog.rows` 在記憶體裡的樣子)。跟資料來源、跟訓練是
-否還在跑無關,轉出來都是同一個型別:`list[dict[str, float]]`(`epoch` 欄是
-int,其餘欄是 float,含 inf/nan)。
-
-`EpochSeriesPlot.render` 只認這個形狀,呼叫一次就是靜態畫一次;要動態呈現,
-呼叫端自己決定何時、拿什麼樣的快照重複呼叫這同一個方法——渲染器不內建任何
-「即時模式」,也不知道資料是從檔案讀來的還是從一個活的物件拿來的。
-
-哪些欄該疊在同一張子圖裡比較(例如同一種指標、不同層)不是這裡的知識——那是
-特定資料來源命名慣例的知識,由呼叫端透過 `groups` 傳入(見
-`example/notebooks/plot_metrics.ipynb` 怎麼替 `metrics.csv` 的欄位組出分組)。
-不傳的話退化成一欄一張子圖。
-
-現況:只接了「讀 csv 靜態畫一次」這條路(`read_epoch_series_csv`)。接訓練中
-即時來源(例如包一層薄殼讀 `MetricsLog.rows`)是之後的事,還沒做。
+資料形狀是 list[dict[str, float]],一列一個 epoch(epoch 欄是 int,其餘是 float,可能有 inf、nan),
+例如 metrics.csv。EpochSeriesPlot.render 呼叫一次畫一次;哪些欄疊在同一張子圖由呼叫端用 groups 決定。
 """
 import csv
 import math
@@ -24,12 +10,8 @@ import matplotlib.pyplot as plt
 
 
 def read_epoch_series_csv(path: str) -> list[dict]:
-    """把逐 epoch 一列的 csv 讀成 `list[dict[str, float]]`。
-
-    `epoch` 欄轉 int,其餘欄轉 float(`float()` 原生看得懂 `inf`/`nan` 字串,
-    整層休眠的 `dormant_frac` 全死層有時就會出現 nan)。欄位有哪些、有幾欄
-    不在這裡假設,照檔案表頭本身。
-    """
+    """逐 epoch 一列的 csv 讀成 list[dict]:epoch 欄轉 int,其餘轉 float(inf、nan 字串也可以)。
+    欄位照檔案表頭。"""
     rows = []
     with open(path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -43,11 +25,9 @@ def read_epoch_series_csv(path: str) -> list[dict]:
 
 
 class EpochSeriesPlot:
-    """把 `list[dict[str, float]]` 畫成一張圖:每組一張子圖,x 軸是 epoch,
-    同一組裡的欄疊成多條線(> 1 條線才加 legend)。
+    """每組一張子圖,x 軸是 epoch,同一組的欄疊成多條線(超過一條才加 legend)。
 
-    `groups`:`{子圖標題: [欄名, ...]}`,依傳入的順序排列成網格;`None` 時
-    退化成「每個非 epoch 欄自己一組」,維持沒有分組資訊時的最小可用行為。
+    groups: {子圖標題: [欄名, ...]},照順序排成網格;None 時每個非 epoch 欄自己一組。
     """
 
     def __init__(self, groups: dict | None = None, ncols: int = 4,
@@ -57,12 +37,7 @@ class EpochSeriesPlot:
         self._subplot_size = subplot_size
 
     def render(self, rows: list):
-        """回傳畫好的 `matplotlib.figure.Figure`,不存檔——存不存、存哪裡是
-        呼叫端的事(跟 `data/viz/nmnist.py`、`example/plot_eval.py` 同一個
-        慣例)。每次呼叫都從頭畫一張新的:不重複利用前一次的 Figure/Axes,
-        這裡先不處理「重畫效率」——呼叫一次是靜態用法、呼叫端自己重複呼叫是
-        動態用法,兩者用的是同一份邏輯。
-        """
+        """畫一張新的 Figure 回傳,不存檔。"""
         if not rows:
             raise ValueError("rows 是空的,沒有東西可畫")
         epochs = [r["epoch"] for r in rows]

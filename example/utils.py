@@ -1,26 +1,7 @@
-"""共用小工具:決定性種子設定、git commit hash、批次評估、讀 run 紀錄跟權重、
-`experiments/<run>/` 底下的子資料夾命名。
+"""example 共用的小工具:種子、git commit、config、批次評估、讀 run 紀錄跟權重、RawEvents 轉換。
 
-`train.py`(訓練)跟 `eval_test.py`(事後評估)有兩處各自
-刻了一份幾乎一樣的東西,收在這裡單一來源:
-
-- `make_evaluate`:分批 vmap 算 scores、導出 accuracy/loss/preds,兩邊本來
-  各刻一份。
-- `load_run_record`/`load_run_params`:讀一次訓練 run 的紀錄、權重。權重檔自帶
-  網路描述(`salt_core.io`),讀回來就是存檔當下的網路。
-- `split_raw_events`/`take_raw_events`:資料端的 split 轉成檢查過的 `RawEvents`、
-  從裡面取一批(`data/` 不依賴 `salt_core`,轉換寫在這裡)。
-- `weight_snapshot_path`:`experiments/<run>/weights/epoch_XXX.npz` 的命名
-  慣例——訓練那邊(`example/training/`)週期性寫,事後分析工具讀,
-  兩邊靠這個函式對齊路徑,不是各自重複拼字串。
-
-`TRAIN_DIRNAME`/`WEIGHTS_DIRNAME`/`EVAL_DIRNAME`:`experiments/<run>/` 底下
-三個子資料夾的名字——訓練產物(`run.yaml`/`metrics.csv`/`checkpoint.npz`/
-`params.npz`/`best_params.npz`)、逐 epoch 權重快照(給事後重跑 forward 的
-分析工具用,見 `docs/監測規格.md`)、`eval_test.py`/`plot_eval.py` 的事後
-評估,各自獨立一個資料夾。寫的一邊(`example/training/`)跟讀的一邊
-(`eval_test.py`/`plot_eval.py`/測試)都從這裡拿名字,不是各自重複寫字串
-常數,才不會兩邊漂移。
+TRAIN_DIRNAME、WEIGHTS_DIRNAME、EVAL_DIRNAME 是 experiments/<run>/ 底下三個子資料夾的名字:
+訓練產物、逐 epoch 權重快照、事後評估。寫的一邊跟讀的一邊都從這裡拿名字。
 """
 import os
 import subprocess
@@ -48,24 +29,13 @@ def load_config(path: str) -> dict:
 
 
 def set_seed(seed: int) -> jax.Array:
-    """設定 numpy 的全域亂數種子,回傳一個 JAX PRNGKey。
-
-    JAX 沒有「設一次全域種子,之後所有呼叫都決定性」這種東西——呼叫端要自己
-    把回傳的 key 一路往下 `jax.random.split`/傳遞下去,沒有明確傳 key 的
-    `jax.random` 呼叫,JAX 本身就不允許,不是這裡沒設好。這個函式主要是為了
-    (1) 順便處理少數還會用到 numpy 亂數的地方(例如某些第三方套件內部),
-    (2) 統一入口,呼叫端不用自己記兩套種子設定方式。
-    """
+    """設定 numpy 的全域亂數種子,回傳 JAX PRNGKey。JAX 的亂數要呼叫端自己傳 key 下去。"""
     np.random.seed(seed)
     return jax.random.PRNGKey(seed)
 
 
 def get_git_commit_hash(repo_dir: str | None = None) -> str:
-    """回傳 repo_dir(預設目前工作目錄)所在 git 倉庫的 commit hash。
-
-    抓不到就回傳 "unknown"(例如根本不在 git 倉庫裡、或環境沒裝 git)——
-    這只是實驗記錄的附加資訊,不該因為抓不到就讓整個訓練/評估腳本掛掉。
-    """
+    """repo_dir(預設目前工作目錄)的 git commit hash;抓不到時回傳 "unknown",不讓腳本失敗。"""
     try:
         result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_dir,
                                 capture_output=True, text=True, check=True)
@@ -75,13 +45,12 @@ def get_git_commit_hash(repo_dir: str | None = None) -> str:
 
 
 def weight_snapshot_path(weights_dir: str, epoch: int) -> str:
-    """`experiments/<run>/weights/epoch_XXX.npz` 的路徑:那個 epoch 的權重連同當下的網路
-    (salt_core.io.save_weights 的格式,不含 optimizer state)。"""
+    """weights_dir/epoch_XXX.npz:那個 epoch 的權重連同當下的網路(save_weights 格式,不含 optimizer state)。"""
     return os.path.join(weights_dir, f"epoch_{epoch:03d}.npz")
 
 
 def load_run_record(exp_dir: str) -> dict:
-    """讀 `<exp_dir>/train/run.yaml`,回傳整份 config 快照 + 訓練中繼資料。"""
+    """讀 exp_dir/train/run.yaml,回傳整份內容(config 快照跟訓練紀錄)。"""
     with open(os.path.join(exp_dir, TRAIN_DIRNAME, "run.yaml"), "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 

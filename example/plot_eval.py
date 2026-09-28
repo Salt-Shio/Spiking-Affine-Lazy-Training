@@ -1,14 +1,7 @@
-"""把 `example/eval_test.py` 寫進 `eval/<which>.yaml` 的結果畫成一張圖,存回
-同一個 `eval/` 子資料夾——這是這次訓練 run 的產物(跟 `train/metrics.csv`/
-`train/params.npz` 同一類),不是資料集 EDA(那是 `data/viz/` + `notebooks/`
-的事,兩者關注點不同:EDA 是互動瀏覽原始資料,這裡是把一次跑完的評估結果
-存成報告用的圖檔)。
+"""把 eval_test.py 的結果(eval/<which>.yaml)畫成 confusion matrix,存成 eval/<which>_confusion.png。
 
 用法:
   python -m example.plot_eval <exp_dir> [--which test|val]
-
-讀 <exp_dir>/eval/<which>.yaml,畫 confusion matrix,存
-<exp_dir>/eval/<which>_confusion.png。
 """
 import argparse
 import os
@@ -23,18 +16,15 @@ from data.src.nmnist import CLASS_NAMES
 from example.utils import EVAL_DIRNAME
 from viz.style import apply_style
 
-# 循序色階(連續量值的 heatmap 用),跟 data/viz/nmnist.py 的 OFF_COLOR
-# 同一組色票(dataviz skill references/palette.md 的藍色 100->700 階),
-# 不用 matplotlib 內建的通用色盤。
+# 循序色階,跟 data/viz/nmnist.py 的 OFF_COLOR 同一組藍色
 _SEQUENTIAL_BLUE = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf",
                     "#184f95", "#0d366b"]
 _CONFUSION_CMAP = LinearSegmentedColormap.from_list("confusion_blue", _SEQUENTIAL_BLUE)
 
 
 def plot_confusion_matrix(cm: np.ndarray, class_names, ax, title: str | None = None):
-    """把一份 `(n_classes, n_classes)` confusion matrix 畫在給定的 Axes 上,
-    回傳 `(ax, im)`——存不存檔、排版是呼叫端的事。列 = 真實類別、欄 = 預測
-    類別,每格標數字,依格子深淺切換文字顏色維持可讀對比。
+    """(n_classes, n_classes) 的 confusion matrix 畫在 ax 上,回傳 (ax, im)。
+    列是真實類別、欄是預測類別,每格標數字,文字顏色照格子深淺切換。
     """
     im = ax.imshow(cm, cmap=_CONFUSION_CMAP)
     n = len(class_names)

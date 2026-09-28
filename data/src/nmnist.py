@@ -1,20 +1,8 @@
-"""N-MNIST 事件相機資料集讀取 + 前處理。規格見 docs/規格書.md「N-MNIST 資料集」
-與「data/ 資料前處理與視覺化架構規範」兩節,這裡只負責照規格實作。
+"""N-MNIST 事件相機資料集的讀取跟前處理。規格見 docs/規格書.md「N-MNIST 資料集」。
 
-原始格式(N-MNIST 官方 40-bit AER,規格書已用全部 70000 個檔案實測驗證):
-每筆事件 5 bytes——byte0=X(8 bit)、byte1=Y(8 bit)、byte2 最高位=polarity、
-byte2 低 7 bit + byte3 + byte4 組成 23-bit timestamp(微秒)。已額外抽樣驗證
-(300 個檔案,涵蓋 Train/Test)檔案內事件本來就照 timestamp 遞增排序、
-座標落在 [0,34) 範圍內,不需要另外排序或做範圍檢查以外的清理。
-
-這裡是真實檔案的 host-side IO(逐檔讀 varying-length 二進位檔),沒辦法用 jax
-向量化,前處理用 numpy 在 host 端做,最後才轉成 jax.Array。
-
-**參數的所有權(規格書「data/ 資料前處理與視覺化架構規範」)**:所有「實驗可調」
-的數字——事件截斷長度、Train/Val 切分比例與其 seed——都是 `NMNISTDataset` 的
-建構參數,不是模組常數。模組層級只留「資料集本身 100% 不可調的事實」:影像尺寸、
-類別數、polarity→channel 對照。截斷長度 `max_events` 沒有預設值,呼叫端(notebook /
-config)一定要明確指定,不讓函式庫替實驗決定這個值。
+檔案是逐檔讀的二進位,用 numpy 在 host 端處理,最後才轉成 jax.Array。
+常數只放資料集事實,可調的值是 NMNISTDataset 的建構參數,理由見 docs/問題紀錄.md
+「決策:data/ 的常數只放資料集事實,實驗可調的值當建構參數」。
 """
 import glob
 import os
@@ -24,34 +12,25 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-#: 影像單軸尺寸(N-MNIST 官方規格,固定 34×34),資料集事實,不是可調參數。
+#: 影像單軸尺寸(N-MNIST 固定 34×34)。
 IMG_SIZE = 34
 
-#: channel index -> polarity 的唯一權威對照表,對應規格書「Polarity → channel」
-#: 那一列(c=0 是 OFF、c=1 是 ON)。build_conv_queue 的 IC 軸、模型算輸入
-#: channel 數的地方都要 import 這個常數,不要各自重寫字面值。資料集事實,
-#: 不是可調參數。
+#: channel index -> polarity:c=0 是 OFF、c=1 是 ON。模型的輸入 channel 數用這個算。
 CHANNEL_NAMES: tuple[str, ...] = ("off", "on")
 
-#: 類別 index -> 名稱的唯一權威對照表(N-MNIST 就是手寫數字 0~9)。
-#: 資料集事實,不是可調參數。
+#: 類別 index -> 名稱(手寫數字 0~9)。
 CLASS_NAMES: tuple[str, ...] = tuple(str(d) for d in range(10))
 
-#: Train/ 底下 60000 筆切多少當 val、用哪顆 seed 切——這是「實驗設定」,擺成
-#: `NMNISTDataset` 的建構參數預設值(規格書「Train/Val 切分」定案切 10%)。
-#: 切分邊界要固定、不能受 build_split 呼叫端傳入的 sampling seed 影響——不然
-#: 同一個 seed 換了 n_samples,train_pool/val_pool 的邊界會跟著漂移,兩次呼叫
-#: 可能拿到有重疊的樣本。
+#: train/val 切分的預設值(規格書定 10%)。切分用自己的 seed,不受 build_split 的抽樣 seed 影響。
 _DEFAULT_VAL_FRACTION = 0.1
 _DEFAULT_VAL_SPLIT_SEED = 0
 
 
 def _decode_bin_file(path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """讀一個 .bin 檔,回傳 (x, y, c, t_ms)——照檔案原生順序(已驗證等於時間
-    遞增順序,規格書「同毫秒 tie-break:檔案原始順序」)。t_ms = t_微秒 // 1000
-    (floor,規格書「時間量化」)。
+    """讀一個 .bin 檔,回傳 (x, y, c, t_ms),照檔案原本的順序(就是時間遞增)。
 
-    純檔案格式解碼,不吃任何實驗參數,維持模組層級函式。
+    每筆事件 5 bytes:byte0=X、byte1=Y、byte2 最高位=polarity、byte2 低 7 bit + byte3 + byte4 是
+    23-bit timestamp(微秒)。t_ms = t_微秒 // 1000。檔案大小不是 5 的倍數時 raise ValueError。
     """
     raw = np.fromfile(path, dtype=np.uint8)
     if raw.size % 5 != 0:
@@ -71,11 +50,7 @@ def _decode_bin_file(path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.
 
 
 def _list_files(dataset_root: str, split_dir: str) -> tuple[list[str], np.ndarray]:
-    """列出 split_dir(Train 或 Test)底下全部 .bin 檔案跟對應標籤,照
-    (digit, 檔名) 排序——決定性的原始順序,shuffle/抽樣交給呼叫端另外處理。
-
-    純目錄掃描,不吃實驗參數,維持模組層級函式。
-    """
+    """split_dir(Train 或 Test)底下全部 .bin 檔跟標籤,照 (digit, 檔名) 排序。"""
     files: list[str] = []
     labels: list[int] = []
     for digit in range(len(CLASS_NAMES)):
@@ -97,24 +72,12 @@ class NMNISTSplit(NamedTuple):
 
 
 class NMNISTDataset:
-    """N-MNIST 前處理器。一個實例綁定一組固定的實驗設定(截斷長度、Train/Val
-    切分),`build_split` 用這組設定產出各個 split。
+    """N-MNIST 前處理器。一個實例綁定一組實驗設定(截斷長度、train/val 切分),build_split 用它產出各個 split。
 
-    Parameters
-    ----------
-    dataset_root:
-        `N-MNIST/` 目錄(底下有 `Train/`、`Test/`,各自再分 0~9 子目錄)。
-    max_events:
-        每個樣本對齊的事件數(規格書「事件數截斷/padding 長度」)。超過的截斷成
-        只取前 `max_events` 筆(事件已依時間遞增排序,取「前面」等於取「較早」);
-        不足的 pad。**沒有預設值**——這是記憶體/實驗取捨的產物(規格書當前值
-        2000,原本是全資料集真實最大值 8183),函式庫不替實驗決定,呼叫端一定要
-        明確指定。
-    val_fraction:
-        Train/ 底下切多少比例當 val(規格書定案 10%)。
-    val_split_seed:
-        切 train_pool / val_pool 用的固定 seed——跟 `build_split` 的 sampling
-        seed 分開,不然換 n_samples 時切分邊界會漂移。
+    dataset_root: N-MNIST/ 目錄,底下有 Train/、Test/,各自再分 0~9 子目錄。
+    max_events: 每個樣本對齊的事件數,多的截掉(只留較早的事件),少的補 pad。沒有預設值。
+    val_fraction: Train/ 切多少比例當 val。
+    val_split_seed: 切 train/val 用的 seed,跟 build_split 的 seed 分開。
     """
 
     def __init__(self, dataset_root: str, max_events: int,
@@ -128,17 +91,12 @@ class NMNISTDataset:
         self.max_events = int(max_events)
         self.val_fraction = float(val_fraction)
         self.val_split_seed = int(val_split_seed)
-        #: `_train_val_pools` 的快取。切分結果只跟 dataset_root / val_fraction /
-        #: val_split_seed 有關,這三個建構後不變,所以整個實例算一次就好——
-        #: build_split 每次呼叫(train / val 各一次、多個 split 反覆呼叫)不必
-        #: 重新 glob 60000 個檔名、重新 permutation。
+        # _train_val_pools 的快取:切分結果只跟建構參數有關,整個實例算一次
         self._train_val_pools_cache: tuple | None = None
 
     def _train_val_pools(self) -> tuple[list[str], np.ndarray, list[str], np.ndarray]:
-        """把 Train/ 底下 60000 筆用固定 `val_split_seed` 切成
-        train_pool(1 - val_fraction)/val_pool(val_fraction),回傳
-        (train_files, train_labels, val_files, val_labels)。第一次呼叫算完就
-        快取在實例上,之後直接回傳同一份。"""
+        """Train/ 用 val_split_seed 切成 train pool 跟 val pool,回傳 (train_files, train_labels,
+        val_files, val_labels)。第一次算完快取在實例上。"""
         if self._train_val_pools_cache is not None:
             return self._train_val_pools_cache
 
@@ -170,20 +128,12 @@ class NMNISTDataset:
         return len(self._pool(which)[0])
 
     def build_split(self, seed: int, n_samples: int, which: str) -> NMNISTSplit:
-        """建一個 split。
+        """從 which 的 pool 抽 n_samples 筆,建一個 split。
 
-        which: "train"/"val" 從 `_train_val_pools` 切出來的固定 pool 抽樣;"test"
-          直接用 Test/ 全部 10000 筆當 pool。三個 pool 互不重疊。
-        seed: 決定「這個 pool 裡抽哪 n_samples 筆、抽出來的順序」,不影響 pool
-          本身的邊界(train_pool/val_pool 的切分固定用 `val_split_seed`)。
-
-        每個樣本的事件數對齊 `self.max_events`:超過的截斷成只取前 max_events 筆
-        (較早的事件);不足的 pad——x/y/c pad 成 0、event_times pad 成該樣本
-        最後一筆真實時間(維持陣列非遞減,避免 diff 出現誤導性的負跳躍)。pad
-        位置的實際數值不影響正確性,下游一律靠 n_real_events 搭配
-        salt_core 的 float.affine.mask_pad_events 強制蓋成 identity 映射(見
-        docs/math/conv事件佇列建構推導.md 第 8.1 節:pad 座標 (0,0,c=0) unravel 後
-        看起來完全合法,必須靠 n_real_events 而不是座標合法性檢查來擋)。
+        which: "train"、"val" 從切好的 pool 抽;"test" 用 Test/ 全部 10000 筆。三個 pool 不重疊。
+        seed: 決定抽哪幾筆、順序,不影響 pool 的邊界。
+        每個樣本對齊 max_events:多的截掉;少的補 pad,x、y、c 補 0,event_times 補最後一筆真事件的時間
+        (維持非遞減)。pad 靠 n_real_events 排除,座標 (0,0,0) 看起來是合法的,不能靠座標擋。
         """
         pool_files, pool_labels = self._pool(which)
         if n_samples > len(pool_files):
@@ -205,10 +155,7 @@ class NMNISTDataset:
             x, y, c, t_ms = _decode_bin_file(path)
             n = x.shape[0]
             if n > max_events:
-                # 截斷(規格書 2026-09-03 改定案):只取前 max_events 筆——事件
-                # 本來就照時間遞增排序,取「前面」等於取「較早」的事件,砍掉的是
-                # 同一個樣本後面的掃視,不是隨機丟資料。理由/視覺化驗證見規格書
-                # 該條目旁的說明,不重複列在這裡。
+                # 只留前 max_events 筆:事件照時間遞增,前面就是較早的
                 x, y, c, t_ms = x[:max_events], y[:max_events], c[:max_events], t_ms[:max_events]
                 n = max_events
             event_times[i, :n] = t_ms
