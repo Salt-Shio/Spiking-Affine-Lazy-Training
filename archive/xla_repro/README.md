@@ -4,7 +4,7 @@
 
 - `verify_trash_row_equivalence.py` 比對的原版是 `compress_candidates_drop.py`
   (從 commit `60fa3a7` 的前一版凍結下來),不再 import `salt_core`,現在還能跑。
-- `test_no_vmap_customvjp_small.py`、`verify_real_pipeline.py` 對應 commit
+- `test_no_vmap_customvjp_small.py` 對應 commit
   `60fa3a7` 當時的程式碼,之後沒有跟著專案更新,只當證據。
 
 ## 現況(2026-09-18,已解決)

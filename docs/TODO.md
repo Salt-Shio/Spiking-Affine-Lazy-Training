@@ -180,7 +180,7 @@
   見監測規格 §7;這個判準問題留給以後其他視覺化工具碰到時再定案。)
 
 - **訓練中期梯度突然炸開,炸完 val_accuracy 回不到炸之前的水準。** 2026-09-14
-  用改名後的新版 `metrics.csv`(`archive/configs/verify_maxsteps.yaml`,40 epochs)第一次
+  用改名後的新版 `metrics.csv`(`archive/configs/verify_maxsteps.yaml`,2026-09-28 已刪除,見 git 歷史 `59d292f`;40 epochs)第一次
   被人眼看出來——這正是欄名改名/`plot_metrics.ipynb` 分組改版想要達成的效果
   (資料本身早就在,只是之前沒對齊、沒疊在一起看不出趨勢)。實際數字(見
   `experiments/conv_compressed_compressed_maxsteps_verify_20260914_122946/train/metrics.csv`):
