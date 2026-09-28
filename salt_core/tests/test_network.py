@@ -132,10 +132,3 @@ def test_fits_single_sample_is_scalar():
     raw = jax.tree_util.tree_map(lambda a: a[0], RawEvents(*raw_batch(seed=4)))
     fits = network.apply(weights, raw).fits
     assert fits.shape == () and bool(fits)
-
-
-def test_fits_always_true_without_capacity_layers():
-    network = Network((2, 3, 4), [FCLayer(name="fc", n_in=24, n_out=2, init_k=1.0)])
-    raw = RawEvents(event_times=jnp.array([1.0, 2.0]), x=jnp.array([1, 3]),
-                    y=jnp.array([2, 0]), c=jnp.array([1, 0]), n_real_events=jnp.array(2))
-    assert bool(network.apply(network.init(jax.random.PRNGKey(0)), raw).fits)

@@ -300,25 +300,25 @@ class ConvLayer:
 
 @dataclass(frozen=True)
 class FCLayer:
-    """一個密集版 FC 層。目前只當輸出層用(`v_th` 設超大 → 純積分器,永遠不
-    fire),但不是特殊型別——它就是一個普通 layer,怎麼把它的活動解讀成預測
-    是解碼器的事(step 5)。
+    """一個密集版 FC 層,可以當隱藏層或輸出層。輸出層要不要 fire 是門檻設定,
+    怎麼讀成預測是解碼器的事。
 
-    要積分的「真實事件數」預算 = 上一層宣告的輸出容量(輸入流的固定長度
-    `in_stream.event_times.shape[0]`),不是自己的欄位:上一層 `max_out_spikes`
-    長大、重編譯時,這層拿到的輸入流變長,scan 步數自動跟著變多。實際
-    `lax.scan` 步數 = ceil(輸入流長度 / chunk_size)。
+    佇列是整條輸入流,長度 = 上一層的輸出容量,不是自己的欄位。掃描步數 =
+    ceil(輸入流長度 / chunk_size) + max_extra_steps;上一層容量變時前一項跟著變,
+    旋鈕只記因為 fire 要多跑的步數(不 fire 時 0 就夠)。
     """
     name: str
     n_in: int
     n_out: int
-    init_k: float               # 必填:FC 不 fire,沒有 firing-rate 準則可校準
-    # 神經元動力學 —— 有預設。v_th 預設 1e9:FC 目前只當輸出層(純積分器),
-    # 配錯有 decoder.validate 擋;真的當隱藏層用再明填正常門檻。
+    init_k: float
+    # 神經元動力學 —— 有預設,跟 ConvLayer 一樣。
     tau: float = 16.0
-    v_th: float = 1e9
+    v_th: float = 1.0
     alpha: float = 2.0
     chunk_size: int = 1
+    # 容量 —— 有預設,出界會自己長大。
+    max_out_spikes: int = 8192
+    max_extra_steps: int = 0
 
     @property
     def n_neurons(self) -> int:
@@ -341,9 +341,12 @@ class FCLayer:
         return (self.n_out, self.n_in)
 
     @property
-    def capacity(self) -> None:
-        # 積分步數從輸入流長度現算,輸出上限固定是 n_out,沒有可調的容量旋鈕。
-        return None
+    def capacity(self) -> Capacity:
+        return Capacity(max_out_spikes=self.max_out_spikes, max_extra_steps=self.max_extra_steps)
+
+    def with_capacity(self, capacity: Capacity) -> "FCLayer":
+        """換成 capacity 的容量值,其他欄位不變。"""
+        return replace(self, **capacity)
 
     def init_weight(self, key: jax.Array) -> jax.Array:
         return uniform_init(key, self.weight_shape, self.fan_in, self.init_k)
@@ -366,9 +369,10 @@ class FCLayer:
         scan = backend.scan(self, structure, params, in_stream.event_gain, trace=trace)
         out_stream = extract_output_events(
             scan.result.spike_mask, scan.result.spike_event_idx, scan.spike_gain,
-            in_stream.event_times, max_total_spikes=self.n_out)
+            in_stream.event_times, max_total_spikes=self.max_out_spikes)
         diag = _layer_diag(scan.result.spike_mask, self.n_neurons, in_stream.n_real_events,
-                           needed={})
+                           needed={"max_out_spikes": out_stream.n_real_events,
+                                   "max_extra_steps": scan.extra_steps_needed})
         layer_trace = None
         if trace:
             event_ms = resolve_ms_dense(scan.pointer_steps, self.neuron_n_real(structure),
@@ -401,10 +405,13 @@ class FCLayer:
         return jnp.broadcast_to(structure.n_real_events, (self.n_out,))
 
     def scan_steps(self, structure: FCQueueStructure) -> int:
-        """浮點掃描的步數上限:整條輸入流除以 chunk_size 取上整。輸入流長度是上一層
-        宣告的輸出容量,上一層容量長大時這裡跟著變多。"""
-        return -(-structure.delta_t.shape[0] // self.chunk_size)
+        """浮點掃描的步數:ceil(輸入流長度 / chunk_size) + max_extra_steps。"""
+        return base_scan_steps(structure.delta_t.shape[0], self.chunk_size) + self.max_extra_steps
 
     def with_chunk_size(self, chunk_size: int) -> "FCLayer":
-        """換 chunk_size。掃描步數每次從輸入流長度現算,沒有其他欄位要跟著改。"""
+        """換 chunk_size,max_extra_steps 不變。
+
+        chunk_size=1 時需求一定是 0,一定夠;換成其他值可能不夠,由 forward 的 fits 偵測
+        (輸入流長度在建構時不知道,算不出一定夠的值)。
+        """
         return replace(self, chunk_size=chunk_size)

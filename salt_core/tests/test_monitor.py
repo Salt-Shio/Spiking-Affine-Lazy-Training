@@ -35,7 +35,7 @@ _C2 = dict(ic=8, h_in=17, w_in=17, oc=16, k=3, s=2, p=1)
 def _layers():
     conv1 = ConvLayer(name="conv1", **_C1, max_queue_len=185, max_out_spikes=4000, init_k=5.0)
     conv2 = ConvLayer(name="conv2", **_C2, max_queue_len=400, max_out_spikes=12000, init_k=5.0)
-    out = FCLayer(name="out", n_in=conv2.n_neurons, n_out=10, chunk_size=64, init_k=5.0)
+    out = FCLayer(name="out", n_in=conv2.n_neurons, n_out=10, v_th=1e9, chunk_size=64, init_k=5.0)
     return [conv1, conv2, out]
 
 

@@ -71,12 +71,12 @@ class MetricsLog:
     def finish_epoch(self, *, epoch: int, val_accuracy: float, layers: list, needed: dict,
                      val_capacity_regrows: int, dormant_capacity_regrows: int,
                      dormant: dict | None = None) -> None:
-        """組這個 epoch 的 row(欄位順序:epoch/loss/val → 逐 conv 容量+用量 →
-        逐層 firing rate → 逐層 grad norm → 逐 conv dormant 指標 → 解碼器指標),
+        """組這個 epoch 的 row(欄位順序:epoch/loss/val → 有容量的層的容量+用量 →
+        逐層 firing rate → 逐層 grad norm → dormant 層的指標 → 解碼器指標),
         append,該印就印。
 
         needed:層名 -> 旋鈕名 -> 這個 epoch 的最大需求,有容量的層都要有。
-        `dormant`:{conv_layer_name: {"dormant_frac": float}}(見
+        `dormant`:{層名: {"dormant_frac": float}}(見
         salt_core/dormant.py),沒傳則對應欄位填 nan。
         val_capacity_regrows / dormant_capacity_regrows:val 評估、dormant 統計
         因為容量出界重算的次數。

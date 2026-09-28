@@ -11,7 +11,7 @@ from salt_core.layers import ConvLayer, FCLayer
 CONV = ConvLayer(name="conv", ic=1, h_in=4, w_in=4, oc=1, k=3, s=1, p=1, init_k=1.0, chunk_size=4,
                  max_queue_len=10, max_out_spikes=20, max_extra_steps=10)
 FC = FCLayer(name="out", n_in=16, n_out=2, init_k=1.0)
-POLICIES = {"conv": GrowthPolicy()}
+POLICIES = {"conv": GrowthPolicy(), "out": GrowthPolicy()}
 
 
 def _diag(queue, out_spikes, steps, spike_count=(0, 0, 0)) -> LayerDiag:
@@ -22,8 +22,10 @@ def _diag(queue, out_spikes, steps, spike_count=(0, 0, 0)) -> LayerDiag:
                              "max_extra_steps": jnp.array(steps)})
 
 
-def _fc_diag() -> LayerDiag:
-    return LayerDiag(spike_count=jnp.zeros(3), firing_rate=jnp.zeros(3), needed={})
+def _fc_diag(out_spikes=(0, 0, 0), extra_steps=(0, 0, 0)) -> LayerDiag:
+    return LayerDiag(spike_count=jnp.zeros(3), firing_rate=jnp.zeros(3),
+                     needed={"max_out_spikes": jnp.array(out_spikes),
+                             "max_extra_steps": jnp.array(extra_steps)})
 
 
 def test_reduce_over_batch_takes_max_of_needed_and_mean_of_stats():
@@ -39,8 +41,8 @@ def test_conv_capacity_matches_fields_and_with_capacity_replaces_them():
     assert (grown.max_queue_len, grown.max_out_spikes, grown.max_extra_steps) == (30, 20, 10)
 
 
-def test_fc_has_no_capacity():
-    assert FC.capacity is None
+def test_fc_capacity_defaults():
+    assert dict(FC.capacity) == {"max_out_spikes": 8192, "max_extra_steps": 0}
 
 
 def test_capacity_replace_rejects_unknown_knob():
@@ -73,7 +75,7 @@ def test_one_overflowing_sample_grows_layer():
 
 CONV2 = ConvLayer(name="conv2", ic=1, h_in=4, w_in=4, oc=1, k=3, s=1, p=1, init_k=1.0, chunk_size=4,
                   max_queue_len=10, max_out_spikes=20, max_extra_steps=10)
-TWO_CONV_POLICIES = {"conv": GrowthPolicy(), "conv2": GrowthPolicy()}
+TWO_CONV_POLICIES = {"conv": GrowthPolicy(), "conv2": GrowthPolicy(), "out": GrowthPolicy()}
 
 
 def test_only_second_layer_overflowing_grows_only_second_layer():
@@ -157,7 +159,7 @@ def test_grown_to_fit_changes_only_capacity_fields():
 
 def test_shrunk_to_observed_returns_same_list_when_nothing_shrinks():
     layers = [CONV, FC]
-    observed = {"conv": _needed(10, 20, 10)}
+    observed = {"conv": _needed(10, 20, 10), "out": {"max_out_spikes": 8192, "max_extra_steps": 0}}
     assert shrunk_to_observed(layers, POLICIES, observed) is layers
 
 
@@ -194,3 +196,12 @@ def test_conv_default_extra_steps_scans_whole_queue():
     conv = ConvLayer(name="conv", ic=1, h_in=4, w_in=4, oc=1, k=3, s=1, p=1, init_k=1.0,
                      chunk_size=4, max_queue_len=30)
     assert (conv.max_extra_steps, conv.scan_steps(None)) == (22, 30)
+
+
+def test_fc_extra_steps_overflow_grows_only_fc():
+    # FC max_extra_steps 需要 3 > 0:ceil(3 * 1.5) = 5;沒有佇列,沒有特例
+    layers = [CONV, FC]
+    diags = [_diag([2, 3, 2], [1, 1, 1], [1, 1, 1]), _fc_diag(extra_steps=[0, 3, 1])]
+    grown = grown_to_fit_batch(layers, POLICIES, diags)
+    assert grown[0] is CONV
+    assert dict(grown[1].capacity) == {"max_out_spikes": 8192, "max_extra_steps": 5}

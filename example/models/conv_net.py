@@ -22,6 +22,7 @@
 沒填會在建層物件那一步直接報錯。
 """
 import dataclasses
+import math
 
 from salt_core.capacity import GrowthPolicy
 from salt_core.decoder import (MembraneRegressionDecoder, PopulationDecoder,
@@ -69,8 +70,8 @@ def build_network(model_cfg: dict) -> Network:
       - `input_shape`: `[C, H, W]`,虛擬輸入網格。
       - `layers`: 一列 entry,每個 `{type: conv|fc, ...}`。
         - `conv` 必填 `oc` / `k` / `s` / `p`;空間尺寸由這裡算、`ic` 從上一層
-          串。
-        - `fc` 必填 `n_out`;`n_in` = 上一層攤平。
+          串。前一層是 FC(輸出沒有空間形狀)時 raise ValueError。
+        - `fc` 必填 `n_out`;`n_in` = 上一層攤平(前一層是 FC 時就是它的 `n_out`)。
         - `GrowthPolicy` 的欄位(`max_queue_len_grow_factor` 這些)留給 `build_growth_policies`。
         - 其餘 key(`tau` / `v_th` / `alpha` / `chunk_size` / `max_queue_len` /
           `max_out_spikes` / `max_extra_steps` / `init_k`)直接當關鍵字傳給層類別,
@@ -85,6 +86,7 @@ def build_network(model_cfg: dict) -> Network:
     except (KeyError, TypeError, ValueError) as err:
         raise ValueError("model config 的 input_shape 要是 [C, H, W] 三個整數") from err
 
+    shape = (c, h, w)  # 下一層的輸入形狀:conv 之後是 (oc, h, w),FC 之後是 (n_out,)
     layers = []
     counts = {"conv": 0, "fc": 0}
     for i, entry in enumerate(model_cfg["layers"]):
@@ -92,6 +94,9 @@ def build_network(model_cfg: dict) -> Network:
         etype = e.pop("type", None)
         name = e.pop("name", None)
         if etype == "conv":
+            if len(shape) != 3:
+                raise ValueError(f"layers[{i}]:conv 要空間輸入,前一層的輸出是攤平的 {shape}")
+            c, h, w = shape
             k, s, p, oc = (int(e.pop(key)) for key in ("k", "s", "p", "oc"))
             counts["conv"] += 1
             layer = ConvLayer(
@@ -103,17 +108,16 @@ def build_network(model_cfg: dict) -> Network:
                 raise ValueError(
                     f"layers[{i}] 幾何退化:輸入 {h}x{w}、k={k} s={s} p={p} -> "
                     f"輸出 {layer.h_out}x{layer.w_out}")
-            layers.append(layer)
-            c, h, w = oc, layer.h_out, layer.w_out
         elif etype == "fc":
             n_out = int(e.pop("n_out"))
             counts["fc"] += 1
-            layers.append(FCLayer(
-                name=name or f"fc{counts['fc']}",
-                n_in=c * h * w, n_out=n_out, **_coerce_layer_opts(e)))
+            layer = FCLayer(name=name or f"fc{counts['fc']}",
+                            n_in=math.prod(shape), n_out=n_out, **_coerce_layer_opts(e))
         else:
             raise ValueError(
                 f"layers[{i}]:未知的 type {etype!r}(可用:conv / fc)")
+        layers.append(layer)
+        shape = layer.output_shape
 
     if not layers:
         raise ValueError("model config 的 layers 是空的")

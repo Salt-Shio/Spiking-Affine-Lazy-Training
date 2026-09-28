@@ -68,6 +68,8 @@ model:
       v_th: 1.0e+9
       alpha: 2.0
       chunk_size: 1024
+      max_out_spikes: 1
+      max_extra_steps: 0
       init_k: 5.0
 
 data:
@@ -83,5 +85,6 @@ train:
   batch_size: 16
   seed: 42
   weight_snapshot_every: 1
+  dormant_layers: [conv1, conv2]
   weight_decay: 1.0e-2
   lr_cosine_decay: true

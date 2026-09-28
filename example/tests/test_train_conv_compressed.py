@@ -220,6 +220,23 @@ def test_synthetic_reference_never_overflows(synth_reference):
     assert synth_reference.run_record["capacity_events"] == []
 
 
+
+# ============================================================================
+# dormant 統計的層由 train.dormant_layers 決定
+# ============================================================================
+
+def test_no_dormant_layers_means_no_dormant_columns(synth_reference):
+    rows = _read_metrics_csv(synth_reference.exp_dir)
+    assert not [c for c in rows[0] if c.endswith("_dormant_frac")]
+
+
+def test_unknown_dormant_layer_is_rejected(synth, run_root):
+    cfg = synthetic_cfg("bad_dormant", synth.seed, epochs=1)
+    cfg["train"]["dormant_layers"] = ["conv1", "nope"]
+    with pytest.raises(ValueError, match="nope"):
+        run_train(cfg, synth.data, run_root)
+
+
 # ============================================================================
 # C. 出界的四個邊界:沒 checkpoint 時從頭、epoch 中途、有 checkpoint 時退回、最後一個 epoch
 # ============================================================================
@@ -356,6 +373,25 @@ def test_output_spike_overflow_grows_max_out_spikes(synth, run_root, synth_refer
     _assert_grown_by_formula(change, SYNTH_GROW)
     _assert_params_close(result.params, _snapshot_params(synth_reference, 0),
                          "輸出 spike 出界 vs 參考訓練")
+
+
+@pytest.mark.parametrize("knob", ["max_out_spikes", "max_extra_steps"])
+def test_hidden_fc_overflow_grows_only_hidden_fc(synth, run_root, synth_reference, knob):
+    """隱藏 FC(會 fire、chunk_size > 1)的旋鈕設成第一個 batch 用初始權重量到的需求減 1:
+    (0, 0) 出界,只放大隱藏 FC。"""
+    needed = first_batch_needed(synthetic_cfg("measure", synth.seed), synth)["hidden"][knob]
+    assert needed >= 1, "隱藏 FC 在第一個 batch 要真的 fire、fire 要多花步數,這個測試才有意義"
+    cfg = synthetic_cfg(f"hidden_{knob}", synth.seed, epochs=1, hidden={knob: needed - 1})
+    result = run_train(cfg, synth.data, run_root)
+
+    first = _grow_events(result)[0]
+    assert (first["epoch"], first["batch"], first["resumed_from_epoch"]) == (0, 0, None)
+    assert {c["layer"] for c in first["changes"]} == {"hidden"}
+    change = _change(first, "hidden", knob)
+    assert change["observed"] == needed
+    _assert_grown_by_formula(change, SYNTH_GROW)
+    _assert_params_close(result.params, _snapshot_params(synth_reference, 0),
+                         f"隱藏 FC {knob} 出界 vs 參考訓練")
 
 
 def test_repeated_overflows_follow_every_new_record_need(synth, run_root):

@@ -47,7 +47,7 @@ def small_layers(capacity: dict = GENEROUS) -> list:
                       init_k=5.0, chunk_size=4, **capacity["conv1"])
     conv2 = ConvLayer(name="conv2", ic=4, h_in=8, w_in=8, oc=4, k=3, s=2, p=1,
                       init_k=5.0, chunk_size=4, **capacity["conv2"])
-    out = FCLayer(name="out", n_in=conv2.n_neurons, n_out=10, init_k=5.0, chunk_size=512)
+    out = FCLayer(name="out", n_in=conv2.n_neurons, n_out=10, init_k=5.0, v_th=1e9, chunk_size=512)
     return [conv1, conv2, out]
 
 

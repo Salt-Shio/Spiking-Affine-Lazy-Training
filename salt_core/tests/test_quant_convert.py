@@ -14,7 +14,7 @@ from salt_core.quant.codes import build_decay_table_int
 # conv:2 channel、每 channel 2x2 = 4 顆神經元;FC:8 -> 2
 CONV = ConvLayer(name="conv", ic=2, h_in=2, w_in=2, oc=2, k=1, s=1, p=0, init_k=5.0,
                  tau=16.0, v_th=1.0, chunk_size=1, max_queue_len=8, max_out_spikes=64)
-FC = FCLayer(name="out", n_in=8, n_out=2, init_k=5.0, tau=16.0)
+FC = FCLayer(name="out", n_in=8, n_out=2, init_k=5.0, tau=16.0, v_th=1e9)
 # channel 0 = [0.375, 0.125],channel 1 = [-1.0, 0.25]
 CONV_W = jnp.array([0.375, 0.125, -1.0, 0.25]).reshape(2, 2, 1, 1)
 FC_W = jnp.linspace(-0.5, 0.3, 16).reshape(2, 8)

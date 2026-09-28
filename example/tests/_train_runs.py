@@ -12,6 +12,7 @@ from example.training.loop import TrainData, epoch_permutation
 from example.training.run_dir import make_exp_dir
 from example.utils import set_seed, split_raw_events, take_raw_events
 from salt_core.capacity import reduce_over_batch
+from salt_core.float.affine import safe_extra_steps
 
 
 def run_train(cfg: dict, data: TrainData, root) -> TrainResult:
@@ -40,13 +41,14 @@ def reference_cfg() -> dict:
                 _conv(8, 185, 8000, 8.0),
                 _conv(16, 5000, 35000, 64.0),
                 {"type": "fc", "name": "out", "n_out": 10, "tau": 16.0,
-                 "v_th": 1.0e9, "alpha": 2.0, "chunk_size": 512, "init_k": 5.0},
+                 "v_th": 1.0e9, "alpha": 2.0, "chunk_size": 512, "init_k": 5.0,
+                 "max_out_spikes": 1},
             ],
         },
         "data": {"max_events": 2000, "train_size": 16, "val_size": 8,
                  "seed_train": 0, "seed_val": 0},
         "train": {"lr": 1.0e-2, "epochs": 2, "batch_size": 4, "seed": 42,
-                  "weight_snapshot_every": 1},
+                  "weight_snapshot_every": 1, "dormant_layers": ["conv1", "conv2"]},
     }
 
 
@@ -66,12 +68,19 @@ SYNTH_OC = 4
 SYNTH_GROW = 2.0           # 容量旋鈕的放大倍率
 _PIXEL = 3                # 事件全部放在 (x, y) = (3, 3)
 
+SYNTH_HIDDEN = 4          # 隱藏 FC 的神經元數
+SYNTH_HIDDEN_CHUNK = 4    # 隱藏 FC 的 chunk_size;大於 1 時 fire 會多花步數
+SYNTH_HIDDEN_INIT_K = 8.0
+
 # 不測的旋鈕給理論上限,保證不會出界。k=3、s=2、p=1 時一個輸入位置最多落在 2 x 2 個輸出位置的
-# 感受野裡,每筆輸入事件最多讓 4 x oc 顆神經元各 fire 一次。
+# 感受野裡,每筆輸入事件最多讓 4 x oc 顆神經元各 fire 一次;FC 每筆輸入事件最多讓每顆神經元
+# 各 fire 一次。額外步數的上限是總步數等於輸入流長度(每步至少吃一筆)。
 CONV1_QUEUE_BOUND = SYNTH_MAX_EVENTS
 CONV1_OUT_BOUND = CONV1_QUEUE_BOUND * 4 * SYNTH_OC
 CONV2_QUEUE_BOUND = CONV1_OUT_BOUND
 CONV2_OUT_BOUND = CONV2_QUEUE_BOUND * 4 * SYNTH_OC
+HIDDEN_OUT_BOUND = CONV2_OUT_BOUND * SYNTH_HIDDEN
+HIDDEN_EXTRA_STEPS_BOUND = safe_extra_steps(CONV2_OUT_BOUND, SYNTH_HIDDEN_CHUNK)
 
 
 class Synthetic(NamedTuple):
@@ -122,20 +131,27 @@ def batch_needs(synth: Synthetic, epoch: int) -> list[int]:
 
 
 def synthetic_cfg(run_name: str, seed: int, *, conv1: dict | None = None,
-                  conv2: dict | None = None, grow: float = SYNTH_GROW, epochs: int = 3) -> dict:
-    """合成資料用的網路(輸入 2x8x8、conv -> conv -> FC 10)跟訓練設定。
+                  conv2: dict | None = None, hidden: dict | None = None,
+                  grow: float = SYNTH_GROW, epochs: int = 3) -> dict:
+    """合成資料用的網路(輸入 2x8x8、conv -> conv -> 會 fire 的 FC -> FC 10)跟訓練設定。
 
-    conv1、conv2:覆寫該層的容量(例如 {"max_queue_len": 1}),沒給的旋鈕是理論上限。
+    conv1、conv2、hidden:覆寫該層的容量(例如 {"max_queue_len": 1}),沒給的旋鈕是理論上限。
     grow:所有旋鈕共用的放大倍率。縮小關掉,每個 epoch 存權重快照。
     """
+    policy = {"max_queue_len_grow_factor": grow, "out_grow_factor": grow,
+              "max_extra_steps_grow_factor": grow}
+
     def _conv(max_queue_len, max_out_spikes, overrides):
         entry = {"type": "conv", "oc": SYNTH_OC, "k": 3, "s": 2, "p": 1,
                  "tau": 16.0, "v_th": 1.0, "alpha": 2.0, "chunk_size": 1, "init_k": 8.0,
-                 "max_queue_len": max_queue_len, "max_out_spikes": max_out_spikes,
-                 "max_queue_len_grow_factor": grow, "out_grow_factor": grow,
-                 "max_extra_steps_grow_factor": grow}
+                 "max_queue_len": max_queue_len, "max_out_spikes": max_out_spikes, **policy}
         entry.update(overrides or {})
         return entry
+    hidden_entry = {"type": "fc", "name": "hidden", "n_out": SYNTH_HIDDEN, "tau": 16.0,
+                    "v_th": 1.0, "alpha": 2.0, "chunk_size": SYNTH_HIDDEN_CHUNK,
+                    "init_k": SYNTH_HIDDEN_INIT_K, "max_out_spikes": HIDDEN_OUT_BOUND,
+                    "max_extra_steps": HIDDEN_EXTRA_STEPS_BOUND, **policy}
+    hidden_entry.update(hidden or {})
     return {
         "run_name": run_name,
         "model": {
@@ -144,8 +160,10 @@ def synthetic_cfg(run_name: str, seed: int, *, conv1: dict | None = None,
             "layers": [
                 _conv(CONV1_QUEUE_BOUND, CONV1_OUT_BOUND, conv1),
                 _conv(CONV2_QUEUE_BOUND, CONV2_OUT_BOUND, conv2),
+                hidden_entry,
                 {"type": "fc", "name": "out", "n_out": len(CLASS_NAMES), "tau": 16.0,
-                 "v_th": 1.0e9, "alpha": 2.0, "chunk_size": 256, "init_k": 5.0},
+                 "v_th": 1.0e9, "alpha": 2.0, "chunk_size": 256, "init_k": 5.0,
+                 "max_out_spikes": 1},
             ],
         },
         "train": {"lr": 1.0e-2, "epochs": epochs, "batch_size": SYNTH_BATCH_SIZE, "seed": seed,

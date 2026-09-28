@@ -107,8 +107,11 @@ def _finish_epoch(ctx: RunContext, network: Network, layers: list, epoch: int,
     val_accuracy, _val_loss, _, val_regrows = evaluate(params, ctx.data.val)
     if val_accuracy > best.val_accuracy:
         best = Best(params=params, network=network, val_accuracy=val_accuracy, epoch=epoch)
-    dormant, dormant_regrows = dormant_report(network, params, ctx.probe, ctx.capacity.policies,
-                                              layer_names=ctx.dormant_names)
+    dormant, dormant_regrows = {}, 0
+    if ctx.dormant_names:
+        dormant, dormant_regrows = dormant_report(network, params, ctx.probe,
+                                                  ctx.capacity.policies,
+                                                  layer_names=ctx.dormant_names)
     if dormant_regrows:
         print(f"[dormant 出界] epoch={epoch}: 放大探測用容量重算 {dormant_regrows} 次")
     ctx.metrics_log.finish_epoch(epoch=epoch, val_accuracy=val_accuracy, layers=layers,

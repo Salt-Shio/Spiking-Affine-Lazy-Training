@@ -34,7 +34,6 @@ from example.training.run_dir import (make_exp_dir, metrics_csv_path, params_pat
 from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, load_config, load_run_record,
                            split_raw_events, take_raw_events)
 from salt_core.io import network_to_dict
-from salt_core.layers import ConvLayer
 from salt_core.network import Network
 
 # dormant 統計的固定探測樣本數(train split 的前幾筆)
@@ -70,8 +69,12 @@ def _make_context(cfg: dict, data: TrainData, network: Network, exp_dir: str) ->
     snapshot_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
     if snapshot_every > 0:
         os.makedirs(snapshot_dir, exist_ok=True)
-    # dormant 統計只算 conv 隱藏層
-    dormant_names = tuple(layer.name for layer in layers if isinstance(layer, ConvLayer))
+    # dormant 統計哪些層由 config 決定,沒填不統計
+    dormant_names = tuple(train_cfg.get("dormant_layers") or ())
+    unknown = sorted(set(dormant_names) - {layer.name for layer in layers})
+    if unknown:
+        raise ValueError(f"train.dormant_layers 有網路裡沒有的層:{unknown},"
+                         f"網路的層是 {[layer.name for layer in layers]}")
     return RunContext(
         data=data, train_raw=train_raw,
         probe=take_raw_events(train_raw, slice(0, min(_N_PROBE, n_train))),
