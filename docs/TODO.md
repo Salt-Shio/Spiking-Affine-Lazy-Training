@@ -22,10 +22,10 @@
   - i_V 要用多少樣本量膜電位範圍。2026-09-27 實測:b=8、f_a=10、f_V=10,用 val 前 50 筆量範圍算出 i_V
     (conv1 12、conv2 14、out 14),跑滿 val 2000 筆後 conv1、out 各有 1 筆暫存器溢位(繞回)。驗證溢位時
     用的是量範圍的同一批樣本,看不到這種情況;要決定量範圍用多少樣本、驗證要不要換一批。
-- **`max_queue_len`(L)只長不縮。** firing rate 訓練中單調下降(見 [`問題紀錄.md`](問題紀錄.md)
+- **`max_queue_len` 只長不縮。** firing rate 訓練中單調下降(見 [`問題紀錄.md`](問題紀錄.md)
   「決策:firing rate 訓練過程單調下降,判斷不是問題、不處理」)→ 下游事件變少 → 佇列需求
-  `LayerDiag.needed["max_queue_len"]` 掉,L 有收縮空間,偵測訊號現成。要做成有 hysteresis 的啟發式
-  (連續 N 個 epoch 需求 < L × 比例才縮一階),否則縮完又要長回來,反覆重編譯。優先度低,
+  `LayerDiag.needed["max_queue_len"]` 掉,max_queue_len 有收縮空間,偵測訊號現成。要做成有 hysteresis 的啟發式
+  (連續 N 個 epoch 需求 < max_queue_len × 比例才縮一階),否則縮完又要長回來,反覆重編譯。優先度低,
   `max_out_spikes`、`max_extra_steps` 都已經會縮。
 
 ## 開放題(往下走才需要)

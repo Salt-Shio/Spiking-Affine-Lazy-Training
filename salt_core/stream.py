@@ -86,14 +86,14 @@ def extract_output_events_conv(spike_mask: jax.Array, spike_event_idx: jax.Array
                                max_total_spikes: int | None = None) -> EventStream:
     """conv 層的 spike -> EventStream。spike_event_idx 是這顆神經元佇列的局部欄,先查回全域事件 index。
 
-    local_to_global_j: (n, L) int,局部欄 -> 全域事件 index(ConvQueueStructure.local_to_global_j
+    local_to_global_j: (n, max_queue_len) int,局部欄 -> 全域事件 index(ConvQueueStructure.local_to_global_j
         用 tile_channels 展開到每個 channel)。
     其餘參數同 extract_output_events_fc。
     """
     neuron_idx, local_col, raw_s_spike, n_real_events, max_out = _select_spikes(
         spike_mask, spike_event_idx, s_spike, max_total_spikes)
-    L = local_to_global_j.shape[1]
-    safe_local_col = jnp.minimum(local_col, L - 1)
+    max_queue_len = local_to_global_j.shape[1]
+    safe_local_col = jnp.minimum(local_col, max_queue_len - 1)
     global_event_idx = local_to_global_j[neuron_idx, safe_local_col]
     return _pack_stream(neuron_idx, global_event_idx, raw_s_spike, event_times,
                          n_real_events, max_out)

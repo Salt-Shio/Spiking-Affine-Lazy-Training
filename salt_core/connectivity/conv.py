@@ -44,13 +44,13 @@ def unravel_conv_source(event_source_idx: jax.Array, H_in: int,
 
 
 class ConvQueueStructure(NamedTuple):
-    """conv 佇列的結構段,只由事件決定。第一維是空間位置 oy*w_out+ox,跟 oc 無關;L = max_queue_len。"""
-    local_to_global_j: jax.Array  # (n_spatial, L) int32,局部欄 -> 全域事件 index,空欄是 n_events
-    n_real_events: jax.Array      # (n_spatial,) int32,真 tap 數;可能超過 L,出界偵測用
-    delta_t: jax.Array            # (n_spatial, L) float32,見 _delta_t_three_regimes
-    tap_c: jax.Array              # (n_spatial, L) int32,每欄的 kernel 位置,已夾進合法範圍
-    tap_ky: jax.Array             # (n_spatial, L) int32
-    tap_kx: jax.Array             # (n_spatial, L) int32
+    """conv 佇列的結構段,只由事件決定。第一維是空間位置 oy*w_out+ox,跟 oc 無關。"""
+    local_to_global_j: jax.Array  # (n_spatial, max_queue_len) int32,局部欄 -> 全域事件 index,空欄是 n_events
+    n_real_events: jax.Array      # (n_spatial,) int32,真 tap 數;可能超過 max_queue_len,出界偵測用
+    delta_t: jax.Array            # (n_spatial, max_queue_len) float32,見 _delta_t_three_regimes
+    tap_c: jax.Array              # (n_spatial, max_queue_len) int32,每欄的 kernel 位置,已夾進合法範圍
+    tap_ky: jax.Array             # (n_spatial, max_queue_len) int32
+    tap_kx: jax.Array             # (n_spatial, max_queue_len) int32
     n_input_events: jax.Array     # int32 純量,輸入的真事件數
 
 
@@ -62,11 +62,11 @@ def _compress_candidates(n_flat: jax.Array, j_flat: jax.Array, n_out_spatial: in
     n_flat: (C,) 每個候選的目標空間位置;不合法的候選標成 >= n_out_spatial 的任意值。
     j_flat: (C,) 每個候選的全域事件 index,0 <= j < n_events。
     n_out_spatial: h_out * w_out。
-    max_queue_len: 每個空間位置佇列的長度 L,放不下的候選丟掉。
+    max_queue_len: 每個空間位置佇列的長度,放不下的候選丟掉。
     n_events: 全域事件數,空欄填這個值。
     回傳 (local_to_global_j, n_real_per_neuron):
-        local_to_global_j: (n_out_spatial, L) int32,第 r 欄是這個位置第 r 個事件的全域 index。
-        n_real_per_neuron: (n_out_spatial,) int32,合法候選數,可能超過 L(給出界偵測用)。
+        local_to_global_j: (n_out_spatial, max_queue_len) int32,第 r 欄是這個位置第 r 個事件的全域 index。
+        n_real_per_neuron: (n_out_spatial,) int32,合法候選數,可能超過 max_queue_len(給出界偵測用)。
     """
     order = jnp.lexsort((j_flat, n_flat))
     sorted_n = n_flat[order]
@@ -105,20 +105,20 @@ def _delta_t_three_regimes(t_gathered: jax.Array, n_real_per_neuron: jax.Array,
     真事件的欄是跟前一筆的差(第一筆跟 t=0 比);真事件之後的第一欄(catch-up)是
     global_last_time - 這個位置最後一筆事件的時間;其餘是 0。
 
-    t_gathered: (n_out, L) 每欄對應的事件時間。
+    t_gathered: (n_out, max_queue_len) 每欄對應的事件時間。
     n_real_per_neuron: (n_out,) 真事件數。
     global_last_time: 純量,最後一筆真輸入事件的時間。
-    回傳 (n_out, L) float。
+    回傳 (n_out, max_queue_len) float。
     """
-    n_out, L = t_gathered.shape
-    col_idx = jnp.arange(L, dtype=jnp.int32)[None, :]
+    n_out, max_queue_len = t_gathered.shape
+    col_idx = jnp.arange(max_queue_len, dtype=jnp.int32)[None, :]
     n_real = n_real_per_neuron[:, None]
     is_real = col_idx < n_real
     is_catchup = col_idx == n_real
 
     delta_t_real = jnp.diff(t_gathered, axis=1,
                             prepend=jnp.zeros((n_out, 1), dtype=t_gathered.dtype))
-    last_real_col = jnp.clip(n_real_per_neuron - 1, 0, L - 1)
+    last_real_col = jnp.clip(n_real_per_neuron - 1, 0, max_queue_len - 1)
     t_last_real = jnp.take_along_axis(t_gathered, last_real_col[:, None], axis=1)[:, 0]
     delta_t_catchup = global_last_time - t_last_real
 
@@ -132,7 +132,7 @@ def build_conv_structure(event_times: jax.Array, x: jax.Array, y: jax.Array, c: 
 
     event_times, x, y, c: (n_events,) 已排序的事件時間(整數 ms)跟座標。
     k, s, p: kernel 大小、stride、padding。h_out, w_out: 輸出面尺寸。
-    max_queue_len: 每個空間位置的佇列長度 L,放不下的事件丟掉,n_real_events 照實回報。
+    max_queue_len: 每個空間位置的佇列長度,放不下的事件丟掉,n_real_events 照實回報。
     n_real_events: 前幾筆是真事件,其餘是 pad,不進任何佇列。
     """
     event_times = jnp.asarray(event_times, dtype=jnp.float32)
@@ -173,13 +173,13 @@ def build_conv_structure(event_times: jax.Array, x: jax.Array, y: jax.Array, c: 
 
 
 def _gather_taps(structure: ConvQueueStructure, w: jax.Array) -> jax.Array:
-    """每個 (oc, 空間位置, 欄) 的 kernel 位置對應的權重,(oc, n_spatial, L),dtype 同 w。"""
+    """每個 (oc, 空間位置, 欄) 的 kernel 位置對應的權重,(oc, n_spatial, max_queue_len),dtype 同 w。"""
     return jax.vmap(
         lambda oc_w: oc_w[structure.tap_c, structure.tap_ky, structure.tap_kx])(w)
 
 
 def _real_tap_mask(structure: ConvQueueStructure) -> jax.Array:
-    """(n_spatial, L) bool,真 tap 的欄位是 True。"""
+    """(n_spatial, max_queue_len) bool,真 tap 的欄位是 True。"""
     max_queue_len = structure.delta_t.shape[1]
     return jnp.arange(max_queue_len)[None, :] < structure.n_real_events[:, None]
 
@@ -191,11 +191,11 @@ def conv_float_values(structure: ConvQueueStructure, w: jax.Array, tau: float,
     w: (oc, ic, k, k) 權重。
     event_gain: (n_events,) 乘進權重的增益。接在上一層後面時傳上一層的 s_spike,
         理由見 docs/問題紀錄.md。None 等於全 1。
-    回傳 AffineMap,a、b 形狀 (oc*n_spatial, L),神經元編號 = oc*n_spatial + 空間位置。
+    回傳 AffineMap,a、b 形狀 (oc*n_spatial, max_queue_len),神經元編號 = oc*n_spatial + 空間位置。
     """
     oc = w.shape[0]
     n_spatial, max_queue_len = structure.delta_t.shape
-    weight_vals = _gather_taps(structure, w)  # (oc, n_spatial, L)
+    weight_vals = _gather_taps(structure, w)  # (oc, n_spatial, max_queue_len)
     if event_gain is not None:
         event_j = jnp.minimum(structure.local_to_global_j, structure.n_input_events - 1)
         gain = jnp.asarray(event_gain, dtype=weight_vals.dtype)[event_j]
@@ -210,7 +210,7 @@ def conv_weight_codes(structure: ConvQueueStructure, q: jax.Array) -> jax.Array:
     """conv 佇列的整數數值段:每欄的整數權重碼,非真 tap 是 0。
 
     q: (oc, ic, k, k) 整數權重碼。
-    回傳 int32,形狀 (oc*n_spatial, L),神經元編號同 conv_float_values。
+    回傳 int32,形狀 (oc*n_spatial, max_queue_len),神經元編號同 conv_float_values。
     """
     oc = q.shape[0]
     n_spatial, max_queue_len = structure.delta_t.shape

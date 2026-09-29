@@ -25,11 +25,11 @@ def _tol_close(a, b, tol=TOL):
     return bool(jnp.allclose(jnp.asarray(a), jnp.asarray(b), atol=tol))
 
 
-def _conv_queue(event_times, x, y, c, W, tau, S, P, H_out, W_out, L, gain, n_real):
+def _conv_queue(event_times, x, y, c, W, tau, S, P, H_out, W_out, max_queue_len, gain, n_real):
     """結構 + 浮點數值段。回傳 (maps, 逐神經元 n_real_events, 逐神經元 local_to_global_j)。"""
     oc = W.shape[0]
-    structure = build_conv_structure(event_times, x, y, c, W.shape[2], S, P, H_out, W_out, L,
-                                     n_real)
+    structure = build_conv_structure(event_times, x, y, c, W.shape[2], S, P, H_out, W_out,
+                                     max_queue_len, n_real)
     return (conv_float_values(structure, W, tau, gain),
             tile_channels(structure.n_real_events, oc),
             tile_channels(structure.local_to_global_j, oc))
@@ -44,11 +44,11 @@ def _run_ref(event_times, x, y, c, W, tau, S, P, H_out, W_out, v_th, max_steps,
                               n_real_events=n_real)
 
 
-def _run_conv(event_times, x, y, c, W, tau, S, P, H_out, W_out, L, v_th, max_steps,
+def _run_conv(event_times, x, y, c, W, tau, S, P, H_out, W_out, max_queue_len, v_th, max_steps,
               gain=None, n_real=None):
     n_real = event_times.shape[0] if n_real is None else n_real
     maps, n_real_per_neuron, _ = _conv_queue(event_times, x, y, c, W, tau, S, P,
-                                             H_out, W_out, L, gain, n_real)
+                                             H_out, W_out, max_queue_len, gain, n_real)
     return run_layer_forward(maps, v_th, chunk_size=max_steps, max_steps=max_steps,
                               n_real_events=n_real_per_neuron)
 
@@ -114,12 +114,13 @@ def test_reference_anchored_n3_multiple_candidates_per_axis():
 # 3. conv 佇列 vs 參考:幾何變化
 # ============================================================================
 
-def _assert_conv_matches_ref(et, x, y, c, W, S, P, H_out, W_out, L=None,
+def _assert_conv_matches_ref(et, x, y, c, W, S, P, H_out, W_out, max_queue_len=None,
                              v_th=1e9, gain=None, n_real=None):
     n_events = int(et.shape[0])
-    L = n_events if L is None else L
+    max_queue_len = n_events if max_queue_len is None else max_queue_len
     ref = _run_ref(et, x, y, c, W, TAU, S, P, H_out, W_out, v_th, n_events, gain, n_real)
-    comp = _run_conv(et, x, y, c, W, TAU, S, P, H_out, W_out, L, v_th, L, gain, n_real)
+    comp = _run_conv(et, x, y, c, W, TAU, S, P, H_out, W_out, max_queue_len, v_th, max_queue_len,
+                     gain, n_real)
     assert _tol_close(ref.v_final, comp.v_final, tol=1e-4), (ref.v_final, comp.v_final)
 
 
@@ -137,7 +138,7 @@ def test_matches_ref_random_various_geometry():
         y = jax.random.randint(k_y, (n_events,), 0, H_in).astype(jnp.int32)
         c = jax.random.randint(k_c, (n_events,), 0, 2).astype(jnp.int32)
         W = jax.random.uniform(k_w, (3, 2, K, K), minval=-1.0, maxval=1.0)
-        _assert_conv_matches_ref(et, x, y, c, W, S, P, H_out, W_out, L=n_events)
+        _assert_conv_matches_ref(et, x, y, c, W, S, P, H_out, W_out, max_queue_len=n_events)
 
 
 # ============================================================================

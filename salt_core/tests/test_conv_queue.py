@@ -49,12 +49,13 @@ def test_compress_candidates_matches_worked_example():
     n_flat = jnp.array([5, 8, 5, 7, 6, 8, 5, 6], dtype=jnp.int32)
     j_flat = jnp.array([0, 0, 1, 1, 2, 2, 3, 3], dtype=jnp.int32)
     n_out_spatial = 8
-    L = 3
+    max_queue_len = 3
     n_events = 4  # j 值域 [0,4)
 
-    local_to_global_j, n_real = _compress_candidates(n_flat, j_flat, n_out_spatial, L, n_events)
+    local_to_global_j, n_real = _compress_candidates(n_flat, j_flat, n_out_spatial, max_queue_len,
+                                                     n_events)
 
-    assert local_to_global_j.shape == (n_out_spatial, L)
+    assert local_to_global_j.shape == (n_out_spatial, max_queue_len)
     assert n_real.shape == (n_out_spatial,)
 
     # 文件表格:神經元 5 -> [j=0,j=1,j=3],神經元 6 -> [j=2,j=3,pad],
@@ -279,7 +280,7 @@ def test_matches_dense_with_genuine_non_degenerate_catchup():
 
     # idx1 真的用到非退化 catch-up:col0 real(a=0.75,b=7)->x0=7;
     # catch-up Δt=5-1=4 -> a=0.75^4=0.31640625 -> x1=7*0.31640625=2.21484375;
-    # 沒有第三欄真的可用(n_real=1,L=3,col2 是 identity)-> x2 不變。
+    # 沒有第三欄真的可用(n_real=1,max_queue_len=3,col2 是 identity)-> x2 不變。
     assert_allclose(result.v_final[1], 2.21484375, "idx1 用到非退化 catch-up")
 
 
@@ -485,7 +486,7 @@ def test_matches_dense_spike_details_and_gradient_when_neuron_fires():
     event_times = jnp.array([1.0, 1.5, 2.0, 2.5, 5.0])
     x = jnp.array([1, 2, 1, 2, 0]); y = jnp.array([1, 2, 1, 2, 0]); c = jnp.array([0, 0, 0, 0, 0])
     v_th = 15.0
-    max_queue_len = 5  # 留寬到等於全域事件數,這個測試的重點不是 L 太小截斷
+    max_queue_len = 5  # 留寬到等於全域事件數,這個測試的重點不是 max_queue_len 太小截斷
 
     ref = _run_ref(event_times, x, y, c, W, v_th, max_steps=5)
     result, structure = _run_conv(event_times, x, y, c, W, v_th, max_queue_len, max_steps=5)
@@ -584,7 +585,7 @@ def test_event_gain_gradient_matches_dense():
 
 def test_conv_weight_codes_are_int32_and_match_float_values_b():
     """整數數值段直接取權重碼,值要跟浮點數值段的 b 一樣(非真 tap 都是 0),dtype 是 int32。
-    隨機事件、OC=2,L 取 3 讓部分神經元有 catch-up/identity 欄、部分放不下。"""
+    隨機事件、OC=2,max_queue_len 取 3 讓部分神經元有 catch-up/identity 欄、部分放不下。"""
     k_t, k_xy, k_q = jax.random.split(jax.random.PRNGKey(3), 3)
     n_events = 20
     event_times = jnp.sort(jax.random.randint(k_t, (n_events,), 0, 100).astype(jnp.float32))

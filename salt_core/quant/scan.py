@@ -52,10 +52,10 @@ def process_event(v0_int: jax.Array, a_int: jax.Array, is_identity: jax.Array,
 
 class QuantLayerResult(NamedTuple):
     """一層整數 forward 的結果。第 t 步處理佇列第 t 欄;沒有 s_value、s_spike(沒有梯度)。"""
-    spike_mask: jax.Array       # (n, L) bool
-    spike_event_idx: jax.Array  # (n, L) int32,佇列欄位,跟 LayerForwardResult 同一個慣例
+    spike_mask: jax.Array       # (n, queue_len) bool
+    spike_event_idx: jax.Array  # (n, queue_len) int32,佇列欄位,跟 LayerForwardResult 同一個慣例
     v_final: jax.Array          # (n,) int32 暫存器值;QuantBackend.readout 之後是物理尺度 float32
-    overflowed: jax.Array       # (n, L) bool,這一步寫回之前的值有沒有超出 i_V + f_V 位元
+    overflowed: jax.Array       # (n, queue_len) bool,這一步寫回之前的值有沒有超出 i_V + f_V 位元
 
 
 def run_layer(a_int: jax.Array, is_identity: jax.Array, q_int: jax.Array,
@@ -63,9 +63,9 @@ def run_layer(a_int: jax.Array, is_identity: jax.Array, q_int: jax.Array,
               round_mode: RoundMode | str = RoundMode.ROUND,
               overflow_mode: OverflowMode | str = OverflowMode.WRAP
              ) -> QuantLayerResult:
-    """一層的整數掃描:每步處理一筆事件,步數等於佇列長度 L。
+    """一層的整數掃描:每步處理一筆事件,步數等於佇列長度。
 
-    a_int、is_identity、q_int: (n, L)。每一欄都照實套用,不看真事件數:不是真事件的位置
+    a_int、is_identity、q_int: (n, queue_len)。每一欄都照實套用,不看真事件數:不是真事件的位置
         要在建佇列時做成 dt=0、權重 0;conv 真事件之後的欄是真的要衰減。
     v_th_int: 純量或 (n,);None 時這層不 fire。
     其餘參數整層共用,原樣交給 process_event。
@@ -81,7 +81,7 @@ def run_layer_traced(a_int: jax.Array, is_identity: jax.Array, q_int: jax.Array,
                      round_mode: RoundMode | str = RoundMode.ROUND,
                      overflow_mode: OverflowMode | str = OverflowMode.WRAP
                     ) -> tuple[QuantLayerResult, jax.Array]:
-    """同 run_layer,另外回傳 v_steps:(n, L) 每步寫回之後的暫存器值,最後一欄等於 v_final。
+    """同 run_layer,另外回傳 v_steps:(n, queue_len) 每步寫回之後的暫存器值,最後一欄等於 v_final。
 
     量溢位要看逐步值:膜電位可能中途衝高再衰減下來,只看 v_final 會漏掉。
     """
@@ -114,7 +114,7 @@ def _run_layer_scan(a_int: jax.Array, is_identity: jax.Array, q_int: jax.Array,
                                jnp.arange(queue_len))
     spike_mask, overflowed = ys[0], ys[1]
 
-    # scan 疊出來是 (L, n),轉成 (n, L)
+    # scan 疊出來是 (queue_len, n),轉成 (n, queue_len)
     spike_event_idx = jnp.broadcast_to(jnp.arange(queue_len), (n_out_neurons, queue_len))
     result = QuantLayerResult(spike_mask=spike_mask.T, spike_event_idx=spike_event_idx,
                                    v_final=v_final, overflowed=overflowed.T)

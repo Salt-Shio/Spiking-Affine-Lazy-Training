@@ -179,7 +179,7 @@ def test_with_chunk_size_resets_conv_extra_steps_to_safe_value():
 # ============================================================================
 
 def test_extra_steps_upper_bound_hand_example():
-    # L=10、chunk_size=5、v_th=1:四筆 b=0.6 -> m=4,能量上界 floor(2.4)=2,m*=2;
+    # 佇列長度 10、chunk_size=5、v_th=1:四筆 b=0.6 -> m=4,能量上界 floor(2.4)=2,m*=2;
     # 步數上界 2 + ceil(8/5) = 4,基本步數 ceil(10/5) = 2,額外步數 2
     b = jnp.array([[0.6, 0.6, 0.6, 0.6, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
     assert extra_steps_upper_bound(b, 1.0, 5).tolist() == [2]

@@ -36,10 +36,10 @@ def run_layer_forward(maps: AffineMap, v_th: float, chunk_size: int, max_steps: 
                        alpha: float = 2.0) -> LayerForwardResult:
     """一層的浮點掃描。
 
-    maps: a、b 形狀 (n, L),每顆神經元一條佇列。
+    maps: a、b 形狀 (n, queue_len),每顆神經元一條佇列。
     v_th: fire 門檻。alpha: surrogate gradient 的平滑程度,見 surrogate.py。
     chunk_size: 每步最多處理幾筆事件;fire 時那一步停在 fire 那筆。
-    max_steps: 掃描步數,要夠跑完整條佇列;chunk_size=1 或每筆都 fire 時要 L 步。
+    max_steps: 掃描步數,要夠跑完整條佇列;chunk_size=1 或每筆都 fire 時要 queue_len 步。
     n_real_events: 純量或 (n,),前幾筆是真事件;之後的位置不算進 s_value。
     回傳 LayerForwardResult。s_value 是每步有效事件的 s 加總(有 fire 時加到 fire 那筆為止,
     沒 fire 時只加真事件),每筆真事件剛好被加一次;定義見 docs/math/不套閘與soft-reset梯度推導.md

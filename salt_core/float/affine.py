@@ -44,12 +44,12 @@ def mask_pad_events(maps: AffineMap,
                      n_real_events: jax.Array | int) -> AffineMap:
     """每顆神經元超過真事件數的位置蓋成不作用的映射(a=1, b=0)。
 
-    maps: a、b 形狀 (n, L)。pad 位置的時間、增益可能是任意值,蓋掉之後不影響膜電位。
-    n_real_events: 純量或 (n,)。等於 L 時原樣回傳。
+    maps: a、b 形狀 (n, queue_len)。pad 位置的時間、增益可能是任意值,蓋掉之後不影響膜電位。
+    n_real_events: 純量或 (n,)。等於 queue_len 時原樣回傳。
     """
-    n_out_neurons, n_total_events = maps.a.shape
+    n_out_neurons, queue_len = maps.a.shape
     n_real = normalize_real_events(n_real_events, n_out_neurons)
-    real_mask = jnp.arange(n_total_events)[None, :] < n_real[:, None]  # (n_out_neurons, n_total_events)
+    real_mask = jnp.arange(queue_len)[None, :] < n_real[:, None]  # (n_out_neurons, queue_len)
     return AffineMap(a=jnp.where(real_mask, maps.a, 1.0),
                       b=jnp.where(real_mask, maps.b, 0.0))
 
@@ -57,16 +57,16 @@ def mask_pad_events(maps: AffineMap,
 def spike_step_upper_bound(b: jax.Array, v_th: float, chunk_size: int) -> jax.Array:
     """掃描步數上界,證明見 docs/math/掃描步數上界推導.md。
 
-    b: (..., L) 佇列裡每筆事件的 b。
-    m* = min(b > 0 的筆數, floor(正的 b 的總和 / v_th)),上界 = m* + ceil((L - m*) / chunk_size)。
+    b: (..., queue_len) 佇列裡每筆事件的 b。
+    m* = min(b > 0 的筆數, floor(正的 b 的總和 / v_th)),上界 = m* + ceil((queue_len - m*) / chunk_size)。
     回傳 int32,比 b 少最後一軸。
     """
-    L = b.shape[-1]
+    queue_len = b.shape[-1]
     positive = jnp.where(b > 0, b, 0.0)
     m = jnp.sum(b > 0, axis=-1)
     energy_bound = jnp.floor(jnp.sum(positive, axis=-1) / v_th)
     m_star = jnp.minimum(m.astype(jnp.float32), energy_bound)
-    steps = m_star + jnp.ceil((L - m_star) / chunk_size)
+    steps = m_star + jnp.ceil((queue_len - m_star) / chunk_size)
     return steps.astype(jnp.int32)
 
 

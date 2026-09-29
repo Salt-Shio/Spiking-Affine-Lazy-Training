@@ -43,7 +43,7 @@ def resolve_ms_conv(pointer: jax.Array, local_to_global_j: jax.Array,
     """conv 層:每步處理的事件換成真實毫秒。
 
     pointer: (n, max_steps) 每步開始時的佇列欄位,是這顆神經元自己佇列的局部欄。
-    local_to_global_j: (n, L) 局部欄 -> 全域事件 index,空欄是 n_events。
+    local_to_global_j: (n, max_queue_len) 局部欄 -> 全域事件 index,空欄是 n_events。
     其餘參數跟回傳同 resolve_ms_fc。
     """
     n_events = event_times.shape[0]
