@@ -2,14 +2,14 @@
 
 1. 推導文件(docs/math/conv事件佇列壓縮版推導.md「三個函式的分工」)的手算例子。
 2. 同一筆全域事件讓兩顆神經元同時 fire 時,照神經元 index 由小到大。
-3. build_conv_structure + conv_float_values -> run_layer_forward -> extract_output_events_conv,
-   跟參考實作(_reference.dense_conv_affine_map -> run_layer_forward -> extract_output_events_fc)比
+3. build_conv_structure + conv_float_values -> run_layer -> extract_output_events_conv,
+   跟參考實作(_reference.dense_conv_affine_map -> run_layer -> extract_output_events_fc)比
    EventStream 四個欄位。event_gain 放錯位置不會讓 forward 跑掉,只會讓下一層的梯度算錯,所以四個都比。
 """
 
 import jax.numpy as jnp
 
-from salt_core.float.scan import run_layer_forward
+from salt_core.float.scan import run_layer
 from salt_core.connectivity.conv import build_conv_structure, conv_float_values, tile_channels
 from salt_core.tests._reference import dense_conv_affine_map
 from salt_core.stream import extract_output_events_fc, extract_output_events_conv
@@ -138,7 +138,7 @@ def test_end_to_end_matches_dense_all_four_fields():
 
     # 參考實作整條
     maps_dense = dense_conv_affine_map(event_times, x, y, c, W, TAU, S, P, H_OUT, W_OUT)
-    result_dense = run_layer_forward(maps_dense, v_th, chunk_size=5, max_steps=5, n_real_events=maps_dense.a.shape[1])
+    result_dense = run_layer(maps_dense, v_th, chunk_size=5, max_steps=5, n_real_events=maps_dense.a.shape[1])
     ev_dense = extract_output_events_fc(result_dense.spike_mask, result_dense.spike_event_idx,
                                         result_dense.s_spike, event_times,
                                         max_total_spikes=max_spikes)
@@ -146,8 +146,8 @@ def test_end_to_end_matches_dense_all_four_fields():
     # conv 整條
     maps, n_real_per_neuron, local_to_global_j = _conv_queue(
         event_times, x, y, c, W, max_queue_len, event_times.shape[0])
-    result_conv = run_layer_forward(maps, v_th, chunk_size=5, max_steps=5,
-                                           n_real_events=n_real_per_neuron)
+    result_conv = run_layer(maps, v_th, chunk_size=5, max_steps=5,
+                            n_real_events=n_real_per_neuron)
     ev_conv = extract_output_events_conv(result_conv.spike_mask,
                                                result_conv.spike_event_idx,
                                                result_conv.s_spike, event_times,
@@ -172,17 +172,17 @@ def test_end_to_end_matches_dense_with_multiple_fires_and_pad_input():
 
     maps_dense = dense_conv_affine_map(event_times, x, y, c, W, TAU, S, P, H_OUT, W_OUT,
                                        n_real=n_real_events)
-    result_dense = run_layer_forward(maps_dense, v_th, chunk_size=6, max_steps=6,
-                                      n_real_events=n_real_events)
+    result_dense = run_layer(maps_dense, v_th, chunk_size=6, max_steps=6,
+                             n_real_events=n_real_events)
     ev_dense = extract_output_events_fc(result_dense.spike_mask, result_dense.spike_event_idx,
                                         result_dense.s_spike, event_times,
                                         max_total_spikes=max_spikes)
 
     maps, n_real_per_neuron, local_to_global_j = _conv_queue(
         event_times, x, y, c, W, max_queue_len, n_real_events)
-    result_conv = run_layer_forward(maps, v_th, chunk_size=max_queue_len,
-                                           max_steps=max_queue_len,
-                                           n_real_events=n_real_per_neuron)
+    result_conv = run_layer(maps, v_th, chunk_size=max_queue_len,
+                            max_steps=max_queue_len,
+                            n_real_events=n_real_per_neuron)
     ev_conv = extract_output_events_conv(result_conv.spike_mask,
                                                result_conv.spike_event_idx,
                                                result_conv.s_spike, event_times,

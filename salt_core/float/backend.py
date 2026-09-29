@@ -6,7 +6,7 @@ import jax.numpy as jnp
 
 from salt_core.backend import ScanOutput
 from salt_core.float.affine import extra_steps_upper_bound
-from salt_core.float.scan import run_layer_forward, run_layer_forward_traced
+from salt_core.float.scan import run_layer, run_layer_traced
 
 
 @dataclass(frozen=True)
@@ -20,10 +20,10 @@ class FloatBackend:
         scan_kwargs = dict(chunk_size=layer.chunk_size, max_steps=layer.scan_steps(structure),
                            alpha=layer.alpha, n_real_events=layer.neuron_n_real(structure))
         if trace:
-            result, v_steps, pointer_steps = run_layer_forward_traced(
+            result, v_steps, pointer_steps = run_layer_traced(
                 maps, layer.v_th, **scan_kwargs)
         else:
-            result = run_layer_forward(maps, layer.v_th, **scan_kwargs)
+            result = run_layer(maps, layer.v_th, **scan_kwargs)
             v_steps = pointer_steps = None
         extra_steps_needed = jnp.max(extra_steps_upper_bound(maps.b, layer.v_th, layer.chunk_size))
         return ScanOutput(result=result, spike_gain=result.s_spike,

@@ -15,7 +15,7 @@
 
 import jax.numpy as jnp
 
-from salt_core.float.scan import run_layer_forward
+from salt_core.float.scan import run_layer
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.stream import extract_output_events_fc
 
@@ -39,7 +39,7 @@ def test_tiebreak_uses_spike_event_idx_not_neuron_order():
 
     maps = fc_float_values(build_fc_structure(event_times, event_source_idx, event_times.shape[0]),
                            W, tau, None)
-    spike_mask, spike_event_idx, s_spike, _, _ = run_layer_forward(
+    spike_mask, spike_event_idx, s_spike, _, _ = run_layer(
         maps, v_th, chunk_size=2, max_steps=1, n_real_events=maps.a.shape[1])
 
     # 前提:p0 在索引 1(Y)fire、p1 在索引 0(X)fire
@@ -86,7 +86,7 @@ def test_tiebreak_with_three_neurons_not_in_row_order():
 
     maps = fc_float_values(build_fc_structure(event_times, event_source_idx, event_times.shape[0]),
                            W, tau, None)
-    spike_mask, spike_event_idx, s_spike, _, _ = run_layer_forward(
+    spike_mask, spike_event_idx, s_spike, _, _ = run_layer(
         maps, v_th, chunk_size=3, max_steps=1, n_real_events=maps.a.shape[1])
 
     # 前提:三顆神經元各自在預期的索引 fire

@@ -1,6 +1,6 @@
 """逐步軌跡(salt_core/trace.py)。規格見 docs/監測規格.md「LayerForwardTrace / run_network(trace=True)(逐步軌跡,已實作)」。
 
-A. run_layer_forward_traced 跟 run_layer_forward:LayerForwardResult 五欄相同(共用掃描內核),
+A. run_layer_traced 跟 run_layer:FloatLayerResult 五欄相同(共用掃描內核),
    v_steps 最後一欄等於 v_final。
 B. resolve_ms_fc、resolve_ms_conv:掃描步換成真實毫秒,手算小例子,空轉步是 nan。
 C. run_network(..., trace=True):結果跟不帶軌跡時一致、軌跡形狀對、stop_gradient 有效。
@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from salt_core.float.scan import run_layer_forward, run_layer_forward_traced
+from salt_core.float.scan import run_layer, run_layer_traced
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.layers import ConvLayer, FCLayer
 from salt_core.network import Network, RawEvents, run_network
@@ -61,7 +61,7 @@ def _stream0(batch, layer0):
 
 
 # ============================================================================
-# A. run_layer_forward_traced == run_layer_forward(+軌跡)
+# A. run_layer_traced == run_layer(+軌跡)
 # ============================================================================
 
 def _toy_fc_maps(n_out, n_events, seed):
@@ -77,9 +77,9 @@ def test_traced_forward_result_bit_identical():
     for chunk_size, v_th in [(1, 1.0), (1, 1e9), (4, 1.0), (4, 1e9)]:
         maps, _ = _toy_fc_maps(n_out=5, n_events=24, seed=chunk_size + int(v_th))
         max_steps = -(-maps.a.shape[1] // chunk_size)
-        base = run_layer_forward(maps, v_th, chunk_size=chunk_size, max_steps=max_steps,
-                                  n_real_events=maps.a.shape[1])
-        traced, v_steps, pointer = run_layer_forward_traced(
+        base = run_layer(maps, v_th, chunk_size=chunk_size, max_steps=max_steps,
+                         n_real_events=maps.a.shape[1])
+        traced, v_steps, pointer = run_layer_traced(
             maps, v_th, chunk_size=chunk_size, max_steps=max_steps,
             n_real_events=maps.a.shape[1])
         for name in base._fields:
@@ -94,7 +94,7 @@ def test_traced_forward_result_bit_identical():
 
 def test_traced_pointer_monotone_and_starts_at_zero():
     maps, _ = _toy_fc_maps(n_out=4, n_events=20, seed=7)
-    _, _v_steps, pointer = run_layer_forward_traced(
+    _, _v_steps, pointer = run_layer_traced(
         maps, v_th=1e9, chunk_size=1, max_steps=20, n_real_events=20)
     ptr = np.asarray(pointer)
     assert np.all(ptr[:, 0] == 0)

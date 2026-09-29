@@ -1,4 +1,4 @@
-"""多層 FC 管線(佇列建構 + run_layer_forward + extract_output_events_fc)跟獨立的逐事件參考實作比。
+"""多層 FC 管線(佇列建構 + run_layer + extract_output_events_fc)跟獨立的逐事件參考實作比。
 
 參考實作(_sequential_layer)不用 associative_scan、不分 chunk,逐事件跑同一條遞迴(不套閘、fire 時
 soft reset,同 test_surrogate.py),層與層之間用動態長度的 nonzero 合併,不經過 float/scan.py、
@@ -15,7 +15,7 @@ stream.py。涵蓋:
 import jax
 import jax.numpy as jnp
 
-from salt_core.float.scan import run_layer_forward
+from salt_core.float.scan import run_layer
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.stream import extract_output_events_fc
 from salt_core.float.surrogate import atan_spike
@@ -83,7 +83,7 @@ def _sequential_multi_layer(event_times, event_source_idx, weight_matrices, tau,
 
 
 # ---------------------------------------------------------------------------
-# 真正的 pipeline:FC 佇列建構 + run_layer_forward + extract_output_events_fc
+# 真正的 pipeline:FC 佇列建構 + run_layer + extract_output_events_fc
 # ---------------------------------------------------------------------------
 
 def _real_pipeline_multi_layer(event_times, event_source_idx, weight_matrices, tau, v_th,
@@ -95,7 +95,7 @@ def _real_pipeline_multi_layer(event_times, event_source_idx, weight_matrices, t
     for li, W in enumerate(weight_matrices):
         maps = fc_float_values(build_fc_structure(times, source_idx, n_real_events), W, tau, gain)
         max_steps = maps.a.shape[1]
-        spike_mask, spike_event_idx, s_spike, s_value, v_final = run_layer_forward(
+        spike_mask, spike_event_idx, s_spike, s_value, v_final = run_layer(
             maps, v_th, chunk_size=chunk_size, max_steps=max_steps, alpha=alpha,
             n_real_events=n_real_events)
         if li < len(weight_matrices) - 1:
@@ -219,8 +219,8 @@ _TWO_FIRE_W = jnp.array([[0.5, 0.6, 0.3, 0.9, 0.2, 0.95, 0.1]])
 def _real_fire_events(chunk_size):
     maps = fc_float_values(build_fc_structure(_TWO_FIRE_TIMES, _TWO_FIRE_SOURCES, 7),
                            _TWO_FIRE_W, TAU, None)
-    result = run_layer_forward(maps, V_TH, chunk_size=chunk_size, max_steps=7, alpha=ALPHA,
-                               n_real_events=7)
+    result = run_layer(maps, V_TH, chunk_size=chunk_size, max_steps=7, alpha=ALPHA,
+                       n_real_events=7)
     return sorted(int(idx) for idx, fired in zip(result.spike_event_idx[0], result.spike_mask[0])
                   if bool(fired))
 

@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from salt_core.float.scan import LayerForwardResult
+from salt_core.float.scan import FloatLayerResult
 from salt_core.decoder import (MembraneRegressionDecoder, PopulationDecoder,
                                 RateDecoder)
 from salt_core.layers import FCLayer
@@ -17,8 +17,8 @@ from salt_core.layers import FCLayer
 TOL = 1e-6
 
 
-def _hand_result(n_neurons: int = 3, n_steps: int = 4) -> LayerForwardResult:
-    """手構一個 LayerForwardResult,數值挑好心算的,不跑 forward。"""
+def _hand_result(n_neurons: int = 3, n_steps: int = 4) -> FloatLayerResult:
+    """手構一個 FloatLayerResult,數值挑好心算的,不跑 forward。"""
     s_value = jnp.array([[0.1, 0.2, 0.0, 0.0],     # 加總 0.3
                          [0.5, 0.5, 0.5, 0.0],     # 加總 1.5
                          [0.0, 0.0, 0.0, 0.0]])    # 加總 0.0
@@ -26,7 +26,7 @@ def _hand_result(n_neurons: int = 3, n_steps: int = 4) -> LayerForwardResult:
                             [True, True, False, False],    # 2 次
                             [False, False, False, False]]) # 0 次
     v_final = jnp.array([1.25, -0.5, 3.0])
-    return LayerForwardResult(
+    return FloatLayerResult(
         spike_mask=spike_mask,
         spike_event_idx=jnp.zeros((n_neurons, n_steps), dtype=jnp.int32),
         s_spike=jnp.zeros((n_neurons, n_steps)),
@@ -57,7 +57,7 @@ def test_population_groups_are_contiguous_equal_partitions():
     # 6 神經元 -> 2 類 x 3 顆
     s_value = jnp.array([[1.0, 0.0], [0.5, 0.5], [0.0, 0.0],   # 類0: 1.0 + 1.0 + 0.0 = 2.0
                          [0.0, 0.0], [2.0, 0.0], [0.5, 0.5]])  # 類1: 0.0 + 2.0 + 1.0 = 3.0
-    r = LayerForwardResult(
+    r = FloatLayerResult(
         spike_mask=jnp.zeros((6, 2), dtype=bool),
         spike_event_idx=jnp.zeros((6, 2), dtype=jnp.int32),
         s_spike=jnp.zeros((6, 2)),

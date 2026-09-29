@@ -53,7 +53,7 @@ def process_event(v0_int: jax.Array, a_int: jax.Array, is_identity: jax.Array,
 class QuantLayerResult(NamedTuple):
     """一層整數 forward 的結果。第 t 步處理佇列第 t 欄;沒有 s_value、s_spike(沒有梯度)。"""
     spike_mask: jax.Array       # (n, queue_len) bool
-    spike_event_idx: jax.Array  # (n, queue_len) int32,佇列欄位,跟 LayerForwardResult 同一個慣例
+    spike_event_idx: jax.Array  # (n, queue_len) int32,佇列欄位,跟 FloatLayerResult 同一個慣例
     v_final: jax.Array          # (n,) int32 暫存器值;QuantBackend.readout 之後是物理尺度 float32
     overflowed: jax.Array       # (n, queue_len) bool,這一步寫回之前的值有沒有超出 i_V + f_V 位元
 

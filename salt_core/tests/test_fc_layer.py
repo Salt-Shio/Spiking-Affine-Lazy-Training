@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
-from salt_core.float.scan import run_layer_forward
+from salt_core.float.scan import run_layer
 from salt_core.layers import FCLayer
 from salt_core.network import Network, RawEvents, run_network
 from salt_core.quant.backend import QuantBackend, QuantizedLayerParams
@@ -92,10 +92,10 @@ def _primitive_fc(layer: FCLayer, w, stream):
     structure = build_fc_structure(stream.event_times, stream.event_source_idx,
                                    stream.n_real_events)
     maps = fc_float_values(structure, w, layer.tau, stream.event_gain)
-    result = run_layer_forward(maps, layer.v_th, chunk_size=layer.chunk_size,
-                               max_steps=maps.a.shape[1], alpha=layer.alpha,
-                               n_real_events=jnp.broadcast_to(stream.n_real_events,
-                                                              (layer.n_out,)))
+    result = run_layer(maps, layer.v_th, chunk_size=layer.chunk_size,
+                       max_steps=maps.a.shape[1], alpha=layer.alpha,
+                       n_real_events=jnp.broadcast_to(stream.n_real_events,
+                                                      (layer.n_out,)))
     out_stream = extract_output_events_fc(result.spike_mask, result.spike_event_idx,
                                           result.s_spike, stream.event_times,
                                           max_total_spikes=layer.max_out_spikes)

@@ -9,7 +9,7 @@ import math
 import jax
 import jax.numpy as jnp
 
-from salt_core.float.scan import run_layer_forward
+from salt_core.float.scan import run_layer
 from salt_core.connectivity.conv import (build_conv_structure, conv_float_values, tile_channels,
                                           unravel_conv_source)
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
@@ -40,8 +40,8 @@ def _run_ref(event_times, x, y, c, W, tau, S, P, H_out, W_out, v_th, max_steps,
     n_real = event_times.shape[0] if n_real is None else n_real
     maps = dense_conv_affine_map(event_times, x, y, c, W, tau, S, P, H_out, W_out,
                                   gain=gain, n_real=n_real)
-    return run_layer_forward(maps, v_th, chunk_size=max_steps, max_steps=max_steps,
-                              n_real_events=n_real)
+    return run_layer(maps, v_th, chunk_size=max_steps, max_steps=max_steps,
+                     n_real_events=n_real)
 
 
 def _run_conv(event_times, x, y, c, W, tau, S, P, H_out, W_out, max_queue_len, v_th, max_steps,
@@ -49,8 +49,8 @@ def _run_conv(event_times, x, y, c, W, tau, S, P, H_out, W_out, max_queue_len, v
     n_real = event_times.shape[0] if n_real is None else n_real
     maps, n_real_per_neuron, _ = _conv_queue(event_times, x, y, c, W, tau, S, P,
                                              H_out, W_out, max_queue_len, gain, n_real)
-    return run_layer_forward(maps, v_th, chunk_size=max_steps, max_steps=max_steps,
-                              n_real_events=n_real_per_neuron)
+    return run_layer(maps, v_th, chunk_size=max_steps, max_steps=max_steps,
+                     n_real_events=n_real_per_neuron)
 
 
 # ============================================================================
@@ -166,8 +166,8 @@ def _conv1_fire_then_extract(W1):
     et = jnp.array([1.0]); x = jnp.array([1]); y = jnp.array([1]); c = jnp.array([0])
     maps, n_real_per_neuron, local_to_global_j = _conv_queue(
         et, x, y, c, W1, TAU, _S, _P, _HW, _HW, 1, None, et.shape[0])
-    r = run_layer_forward(maps, v_th=8.5, chunk_size=1, max_steps=1,
-                           n_real_events=n_real_per_neuron)
+    r = run_layer(maps, v_th=8.5, chunk_size=1, max_steps=1,
+                  n_real_events=n_real_per_neuron)
     return extract_output_events_conv(r.spike_mask, r.spike_event_idx, r.s_spike, et,
                                       local_to_global_j, max_total_spikes=9)
 
@@ -183,8 +183,8 @@ def test_conv_to_conv_cross_layer_gradient_matches_hand_calc():
         maps2, n_real_per_neuron2, _ = _conv_queue(
             ev.event_times, x2, y2, c2, W2, TAU, _S, _P, _HW, _HW, 1, ev.event_gain,
             ev.n_real_events)
-        r2 = run_layer_forward(maps2, v_th=1e9, chunk_size=1, max_steps=1,
-                                n_real_events=n_real_per_neuron2)
+        r2 = run_layer(maps2, v_th=1e9, chunk_size=1, max_steps=1,
+                       n_real_events=n_real_per_neuron2)
         return r2.v_final[0]
 
     g = jax.grad(fwd)(_w1())
@@ -202,8 +202,8 @@ def test_conv_to_fc_cross_layer_gradient_matches_hand_calc():
         W_fc = jnp.zeros((2, 9), dtype=jnp.float32).at[:, 0].set(jnp.array([3.0, -1.0]))
         maps_fc = fc_float_values(build_fc_structure(ev.event_times, ev.event_source_idx, ev.n_real_events),
                                   W_fc, TAU, ev.event_gain)
-        r_fc = run_layer_forward(maps_fc, v_th=1e9, chunk_size=maps_fc.a.shape[1],
-                                  max_steps=maps_fc.a.shape[1], n_real_events=ev.n_real_events)
+        r_fc = run_layer(maps_fc, v_th=1e9, chunk_size=maps_fc.a.shape[1],
+                         max_steps=maps_fc.a.shape[1], n_real_events=ev.n_real_events)
         return r_fc.v_final[0]
 
     g = jax.grad(fwd)(_w1())

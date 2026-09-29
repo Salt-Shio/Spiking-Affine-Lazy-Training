@@ -1,4 +1,4 @@
-"""surrogate gradient 接進 run_layer_forward 的 chunk 化掃描之後梯度還是對的。
+"""surrogate gradient 接進 run_layer 的 chunk 化掃描之後梯度還是對的。
 
 例子同 test_surrogate.py(tau=4,v_th=1.0,N=[0,1,4],w=[0.6,0.6,0.9],梯度 [0.898341, 0.680819,
 0.910170]),包成 n=3(三個來源各發一次事件)、m=1 的 FC 佇列。loss = sum(s_value):每筆真事件的 s
@@ -9,7 +9,7 @@ chunk_size=1(每步一筆)跟 chunk_size=3(整條進同一個 chunk,fire 前還�
 import jax
 import jax.numpy as jnp
 
-from salt_core.float.scan import run_layer_forward
+from salt_core.float.scan import run_layer
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 
 TOL = 1e-4
@@ -28,9 +28,9 @@ def _loss(W, event_times, event_source_idx, tau, v_th, chunk_size, alpha):
     maps = fc_float_values(build_fc_structure(event_times, event_source_idx, event_times.shape[0]),
                            W, tau, None)
     n_real_events = event_times.shape[0]
-    _, _, _, s_value, _ = run_layer_forward(maps, v_th, chunk_size=chunk_size,
-                                            max_steps=n_real_events, alpha=alpha,
-                                            n_real_events=n_real_events)
+    _, _, _, s_value, _ = run_layer(maps, v_th, chunk_size=chunk_size,
+                                    max_steps=n_real_events, alpha=alpha,
+                                    n_real_events=n_real_events)
     # s_value 已經排除 pad、空轉步,直接整個加總
     return jnp.sum(s_value)
 
@@ -76,9 +76,9 @@ def _loss_v_final(W, event_times, event_source_idx, tau, v_th, chunk_size, max_s
     """loss 直接是 v_final(膜電位回歸),不經過 s_value。"""
     maps = fc_float_values(build_fc_structure(event_times, event_source_idx, event_times.shape[0]),
                            W, tau, None)
-    _, _, _, _, v_final = run_layer_forward(maps, v_th, chunk_size=chunk_size,
-                                            max_steps=max_steps, alpha=alpha,
-                                            n_real_events=maps.a.shape[1])
+    _, _, _, _, v_final = run_layer(maps, v_th, chunk_size=chunk_size,
+                                    max_steps=max_steps, alpha=alpha,
+                                    n_real_events=maps.a.shape[1])
     return v_final[0]
 
 

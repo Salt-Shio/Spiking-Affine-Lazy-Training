@@ -1,8 +1,8 @@
-"""輸出解碼器:最後一層的 LayerForwardResult -> 跟 label 比對的分數。
+"""輸出解碼器:最後一層的 FloatLayerResult -> 跟 label 比對的分數。
 
 三種標準編碼:膜電位回歸讀 v_final,頻率、群體讀 s_value(定義見 float/scan.py)。
 validate 檢查最後一層的門檻跟編碼配不配。要別的編碼可以寫一個符合 Decoder 的新物件,
-或在 loss 裡直接讀 LayerForwardResult。
+或在 loss 裡直接讀 FloatLayerResult。
 解碼器是 frozen dataclass,沒有可學參數,可以被 jax.jit 閉包捕捉。
 """
 from dataclasses import dataclass
@@ -11,13 +11,13 @@ from typing import Protocol
 import jax
 import jax.numpy as jnp
 
-from salt_core.float.scan import LayerForwardResult
+from salt_core.float.scan import FloatLayerResult
 
 
 class Decoder(Protocol):
     """解碼器的約定。只當文件用,實際靠 duck typing。"""
 
-    def decode(self, result: LayerForwardResult) -> tuple[jax.Array, dict]:
+    def decode(self, result: FloatLayerResult) -> tuple[jax.Array, dict]:
         """單筆樣本最後一層的結果 -> (scores, metrics)。批次由呼叫端 vmap。
 
         scores: (類別數,),loss 跟 argmax 都用它。metrics: 這種編碼的監看純量,可以是空 dict。
@@ -37,7 +37,7 @@ class MembraneRegressionDecoder:
     """
     min_out_v_th: float = 1e6
 
-    def decode(self, result: LayerForwardResult) -> tuple[jax.Array, dict]:
+    def decode(self, result: FloatLayerResult) -> tuple[jax.Array, dict]:
         return result.v_final, {}
 
     def validate(self, last_layer) -> None:
@@ -56,7 +56,7 @@ class RateDecoder:
     """
     max_out_v_th: float = 1e3
 
-    def decode(self, result: LayerForwardResult) -> tuple[jax.Array, dict]:
+    def decode(self, result: FloatLayerResult) -> tuple[jax.Array, dict]:
         soft = jnp.sum(result.s_value, axis=1)
         hard = jnp.sum(result.spike_mask, axis=1).astype(jnp.float32)
         metrics = {"hard_count_mean": jnp.mean(hard),
@@ -82,7 +82,7 @@ class PopulationDecoder:
     group_size: int
     max_out_v_th: float = 1e3
 
-    def decode(self, result: LayerForwardResult) -> tuple[jax.Array, dict]:
+    def decode(self, result: FloatLayerResult) -> tuple[jax.Array, dict]:
         per_neuron = jnp.sum(result.s_value, axis=1)  # (n_classes * group_size,)
         scores = per_neuron.reshape(self.n_classes, self.group_size).sum(axis=1)
         hard = jnp.sum(result.spike_mask, axis=1).astype(jnp.float32)

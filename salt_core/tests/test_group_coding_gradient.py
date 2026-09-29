@@ -10,7 +10,7 @@ b1 在 t=4(事件 2)fire 一次,b2 不 fire。
 import jax
 import jax.numpy as jnp
 
-from salt_core.float.scan import run_layer_forward
+from salt_core.float.scan import run_layer
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 
 TOL = 1e-3
@@ -34,9 +34,9 @@ def _loss(W, event_times, event_source_idx, tau, v_th, chunk_size, alpha):
     maps = fc_float_values(build_fc_structure(event_times, event_source_idx, event_times.shape[0]),
                            W, tau, None)
     n_real_events = event_times.shape[0]
-    _, _, _, s_value, _ = run_layer_forward(maps, v_th, chunk_size=chunk_size,
-                                            max_steps=n_real_events, alpha=alpha,
-                                            n_real_events=n_real_events)
+    _, _, _, s_value, _ = run_layer(maps, v_th, chunk_size=chunk_size,
+                                    max_steps=n_real_events, alpha=alpha,
+                                    n_real_events=n_real_events)
     S = jnp.sum(s_value, axis=1)  # 每顆神經元自己的 spike 總和,shape (m,)
     return S[0] - S[1]
 

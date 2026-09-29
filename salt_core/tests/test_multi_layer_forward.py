@@ -1,7 +1,7 @@
 """extract_output_events_fc 把 layer1 的輸出接成 layer2 的輸入,兩層串起來的數字對。
 
 輸出是固定長度的陣列,前 n_real_events 筆是真事件,其餘是 pad;每個測試都確認帶 n_real_events
-接回佇列建構跟 run_layer_forward 之後,結果跟只有真事件時一樣。
+接回佇列建構跟 run_layer 之後,結果跟只有真事件時一樣。
 
 test_two_layer_fc_forward:layer1 同 test_fc_forward.py(n=2,m=2,tau=4,v_th=1.0),b1 在 t=4 fire
 一次,b2 不 fire,輸出只有 (t=4, 來源 b1)。layer2 一顆神經元 c1,W2=[[1.5, 0.4]]。
@@ -10,7 +10,7 @@ test_two_layer_fc_forward:layer1 同 test_fc_forward.py(n=2,m=2,tau=4,v_th=1.0),
 
 import jax.numpy as jnp
 
-from salt_core.float.scan import run_layer_forward
+from salt_core.float.scan import run_layer
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.stream import extract_output_events_fc
 
@@ -36,7 +36,7 @@ def test_two_layer_fc_forward():
     layer1_maps = fc_float_values(build_fc_structure(layer1_event_times, layer1_event_source_idx, layer1_event_times.shape[0]),
                                   W1, tau, None)
     n_real_events_1 = layer1_event_times.shape[0]
-    spike_mask_1, spike_event_idx_1, s_spike_1, _, v_final_1 = run_layer_forward(
+    spike_mask_1, spike_event_idx_1, s_spike_1, _, v_final_1 = run_layer(
         layer1_maps, v_th, chunk_size=1, max_steps=n_real_events_1, n_real_events=n_real_events_1)
 
     layer2_event_times, layer2_event_source_idx, layer2_event_gain, n_real_events_2 = \
@@ -53,7 +53,7 @@ def test_two_layer_fc_forward():
 
     layer2_maps = fc_float_values(build_fc_structure(layer2_event_times, layer2_event_source_idx, n_real_events_2),
                                   W2, tau, layer2_event_gain)
-    spike_mask_2, spike_event_idx_2, _, _, v_final_2 = run_layer_forward(
+    spike_mask_2, spike_event_idx_2, _, _, v_final_2 = run_layer(
         layer2_maps, v_th, chunk_size=1, max_steps=layer2_maps.a.shape[1],
         n_real_events=n_real_events_2)
 
@@ -92,7 +92,7 @@ def test_two_layer_fc_forward_multi_fire_interleaved():
     layer1_maps = fc_float_values(build_fc_structure(layer1_event_times, layer1_event_source_idx, layer1_event_times.shape[0]),
                                   W1, tau, None)
     n_real_events_1 = layer1_event_times.shape[0]
-    spike_mask_1, spike_event_idx_1, s_spike_1, _, v_final_1 = run_layer_forward(
+    spike_mask_1, spike_event_idx_1, s_spike_1, _, v_final_1 = run_layer(
         layer1_maps, v_th, chunk_size=1, max_steps=n_real_events_1, n_real_events=n_real_events_1)
 
     b1_fires = [i for i in range(spike_mask_1.shape[1]) if bool(spike_mask_1[0, i])]
@@ -123,7 +123,7 @@ def test_two_layer_fc_forward_multi_fire_interleaved():
 
     layer2_maps = fc_float_values(build_fc_structure(layer2_event_times, layer2_event_source_idx, n_real_events_2),
                                   W2, tau, layer2_event_gain)
-    spike_mask_2, spike_event_idx_2, _, _, v_final_2 = run_layer_forward(
+    spike_mask_2, spike_event_idx_2, _, _, v_final_2 = run_layer(
         layer2_maps, v_th, chunk_size=1, max_steps=layer2_maps.a.shape[1],
         n_real_events=n_real_events_2)
 
@@ -151,7 +151,7 @@ def test_empty_layer_output():
     layer1_maps = fc_float_values(build_fc_structure(layer1_event_times, layer1_event_source_idx, layer1_event_times.shape[0]),
                                   W1, tau, None)
     n_real_events_1 = layer1_event_times.shape[0]
-    spike_mask_1, spike_event_idx_1, s_spike_1, _, _ = run_layer_forward(
+    spike_mask_1, spike_event_idx_1, s_spike_1, _, _ = run_layer(
         layer1_maps, v_th, chunk_size=1, max_steps=n_real_events_1, n_real_events=n_real_events_1)
 
     assert not bool(spike_mask_1.any()), "這組 weights 不該讓任何神經元 fire"
@@ -170,7 +170,7 @@ def test_empty_layer_output():
                                   W2, tau, layer2_event_gain)
     assert layer2_maps.a.shape == (1, 6)
 
-    spike_mask_2, _, _, _, v_final_2 = run_layer_forward(
+    spike_mask_2, _, _, _, v_final_2 = run_layer(
         layer2_maps, v_th, chunk_size=1, max_steps=layer2_maps.a.shape[1],
         n_real_events=n_real_events_2)
 

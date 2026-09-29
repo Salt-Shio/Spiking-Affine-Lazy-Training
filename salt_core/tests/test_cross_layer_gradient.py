@@ -23,7 +23,7 @@ W2=[[0.5]]。loss 是 q 的 v_final(layer2 不 fire)。
 import jax
 import jax.numpy as jnp
 
-from salt_core.float.scan import run_layer_forward
+from salt_core.float.scan import run_layer
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.stream import extract_output_events_fc
 
@@ -45,7 +45,7 @@ def _two_layer_v_final_q(W1, event_times, event_source_idx, tau, v_th, alpha, W2
     use_gain=False 時不傳 event_gain,當對照組。"""
     maps1 = fc_float_values(build_fc_structure(event_times, event_source_idx, event_times.shape[0]),
                             W1, tau, None)
-    spike_mask, spike_event_idx, s_spike, _, _ = run_layer_forward(
+    spike_mask, spike_event_idx, s_spike, _, _ = run_layer(
         maps1, v_th, chunk_size=1, max_steps=2, alpha=alpha,
         n_real_events=maps1.a.shape[1])
 
@@ -54,7 +54,7 @@ def _two_layer_v_final_q(W1, event_times, event_source_idx, tau, v_th, alpha, W2
 
     maps2 = fc_float_values(build_fc_structure(times2, src2, n_real_events2),
                             W2, tau, (gain2 if use_gain else None))
-    _, _, _, _, v_final2 = run_layer_forward(
+    _, _, _, _, v_final2 = run_layer(
         maps2, v_th, chunk_size=1, max_steps=maps2.a.shape[1], alpha=alpha,
         n_real_events=n_real_events2)
     return v_final2[0]

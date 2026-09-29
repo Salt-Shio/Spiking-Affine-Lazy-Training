@@ -12,7 +12,7 @@ import jax.numpy as jnp
 from salt_core.float.affine import AffineMap, normalize_real_events, process_chunk
 
 
-class LayerForwardResult(NamedTuple):
+class FloatLayerResult(NamedTuple):
     """一層 forward 的結果,也是解碼器讀的東西。s_value 已經不含 pad 事件,可以直接整個加總。"""
     spike_mask: jax.Array       # (n, max_steps) 這一步有沒有 fire
     spike_event_idx: jax.Array  # (n, max_steps) fire 的是佇列第幾欄;FC 就是全域事件 index,
@@ -31,9 +31,9 @@ def _pad_queue(maps: AffineMap, pad_len: int) -> AffineMap:
                       b=jnp.concatenate([maps.b, pad_b], axis=1))
 
 
-def run_layer_forward(maps: AffineMap, v_th: float, chunk_size: int, max_steps: int,
-                       n_real_events: jax.Array | int,
-                       alpha: float = 2.0) -> LayerForwardResult:
+def run_layer(maps: AffineMap, v_th: float, chunk_size: int, max_steps: int,
+              n_real_events: jax.Array | int,
+              alpha: float = 2.0) -> FloatLayerResult:
     """一層的浮點掃描。
 
     maps: a、b 形狀 (n, queue_len),每顆神經元一條佇列。
@@ -41,7 +41,7 @@ def run_layer_forward(maps: AffineMap, v_th: float, chunk_size: int, max_steps: 
     chunk_size: 每步最多處理幾筆事件;fire 時那一步停在 fire 那筆。
     max_steps: 掃描步數,要夠跑完整條佇列;chunk_size=1 或每筆都 fire 時要 queue_len 步。
     n_real_events: 純量或 (n,),前幾筆是真事件;之後的位置不算進 s_value。
-    回傳 LayerForwardResult。s_value 是每步有效事件的 s 加總(有 fire 時加到 fire 那筆為止,
+    回傳 FloatLayerResult。s_value 是每步有效事件的 s 加總(有 fire 時加到 fire 那筆為止,
     沒 fire 時只加真事件),每筆真事件剛好被加一次;定義見 docs/math/不套閘與soft-reset梯度推導.md
     「決定的解法:「加總這個窗口裡所有有效位置」,取代「只挑一個代表位置」」。
     """
@@ -50,13 +50,13 @@ def run_layer_forward(maps: AffineMap, v_th: float, chunk_size: int, max_steps: 
     return result
 
 
-def run_layer_forward_traced(maps: AffineMap, v_th: float, chunk_size: int, max_steps: int,
-                              n_real_events: jax.Array | int, alpha: float = 2.0
-                              ) -> tuple[LayerForwardResult, jax.Array, jax.Array]:
-    """同 run_layer_forward,另外回傳逐步軌跡。不進訓練熱路徑。
+def run_layer_traced(maps: AffineMap, v_th: float, chunk_size: int, max_steps: int,
+                     n_real_events: jax.Array | int, alpha: float = 2.0
+                     ) -> tuple[FloatLayerResult, jax.Array, jax.Array]:
+    """同 run_layer,另外回傳逐步軌跡。不進訓練熱路徑。
 
     回傳 (result, v_steps, pointer_steps):
-    result: 跟 run_layer_forward 同一個掃描內核算出的 LayerForwardResult。
+    result: 跟 run_layer 同一個掃描內核算出的 FloatLayerResult。
     v_steps: (n, max_steps) 每步結束(套過 reset)的膜電位,最後一欄等於 v_final。
     pointer_steps: (n, max_steps) int,每步開始時處理到佇列第幾欄。
     """
@@ -107,8 +107,8 @@ def _run_layer_scan(maps: AffineMap, v_th: float, chunk_size: int, max_steps: in
     spike_mask, spike_event_idx, s_spike, s_value = ys[:4]
 
     # scan 疊出來是 (max_steps, n),轉成 (n, max_steps)
-    result = LayerForwardResult(spike_mask=spike_mask.T, spike_event_idx=spike_event_idx.T,
-                                 s_spike=s_spike.T, s_value=s_value.T, v_final=v_final)
+    result = FloatLayerResult(spike_mask=spike_mask.T, spike_event_idx=spike_event_idx.T,
+                              s_spike=s_spike.T, s_value=s_value.T, v_final=v_final)
     if not trace:
         return result, None, None
     v_step, pointer_step = ys[4], ys[5]

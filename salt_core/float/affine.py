@@ -88,7 +88,7 @@ def extra_steps_upper_bound(b: jax.Array, v_th: float, chunk_size: int) -> jax.A
     return spike_step_upper_bound(b, v_th, chunk_size) - base_scan_steps(b.shape[-1], chunk_size)
 
 
-class ChunkForwardResult(NamedTuple):
+class FloatChunkResult(NamedTuple):
     v_final: jax.Array     # chunk 結束後的膜電位,有 fire 時是 reset 之後的值
     is_spiked: jax.Array   # bool scalar,這個 chunk 內是否有 spike
     spike_idx: jax.Array   # 第一次 spike 的事件索引(0-based);沒 spike 則等於 chunk 長度
@@ -97,7 +97,7 @@ class ChunkForwardResult(NamedTuple):
 
 
 def process_chunk(v0: jax.Array, maps: AffineMap, v_th: float,
-                   alpha: float = 2.0) -> ChunkForwardResult:
+                   alpha: float = 2.0) -> FloatChunkResult:
     """一個 chunk:先假設都不 fire,用 associative_scan 算出每筆事件後的膜電位,再找第一筆
     v >= v_th 的事件 fire、reset,之後的事件丟掉(下一步從它們重新開始)。
 
@@ -122,5 +122,5 @@ def process_chunk(v0: jax.Array, maps: AffineMap, v_th: float,
     v_silent = v_sequence[-1]
     v_final = jnp.where(any_spiked, v_after_spike, v_silent)
 
-    return ChunkForwardResult(v_final=v_final, is_spiked=any_spiked, spike_idx=spike_idx,
-                               v_sequence=v_sequence, s_sequence=s_sequence)
+    return FloatChunkResult(v_final=v_final, is_spiked=any_spiked, spike_idx=spike_idx,
+                            v_sequence=v_sequence, s_sequence=s_sequence)

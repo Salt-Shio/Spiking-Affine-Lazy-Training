@@ -2,7 +2,7 @@
 
 1. _compress_candidates、_delta_t_three_regimes、conv_float_values 對推導文件的手算例子。
 2. build_conv_structure + conv_float_values 跟參考實作(_reference.dense_conv_affine_map)比:
-   run_layer_forward 之後的 v_final、spike 細節、梯度。不 fire 時 v_final 對 W、gain 是線性的,
+   run_layer 之後的 v_final、spike 細節、梯度。不 fire 時 v_final 對 W、gain 是線性的,
    梯度用中央差分對參考算;會 fire 的場景用參考的 autodiff 對照。
 幾何變化跟跨層梯度在 test_conv_geometry.py。
 """
@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from salt_core.float.scan import run_layer_forward
+from salt_core.float.scan import run_layer
 from salt_core.connectivity.conv import (ConvQueueStructure, _compress_candidates,
                                           _delta_t_three_regimes, build_conv_structure,
                                           conv_float_values, conv_weight_codes, tile_channels)
@@ -161,12 +161,12 @@ def test_catchup_identity_pitfall_matches_hand_derivation():
 #    梯度:不 fire 時用中央差分對參考;會 fire 時用參考的 autodiff。
 
 def _run_ref(event_times, x, y, c, W, v_th, max_steps, n_real_events=None, event_gain=None):
-    """參考實作建密集 (a, b) -> run_layer_forward。"""
+    """參考實作建密集 (a, b) -> run_layer。"""
     n_real_events = event_times.shape[0] if n_real_events is None else n_real_events
     maps = dense_conv_affine_map(event_times, x, y, c, W, TAU, S, P, H_OUT, W_OUT,
                                   gain=event_gain, n_real=n_real_events)
-    return run_layer_forward(maps, v_th, chunk_size=max_steps, max_steps=max_steps,
-                              n_real_events=n_real_events)
+    return run_layer(maps, v_th, chunk_size=max_steps, max_steps=max_steps,
+                     n_real_events=n_real_events)
 
 
 def _run_conv(event_times, x, y, c, W, v_th, max_queue_len, max_steps,
@@ -176,14 +176,14 @@ def _run_conv(event_times, x, y, c, W, v_th, max_queue_len, max_steps,
     structure = build_conv_structure(event_times, x, y, c, K, S, P, H_OUT, W_OUT,
                                      max_queue_len, n_real_events)
     maps = conv_float_values(structure, W, TAU, event_gain)
-    result = run_layer_forward(maps, v_th, chunk_size=max_steps, max_steps=max_steps,
-                                n_real_events=tile_channels(structure.n_real_events, W.shape[0]))
+    result = run_layer(maps, v_th, chunk_size=max_steps, max_steps=max_steps,
+                       n_real_events=tile_channels(structure.n_real_events, W.shape[0]))
     return result, structure
 
 
 def _ref_vfinal_all_affine(event_times, x, y, c, W, n_real_events=None, event_gain=None):
     """不 fire(v_th=1e9)時所有神經元的 v_final:numpy float64 直接折疊參考的 (a, b),
-    不經過 run_layer_forward,給中央差分用。"""
+    不經過 run_layer,給中央差分用。"""
     maps = dense_conv_affine_map(event_times, x, y, c, W, TAU, S, P, H_OUT, W_OUT,
                                   gain=event_gain, n_real=n_real_events)
     a = np.asarray(maps.a, dtype=np.float64)
@@ -218,8 +218,8 @@ def _grad_ref_autodiff_firing(event_times, x, y, c, v_th, max_steps, neuron_idx=
     """會 fire 的場景:電壓在 fire 邊界不連續,中央差分不可靠,改用參考實作的 autodiff。"""
     def loss_fn(W):
         maps = dense_conv_affine_map(event_times, x, y, c, W, TAU, S, P, H_OUT, W_OUT)
-        return run_layer_forward(maps, v_th, chunk_size=max_steps,
-                                  max_steps=max_steps, n_real_events=maps.a.shape[1]).v_final[neuron_idx]
+        return run_layer(maps, v_th, chunk_size=max_steps,
+                         max_steps=max_steps, n_real_events=maps.a.shape[1]).v_final[neuron_idx]
     return jax.grad(loss_fn)
 
 

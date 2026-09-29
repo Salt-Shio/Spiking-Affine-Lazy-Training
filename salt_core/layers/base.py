@@ -74,7 +74,7 @@ class Layer(Protocol):
 class LayerOutput(NamedTuple):
     """一層 forward 的輸出。"""
     stream: EventStream                  # 給下一層的輸出事件流
-    result: NamedTuple                   # 浮點是 LayerForwardResult,整數是 QuantLayerResult
+    result: NamedTuple                   # 浮點是 FloatLayerResult,整數是 QuantLayerResult
     diag: LayerDiag
     trace: LayerForwardTrace | None      # trace=True 才有
 

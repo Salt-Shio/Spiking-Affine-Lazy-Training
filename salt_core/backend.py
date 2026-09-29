@@ -13,7 +13,7 @@ import jax
 
 class ScanOutput(NamedTuple):
     """backend.scan 的回傳。"""
-    result: NamedTuple            # 浮點是 LayerForwardResult,整數是 QuantLayerResult
+    result: NamedTuple            # 浮點是 FloatLayerResult,整數是 QuantLayerResult
     spike_gain: jax.Array         # (n_neurons, 步數),下一層的 event_gain
     extra_steps_needed: jax.Array  # int32 純量,這筆樣本比基本步數多要的掃描步數;整數版不用步數上限,是 0
     v_steps: jax.Array | None     # (n_neurons, 步數) 每步結束的膜電位,trace=True 才有
