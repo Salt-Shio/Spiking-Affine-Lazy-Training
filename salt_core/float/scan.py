@@ -65,7 +65,8 @@ def run_layer_traced(maps: AffineMap, v_th: float, chunk_size: int, max_steps: i
 
 
 def _run_layer_scan(maps: AffineMap, v_th: float, chunk_size: int, max_steps: int,
-                     n_real_events: jax.Array | int, alpha: float, *, trace: bool):
+                     n_real_events: jax.Array | int, alpha: float, *, trace: bool
+                     ) -> tuple[FloatLayerResult, jax.Array | None, jax.Array | None]:
     """兩個公開函式共用的掃描內核。回傳 (result, v_steps, pointer_steps),trace=False 時後兩個是 None。"""
     n_out_neurons = maps.a.shape[0]
     n_real = normalize_real_events(n_real_events, n_out_neurons)

@@ -3,7 +3,7 @@
 run_network(..., trace=True) 收集,不進訓練熱路徑;浮點、整數 backend 共用。
 欄位的取捨見 docs/監測規格.md「LayerForwardTrace / run_network(trace=True)(逐步軌跡,已實作)」。
 """
-from typing import NamedTuple
+from typing import NamedTuple, TypedDict
 
 import jax
 import jax.numpy as jnp
@@ -55,13 +55,19 @@ def resolve_ms_conv(pointer: jax.Array, local_to_global_j: jax.Array,
     return jnp.where(idle, jnp.nan, ms)
 
 
-def summarize_trace_scalars(trace: LayerForwardTrace) -> dict:
-    """一筆樣本一層的軌跡 -> 整層的純量摘要,給人讀。
+class TraceSummary(TypedDict):
+    """summarize_trace_scalars 的回傳。"""
+    n: int                           # 神經元數
+    steps: int                       # 掃描步數
+    total_spikes: int                # 總 spike 數
+    fired: np.ndarray                # 有 fire 過的神經元 index
+    idle_frac: float                 # 空轉步比例
+    v_range: tuple[float, float]     # v_steps 的 (min, max)
+    nonfinite_v: int                 # v_steps 裡非有限值的個數
 
-    回傳 dict:n、steps(形狀)、total_spikes(總 spike 數)、fired(有 fire 過的神經元
-    index)、idle_frac(空轉步比例)、v_range(v_steps 的 (min, max))、nonfinite_v
-    (v_steps 裡非有限值的個數)。
-    """
+
+def summarize_trace_scalars(trace: LayerForwardTrace) -> TraceSummary:
+    """一筆樣本一層的軌跡 -> 整層的純量摘要,給人讀。欄位見 TraceSummary。"""
     sm = np.asarray(trace.spike_mask)
     vs = np.asarray(trace.v_steps)
     ms = np.asarray(trace.event_ms)

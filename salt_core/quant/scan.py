@@ -93,7 +93,7 @@ def run_layer_traced(a_int: jax.Array, is_identity: jax.Array, q_int: jax.Array,
 def _run_layer_scan(a_int: jax.Array, is_identity: jax.Array, q_int: jax.Array,
                     v_th_int: jax.Array | None, *, f_a: int, f_V: int, i_V: int,
                     round_mode: RoundMode | str, overflow_mode: OverflowMode | str,
-                    trace: bool):
+                    trace: bool) -> tuple[QuantLayerResult, jax.Array | None]:
     """兩個公開函式共用的掃描內核。回傳 (result, v_steps),trace=False 時 v_steps 是 None。"""
     n_out_neurons, queue_len = a_int.shape
     # None(不 fire)是沒有 leaf 的 pytree,vmap 直接原樣傳給 process_event

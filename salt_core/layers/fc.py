@@ -4,12 +4,14 @@ from dataclasses import dataclass, replace
 import jax
 import jax.numpy as jnp
 
+from salt_core.backend import Backend, LayerParams
 from salt_core.capacity import Capacity
 from salt_core.connectivity.fc import (FCQueueStructure, build_fc_structure, fc_float_values,
                                         fc_weight_codes)
 from salt_core.float.affine import AffineMap, base_scan_steps
 from salt_core.float.backend import FLOAT
-from salt_core.layers.base import LayerOutput, _check_leading_axis, _layer_diag, uniform_init
+from salt_core.layers.base import (ArrayT, LayerOutput, _check_leading_axis, _layer_diag,
+                                   uniform_init)
 from salt_core.stream import EventStream, extract_output_events_fc
 from salt_core.trace import LayerForwardTrace, resolve_ms_fc
 
@@ -39,11 +41,11 @@ class FCLayer:
         return self.n_out
 
     @property
-    def input_shape(self) -> tuple:
+    def input_shape(self) -> tuple[int, ...]:
         return (self.n_in,)
 
     @property
-    def output_shape(self) -> tuple:
+    def output_shape(self) -> tuple[int, ...]:
         return (self.n_out,)
 
     @property
@@ -51,7 +53,7 @@ class FCLayer:
         return self.n_in
 
     @property
-    def weight_shape(self) -> tuple:
+    def weight_shape(self) -> tuple[int, ...]:
         return (self.n_out, self.n_in)
 
     @property
@@ -65,18 +67,18 @@ class FCLayer:
     def init_weight(self, key: jax.Array) -> jax.Array:
         return uniform_init(key, self.weight_shape, self.fan_in, self.init_k)
 
-    def unflatten_neurons(self, values):
+    def unflatten_neurons(self, values: ArrayT) -> ArrayT:
         """同 ConvLayer.unflatten_neurons。每顆神經元自成一個 channel,
         回傳 (n_out, 1, 1, ...)。"""
         _check_leading_axis(values, self.n_out, "n_out")
         return values.reshape(self.n_out, 1, 1, *values.shape[1:])
 
-    def broadcast_channels(self, values):
+    def broadcast_channels(self, values: ArrayT) -> ArrayT:
         """同 ConvLayer.broadcast_channels。每顆神經元自成一個 channel,原樣回傳。"""
         _check_leading_axis(values, self.n_out, "n_out")
         return values
 
-    def forward(self, params, in_stream: EventStream, *, backend=FLOAT,
+    def forward(self, params: LayerParams, in_stream: EventStream, *, backend: Backend = FLOAT,
                 trace: bool = False) -> LayerOutput:
         """同 ConvLayer.forward。params 在浮點 backend 是權重 (n_out, n_in)。"""
         structure = self.build_structure(in_stream)

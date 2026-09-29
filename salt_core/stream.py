@@ -47,7 +47,8 @@ def _pack_stream(neuron_idx: jax.Array, global_event_idx: jax.Array,
 
 
 def _select_spikes(spike_mask: jax.Array, spike_event_idx: jax.Array,
-                    s_spike: jax.Array, max_total_spikes: int | None):
+                    s_spike: jax.Array, max_total_spikes: int | None
+                    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, int]:
     """(n, max_steps) 的 spike 格點攤平成固定長度的候選清單。
 
     回傳 (neuron_idx, queue_col, raw_s_spike, n_real_events, max_total_spikes);queue_col 是 spike

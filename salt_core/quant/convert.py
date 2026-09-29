@@ -2,13 +2,16 @@
 
 公式見 docs/math/權重量化推導.md、docs/math/膜電位量化推導.md。
 """
+from collections.abc import Sequence
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import numpy.typing as npt
 
-from salt_core.quant.backend import QuantizedLayerParams
+from salt_core.layers.base import Layer
+from salt_core.quant.params import QuantizedLayerParams
 from salt_core.quant.codes import (build_decay_table_int, iv_from_measurement, iv_layer,
                                    max_weight_code, quantize_to_int, v_th_to_int)
 from salt_core.quant.fixed_point import OverflowMode
@@ -39,7 +42,7 @@ def weight_codes(w: jax.Array, spec: LayerQuantSpec) -> tuple[jax.Array, jax.Arr
     return q, jnp.broadcast_to(jnp.asarray(scale).reshape(-1), (w.shape[0],))
 
 
-def iv_per_channel(v_abs_max, scale, bits: int) -> list[int]:
+def iv_per_channel(v_abs_max: npt.ArrayLike, scale: npt.ArrayLike, bits: int) -> list[int]:
     """逐 channel 的 i_V。
 
     v_abs_max: (n_channels,) 實測的膜電位單邊最大量值 M。
@@ -55,8 +58,9 @@ def iv_per_channel(v_abs_max, scale, bits: int) -> list[int]:
             for m, t in zip(v_abs_max, clip_threshold)]
 
 
-def build_quantized_params(layers: list, float_params, specs: list[LayerQuantSpec],
-                           v_abs_max: list) -> list[QuantizedLayerParams]:
+def build_quantized_params(layers: Sequence[Layer], float_params: Sequence[jax.Array],
+                           specs: Sequence[LayerQuantSpec], v_abs_max: Sequence[np.ndarray]
+                           ) -> list[QuantizedLayerParams]:
     """每層的 QuantizedLayerParams,直接當 run_network 在 QuantBackend 下的 weights。
 
     float_params: 對齊 layers 的浮點權重。

@@ -11,16 +11,16 @@ import jax.numpy as jnp
 
 
 @partial(jax.custom_vjp, nondiff_argnums=(1,))
-def atan_spike(x, alpha):
+def atan_spike(x: jax.Array, alpha: float) -> jax.Array:
     """forward:精確 heaviside,x>=0 回傳 1,否則 0。"""
     return jnp.where(x >= 0, 1.0, 0.0).astype(x.dtype)
 
 
-def _atan_spike_fwd(x, alpha):
+def _atan_spike_fwd(x: jax.Array, alpha: float) -> tuple[jax.Array, jax.Array]:
     return atan_spike(x, alpha), x
 
 
-def _atan_spike_bwd(alpha, x, g):
+def _atan_spike_bwd(alpha: float, x: jax.Array, g: jax.Array) -> tuple[jax.Array]:
     a = alpha / 2.0
     ax = jnp.pi * a * x
     grad_x = a / (1.0 + ax * ax) * g
@@ -30,6 +30,6 @@ def _atan_spike_bwd(alpha, x, g):
 atan_spike.defvjp(_atan_spike_fwd, _atan_spike_bwd)
 
 
-def atan_smooth(x, alpha):
+def atan_smooth(x: jax.Array, alpha: float) -> jax.Array:
     """atan_spike 的 backward 對應的平滑原函數。只給測試比對 backward 公式用,訓練不用。"""
     return (1.0 / jnp.pi) * jnp.arctan((jnp.pi / 2.0) * alpha * x) + 0.5

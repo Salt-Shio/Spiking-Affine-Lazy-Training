@@ -28,7 +28,8 @@ def round_half_away_from_zero(x: jnp.ndarray) -> jnp.ndarray:
 # ============================================================================
 
 def quantize_to_int(x: jnp.ndarray, bits: int, *, axis: int | None = None,
-                    threshold: jnp.ndarray | float | None = None):
+                    threshold: jnp.ndarray | float | None = None
+                    ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """對稱線性量化。回傳 (q, scale):q 是 int32 整數碼,scale 是量化步長,q * scale 是量化再反量化的值。
 
     bits: 整數碼範圍 -max_weight_code(bits) ~ max_weight_code(bits)。小於 2 時 raise ValueError。
@@ -83,7 +84,8 @@ def build_decay_table_int(f_a: int, tau: float) -> jnp.ndarray:
     return jnp.minimum(code, 2 ** f_a - 1).astype(jnp.int32)
 
 
-def apply_decay_table_int(delta_t: jnp.ndarray, table_int: jnp.ndarray):
+def apply_decay_table_int(delta_t: jnp.ndarray, table_int: jnp.ndarray
+                          ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """用 dt 當 index 查整數衰減表。
 
     delta_t: 浮點陣列,值是整數毫秒。不是整數、或不在 [0, 2 ** 31) 時 raise ValueError;

@@ -7,7 +7,8 @@ import pytest
 
 from salt_core.layers import FCLayer
 from salt_core.network import Network, RawEvents, run_network
-from salt_core.quant.backend import QuantBackend, QuantizedLayerParams
+from salt_core.quant.backend import QuantBackend
+from salt_core.quant.params import QuantizedLayerParams
 from salt_core.quant.codes import build_decay_table_int
 from salt_core.tests._small_network import (GENEROUS, INPUT_SHAPE, init_params, raw_batch,
                                             small_layers)

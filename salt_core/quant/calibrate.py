@@ -2,10 +2,19 @@
 
 逐樣本跑 run_network(..., trace=True)、挑哪些樣本,由呼叫端決定。
 """
+from collections.abc import Sequence
+
 import numpy as np
 
+from salt_core.layers.base import Layer
+from salt_core.trace import LayerForwardTrace
 
-def v_range_per_channel(layers: list, traces: list) -> list[tuple[np.ndarray, np.ndarray]]:
+# 一層逐 channel 的膜電位 (v_max, v_min),形狀都是 (n_channels,)。
+VRange = tuple[np.ndarray, np.ndarray]
+
+
+def v_range_per_channel(layers: Sequence[Layer], traces: Sequence[LayerForwardTrace]
+                        ) -> list[VRange]:
     """一筆樣本每層逐 channel 的膜電位最大、最小值。
 
     traces: run_network(..., trace=True).traces,對齊 layers。
@@ -25,7 +34,7 @@ def v_range_per_channel(layers: list, traces: list) -> list[tuple[np.ndarray, np
     return ranges
 
 
-def merge_v_ranges(per_sample: list) -> list[tuple[np.ndarray, np.ndarray]]:
+def merge_v_ranges(per_sample: Sequence[Sequence[VRange]]) -> list[VRange]:
     """多筆樣本的 v_range_per_channel 合併:最大取最大、最小取最小。
 
     per_sample: 每筆樣本一份 v_range_per_channel 的回傳,至少一筆,否則 raise ValueError。
@@ -41,6 +50,6 @@ def merge_v_ranges(per_sample: list) -> list[tuple[np.ndarray, np.ndarray]]:
     return merged
 
 
-def v_abs_max_per_channel(v_ranges: list) -> list[np.ndarray]:
+def v_abs_max_per_channel(v_ranges: Sequence[VRange]) -> list[np.ndarray]:
     """每層逐 channel 的單邊最大量值 M = max(v_max, |v_min|)。"""
     return [np.maximum(v_max, np.abs(v_min)) for v_max, v_min in v_ranges]

@@ -1,11 +1,15 @@
 """網路描述跟權重的存讀:Network <-> dict,權重連同網路描述存成 npz。"""
 import dataclasses
 import json
+import os
+from collections.abc import Mapping, Sequence
+from typing import Any, TypedDict
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
-from salt_core.layers import ConvLayer, FCLayer
+from salt_core.layers import ConvLayer, FCLayer, Layer
 from salt_core.network import Network
 
 FORMAT_VERSION = 1
@@ -15,14 +19,21 @@ NETWORK_KEY = "__network__"
 _LAYER_TYPES = {"conv": ConvLayer, "fc": FCLayer}
 
 
-def _layer_type(layer) -> str:
+class NetworkDescription(TypedDict):
+    """network_to_dict 的回傳。"""
+    format: int                    # FORMAT_VERSION
+    input_shape: list[int]         # (C, H, W)
+    layers: list[dict[str, Any]]   # 每層 {"type": "conv" 或 "fc", 其餘是層的欄位名 -> 值}
+
+
+def _layer_type(layer: Layer) -> str:
     for type_name, layer_class in _LAYER_TYPES.items():
         if type(layer) is layer_class:
             return type_name
     raise ValueError(f"{layer.name} 的型別 {type(layer).__name__} 不能序列化")
 
 
-def network_to_dict(network: Network) -> dict:
+def network_to_dict(network: Network) -> NetworkDescription:
     """網路描述:輸入網格加上每層的全部欄位(含容量),可以直接存成 json、yaml。
 
     層的型別不認得時 raise ValueError。
@@ -33,7 +44,7 @@ def network_to_dict(network: Network) -> dict:
                        for layer in network.layers]}
 
 
-def network_from_dict(description: dict) -> Network:
+def network_from_dict(description: NetworkDescription) -> Network:
     """network_to_dict 的反函式。format 不是 FORMAT_VERSION、或層的 type 不認得時 raise ValueError。"""
     if description.get("format") != FORMAT_VERSION:
         raise ValueError(f"網路描述的 format 要是 {FORMAT_VERSION},"
@@ -48,7 +59,8 @@ def network_from_dict(description: dict) -> Network:
     return Network(input_shape=description["input_shape"], layers=layers)
 
 
-def weights_to_arrays(network: Network, weights) -> dict:
+def weights_to_arrays(network: Network, weights: Sequence[jax.Array | np.ndarray]
+                      ) -> dict[str, np.ndarray]:
     """npz 的欄位:每層的權重一個陣列(key 是層名),加上 NETWORK_KEY 放網路描述的 json。
 
     weights: 對齊 network.layers。
@@ -64,7 +76,7 @@ def weights_to_arrays(network: Network, weights) -> dict:
     return arrays
 
 
-def weights_from_arrays(arrays) -> tuple[Network, tuple]:
+def weights_from_arrays(arrays: Mapping[str, np.ndarray]) -> tuple[Network, tuple[jax.Array, ...]]:
     """weights_to_arrays 的反函式。回傳 (Network, 對齊 layers 的權重),權重是 JAX 陣列。
 
     arrays: dict 或 np.load 讀回的 npz。沒有 NETWORK_KEY 時 raise ValueError。
@@ -75,12 +87,13 @@ def weights_from_arrays(arrays) -> tuple[Network, tuple]:
     return network, tuple(jnp.asarray(arrays[layer.name]) for layer in network.layers)
 
 
-def save_weights(path, network: Network, weights) -> None:
+def save_weights(path: str | os.PathLike, network: Network,
+                 weights: Sequence[jax.Array | np.ndarray]) -> None:
     """權重連同網路描述存成 npz,格式見 weights_to_arrays。"""
     np.savez(path, **weights_to_arrays(network, weights))
 
 
-def load_weights(path) -> tuple[Network, tuple]:
+def load_weights(path: str | os.PathLike) -> tuple[Network, tuple[jax.Array, ...]]:
     """讀 save_weights 存的檔,回傳 (Network, 權重),權重是 JAX 陣列。"""
     with np.load(path) as arrays:
         return weights_from_arrays(arrays)

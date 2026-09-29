@@ -1,8 +1,8 @@
 """容量:層的容量旋鈕、每層 forward 的診斷、跨 batch 合併、放不放得下、放大縮小公式。"""
 import math
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import NamedTuple, Protocol, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -19,7 +19,7 @@ class LayerDiag(NamedTuple):
     """
     spike_count: jax.Array
     firing_rate: jax.Array
-    needed: dict
+    needed: dict[str, jax.Array]
 
 
 def reduce_over_batch(diag: LayerDiag) -> LayerDiag:
@@ -41,7 +41,7 @@ class Capacity(Mapping):
     def __getitem__(self, knob: str) -> int:
         return self._knobs[knob]
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[str]:
         return iter(self._knobs)
 
     def __len__(self) -> int:
@@ -89,7 +89,8 @@ class GrowthPolicy:
         return {"max_out_spikes": self.out_shrink_threshold,
                 "max_extra_steps": self.max_extra_steps_shrink_threshold}.get(knob)
 
-    def grown(self, capacity: Capacity, needed: dict, chunk_size: int) -> Capacity:
+    def grown(self, capacity: Capacity, needed: Mapping[str, jax.Array | int],
+              chunk_size: int) -> Capacity:
         """needed 超過容量的旋鈕放大到 ceil(needed * 倍率),其他不變。
 
         needed: 旋鈕名 -> 需求量(純量)。chunk_size: 這層的 chunk_size。
@@ -104,7 +105,7 @@ class GrowthPolicy:
             new["max_extra_steps"] = safe_extra_steps(new["max_queue_len"], chunk_size)
         return Capacity(**new)
 
-    def shrunk(self, capacity: Capacity, observed: dict) -> Capacity:
+    def shrunk(self, capacity: Capacity, observed: Mapping[str, int]) -> Capacity:
         """用一整個 epoch 的最大需求決定要不要縮。
 
         observed: 旋鈕名 -> 這個 epoch 所有 batch 的最大需求。
@@ -123,8 +124,24 @@ class GrowthPolicy:
         return Capacity(**new)
 
 
-def _replace_capacity(layers: list, new_capacities: list) -> list:
-    """容量有變的層換成新容量;全部沒變時回傳傳進來的同一個 list 物件(不觸發重編譯)。"""
+class CapacityLayer(Protocol):
+    """放大縮小容量時從層讀的東西。只當文件用,實際靠 duck typing。"""
+    name: str
+    chunk_size: int
+    capacity: Capacity | None  # 沒有容量的層是 None
+
+    def with_capacity(self, capacity: Capacity) -> "CapacityLayer":
+        """換成 capacity 的容量值,其他欄位不變。"""
+        ...
+
+
+# 放大縮小之後回傳的層跟傳進來的是同一種型別。
+LayerT = TypeVar("LayerT", bound=CapacityLayer)
+
+
+def _replace_capacity(layers: Sequence[LayerT], new_capacities: Sequence[Capacity | None]
+                      ) -> Sequence[LayerT]:
+    """容量有變的層換成新容量;全部沒變時回傳傳進來的同一個物件(不觸發重編譯)。"""
     replaced = [layer if capacity is None or capacity == layer.capacity
                 else layer.with_capacity(capacity)
                 for layer, capacity in zip(layers, new_capacities)]
@@ -133,12 +150,13 @@ def _replace_capacity(layers: list, new_capacities: list) -> list:
     return replaced
 
 
-def grown_to_fit(layers: list, policies: dict, diags: list) -> list:
+def grown_to_fit(layers: Sequence[LayerT], policies: Mapping[str, GrowthPolicy],
+                 diags: Sequence[LayerDiag]) -> Sequence[LayerT]:
     """放不下的層換成放大過的版本。
 
     policies: 層名 -> GrowthPolicy,有容量的層都要有。
     diags: 對齊 layers 的 LayerDiag,已經合併成一份(needed 是純量)。
-    全部放得下時回傳傳進來的同一個 list 物件。
+    全部放得下時回傳傳進來的同一個物件。
     """
     return _replace_capacity(layers, [
         None if layer.capacity is None
@@ -146,16 +164,18 @@ def grown_to_fit(layers: list, policies: dict, diags: list) -> list:
         for layer, diag in zip(layers, diags)])
 
 
-def grown_to_fit_batch(layers: list, policies: dict, batch_diags: list) -> list:
+def grown_to_fit_batch(layers: Sequence[LayerT], policies: Mapping[str, GrowthPolicy],
+                       batch_diags: Sequence[LayerDiag]) -> Sequence[LayerT]:
     """同 grown_to_fit,batch_diags 是逐筆診斷(每個值 shape (B,)),每層看最需要容量的那一筆。"""
     return grown_to_fit(layers, policies, [reduce_over_batch(diag) for diag in batch_diags])
 
 
-def shrunk_to_observed(layers: list, policies: dict, observed: dict) -> list:
+def shrunk_to_observed(layers: Sequence[LayerT], policies: Mapping[str, GrowthPolicy],
+                       observed: Mapping[str, Mapping[str, int]]) -> Sequence[LayerT]:
     """用一整個 epoch 的最大需求縮小容量。
 
     observed: 層名 -> 旋鈕名 -> 最大需求,有容量的層都要有。
-    都沒縮時回傳傳進來的同一個 list 物件。
+    都沒縮時回傳傳進來的同一個物件。
     """
     return _replace_capacity(layers, [
         None if layer.capacity is None

@@ -1,29 +1,14 @@
 """整數 backend:模擬 FPGA 逐事件更新膜電位暫存器,推導見 docs/math/膜電位量化推導.md。"""
 from dataclasses import dataclass
-from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
-from salt_core.backend import ScanOutput
+from salt_core.backend import QueueStructure, ScanLayer, ScanOutput
 from salt_core.quant.codes import apply_decay_table_int
-from salt_core.quant.fixed_point import OverflowMode, RoundMode
+from salt_core.quant.fixed_point import RoundMode
+from salt_core.quant.params import QuantizedLayerParams
 from salt_core.quant.scan import QuantLayerResult, run_layer, run_layer_traced
-
-
-class QuantizedLayerParams(NamedTuple):
-    """一層整數版 forward 要的量化設定。"""
-    q: jax.Array                   # 整數權重碼(quant.codes.quantize_to_int 的 q),整數 dtype,
-                                   # shape 同 layer.weight_shape
-    decay_table_int: jax.Array     # quant.codes.build_decay_table_int(f_a, layer.tau)
-    v_th_int: jax.Array | None     # quant.codes.v_th_to_int 的整數門檻,純量或 (n_neurons,);
-                                   # None 代表這層不 fire(例如膜電位回歸的輸出層)
-    scale: jax.Array               # 逐神經元的權重量化步長 s_c,純量或 (n_neurons,);
-                                   # 只在 readout 換回物理尺度時用
-    f_a: int                       # 衰減碼小數位元
-    f_V: int                       # 暫存器小數位元
-    i_V: int                       # 暫存器整數位元(含符號位)
-    overflow_mode: OverflowMode | str = OverflowMode.WRAP  # 暫存器溢位處理,見 quant.fixed_point
 
 
 def _check_weight_codes(q: jax.Array) -> None:
@@ -43,7 +28,7 @@ class QuantBackend:
     """
     round_mode: RoundMode | str = RoundMode.ROUND
 
-    def scan(self, layer, structure, params: QuantizedLayerParams,
+    def scan(self, layer: ScanLayer, structure: QueueStructure, params: QuantizedLayerParams,
              event_gain: jax.Array | None, *, trace: bool) -> ScanOutput:
         """一層的查表 + 取權重碼 + 整數掃描。掃描長度是佇列長度,跟 chunk_size、
         max_extra_steps 無關。event_gain 用不到:整數路徑的跨層增益恆為 1。

@@ -65,7 +65,8 @@ def wide_mul_shift(a_int: jnp.ndarray, v_int: jnp.ndarray, shift_bits: int,
     return a_int * hi + round_shift(a_int * lo, shift_bits, round_mode)
 
 
-def fit_to_bits(x_int: jnp.ndarray, total_bits: int, overflow_mode: OverflowMode | str):
+def fit_to_bits(x_int: jnp.ndarray, total_bits: int, overflow_mode: OverflowMode | str
+                ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """把整數寫回 total_bits 位元的有號暫存器,範圍 [-2 ** (total_bits-1), 2 ** (total_bits-1) - 1]。
 
     超出範圍時:WRAP 是兩補數繞回(值會翻號),SATURATE 夾在最大或最小值。

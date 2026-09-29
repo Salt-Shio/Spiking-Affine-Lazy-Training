@@ -4,13 +4,15 @@ from dataclasses import dataclass, replace
 import jax
 import jax.numpy as jnp
 
+from salt_core.backend import Backend, LayerParams
 from salt_core.capacity import Capacity
 from salt_core.connectivity.conv import (ConvQueueStructure, build_conv_structure,
                                           conv_float_values, conv_weight_codes, tile_channels,
                                           unravel_conv_source)
 from salt_core.float.affine import AffineMap, base_scan_steps, safe_extra_steps
 from salt_core.float.backend import FLOAT
-from salt_core.layers.base import LayerOutput, _check_leading_axis, _layer_diag, uniform_init
+from salt_core.layers.base import (ArrayT, LayerOutput, _check_leading_axis, _layer_diag,
+                                   uniform_init)
 from salt_core.stream import EventStream, extract_output_events_conv
 from salt_core.trace import LayerForwardTrace, resolve_ms_conv
 
@@ -64,11 +66,11 @@ class ConvLayer:
         return self.oc * self.h_out * self.w_out
 
     @property
-    def input_shape(self) -> tuple:
+    def input_shape(self) -> tuple[int, ...]:
         return (self.ic, self.h_in, self.w_in)
 
     @property
-    def output_shape(self) -> tuple:
+    def output_shape(self) -> tuple[int, ...]:
         return (self.oc, self.h_out, self.w_out)
 
     @property
@@ -76,7 +78,7 @@ class ConvLayer:
         return self.ic * self.k * self.k
 
     @property
-    def weight_shape(self) -> tuple:
+    def weight_shape(self) -> tuple[int, ...]:
         return (self.oc, self.ic, self.k, self.k)
 
     @property
@@ -91,7 +93,7 @@ class ConvLayer:
     def init_weight(self, key: jax.Array) -> jax.Array:
         return uniform_init(key, self.weight_shape, self.fan_in, self.init_k)
 
-    def unflatten_neurons(self, values):
+    def unflatten_neurons(self, values: ArrayT) -> ArrayT:
         """逐神經元的值還原成 (oc, h_out, w_out, ...)。
 
         values: 第 0 軸長度 n_neurons,神經元編號 = c*h_out*w_out + y*w_out + x;
@@ -101,7 +103,7 @@ class ConvLayer:
         _check_leading_axis(values, self.n_neurons, "n_neurons")
         return values.reshape(self.oc, self.h_out, self.w_out, *values.shape[1:])
 
-    def broadcast_channels(self, values):
+    def broadcast_channels(self, values: ArrayT) -> ArrayT:
         """逐 channel 的值展開成逐神經元,同一個 channel 的 h_out*w_out 顆神經元同一個值。
 
         values: 第 0 軸長度 oc,其餘軸原樣保留。回傳第 0 軸長度 n_neurons,
@@ -111,7 +113,7 @@ class ConvLayer:
         _check_leading_axis(values, self.oc, "oc")
         return values.repeat(self.h_out * self.w_out, axis=0)
 
-    def forward(self, params, in_stream: EventStream, *, backend=FLOAT,
+    def forward(self, params: LayerParams, in_stream: EventStream, *, backend: Backend = FLOAT,
                 trace: bool = False) -> LayerOutput:
         """建佇列 -> backend 算數值段跟掃描 -> 輸出事件流、診斷。
 

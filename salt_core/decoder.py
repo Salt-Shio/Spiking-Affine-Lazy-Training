@@ -11,20 +11,22 @@ from typing import Protocol
 import jax
 import jax.numpy as jnp
 
+from salt_core.backend import LayerResult
 from salt_core.float.scan import FloatLayerResult
+from salt_core.layers.base import Layer
 
 
 class Decoder(Protocol):
     """解碼器的約定。只當文件用,實際靠 duck typing。"""
 
-    def decode(self, result: FloatLayerResult) -> tuple[jax.Array, dict]:
+    def decode(self, result: LayerResult) -> tuple[jax.Array, dict[str, jax.Array]]:
         """單筆樣本最後一層的結果 -> (scores, metrics)。批次由呼叫端 vmap。
 
         scores: (類別數,),loss 跟 argmax 都用它。metrics: 這種編碼的監看純量,可以是空 dict。
         """
         ...
 
-    def validate(self, last_layer) -> None:
+    def validate(self, last_layer: Layer) -> None:
         """最後一層的門檻跟這個編碼不配時 raise ValueError。只讀層的靜態欄位。"""
         ...
 
@@ -37,10 +39,10 @@ class MembraneRegressionDecoder:
     """
     min_out_v_th: float = 1e6
 
-    def decode(self, result: FloatLayerResult) -> tuple[jax.Array, dict]:
+    def decode(self, result: LayerResult) -> tuple[jax.Array, dict[str, jax.Array]]:
         return result.v_final, {}
 
-    def validate(self, last_layer) -> None:
+    def validate(self, last_layer: Layer) -> None:
         if last_layer.v_th < self.min_out_v_th:
             raise ValueError(
                 f"膜電位回歸要求輸出層近乎不 fire(v_th >= {self.min_out_v_th:g}),"
@@ -56,14 +58,14 @@ class RateDecoder:
     """
     max_out_v_th: float = 1e3
 
-    def decode(self, result: FloatLayerResult) -> tuple[jax.Array, dict]:
+    def decode(self, result: FloatLayerResult) -> tuple[jax.Array, dict[str, jax.Array]]:
         soft = jnp.sum(result.s_value, axis=1)
         hard = jnp.sum(result.spike_mask, axis=1).astype(jnp.float32)
         metrics = {"hard_count_mean": jnp.mean(hard),
                    "hard_count_max": jnp.max(hard)}
         return soft, metrics
 
-    def validate(self, last_layer) -> None:
+    def validate(self, last_layer: Layer) -> None:
         if last_layer.v_th > self.max_out_v_th:
             raise ValueError(
                 f"頻率編碼要求輸出層照常放電(v_th <= {self.max_out_v_th:g}),"
@@ -82,7 +84,7 @@ class PopulationDecoder:
     group_size: int
     max_out_v_th: float = 1e3
 
-    def decode(self, result: FloatLayerResult) -> tuple[jax.Array, dict]:
+    def decode(self, result: FloatLayerResult) -> tuple[jax.Array, dict[str, jax.Array]]:
         per_neuron = jnp.sum(result.s_value, axis=1)  # (n_classes * group_size,)
         scores = per_neuron.reshape(self.n_classes, self.group_size).sum(axis=1)
         hard = jnp.sum(result.spike_mask, axis=1).astype(jnp.float32)
@@ -90,7 +92,7 @@ class PopulationDecoder:
                    "hard_count_max": jnp.max(hard)}
         return scores, metrics
 
-    def validate(self, last_layer) -> None:
+    def validate(self, last_layer: Layer) -> None:
         if last_layer.v_th > self.max_out_v_th:
             raise ValueError(
                 f"群體編碼要求輸出層照常放電(v_th <= {self.max_out_v_th:g}),"
