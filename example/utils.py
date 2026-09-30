@@ -12,8 +12,10 @@ import numpy as np
 import optax
 import yaml
 
+from data.src.nmnist import NMNISTSplit
 from example.training.capacity_control import knob_changes
 from salt_core.capacity import grown_to_fit_batch, reduce_over_batch
+from salt_core.decoder import Decoder
 from salt_core.io import load_weights
 from salt_core.network import Network, RawEvents
 
@@ -55,7 +57,7 @@ def load_run_record(exp_dir: str) -> dict:
         return yaml.safe_load(f)
 
 
-def split_raw_events(split) -> RawEvents:
+def split_raw_events(split: NMNISTSplit) -> RawEvents:
     """資料端 split 的事件欄位包成 RawEvents(leading axis = 樣本數),包之前檢查時間。
     時間不合法時 raise ValueError(見 RawEvents.checked)。"""
     return RawEvents.checked(split.event_times, split.x, split.y, split.c, split.n_real_events)
@@ -73,7 +75,7 @@ def load_run_params(exp_dir: str, which_params: str) -> tuple[Network, tuple]:
     return load_weights(os.path.join(exp_dir, TRAIN_DIRNAME, fname))
 
 
-def _make_scores_fn(network: Network, decoder):
+def _make_scores_fn(network: Network, decoder: Decoder):
     @jax.jit
     def scores_fn(params, raw_batch: RawEvents):
         output = network.apply_batched(params, raw_batch)
@@ -83,7 +85,7 @@ def _make_scores_fn(network: Network, decoder):
     return scores_fn
 
 
-def make_evaluate(network: Network, decoder, eval_batch_size: int, policies: dict):
+def make_evaluate(network: Network, decoder: Decoder, eval_batch_size: int, policies: dict):
     """回傳 evaluate(params, split) -> (accuracy, loss, preds, capacity_regrows)。
 
     分批 vmap 算 scores。某個 batch 容量出界時,照
@@ -93,7 +95,7 @@ def make_evaluate(network: Network, decoder, eval_batch_size: int, policies: dic
     layers = network.layers
     scores_fn = _make_scores_fn(network, decoder)
 
-    def evaluate(params, split):
+    def evaluate(params, split: NMNISTSplit):
         nonlocal layers, scores_fn
         raw = split_raw_events(split)
         n = split.labels.shape[0]

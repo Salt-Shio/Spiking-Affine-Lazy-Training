@@ -15,7 +15,7 @@ import numpy as np
 from salt_core.backend import Backend, LayerParams, LayerResult
 from salt_core.capacity import LayerDiag
 from salt_core.float.backend import FLOAT
-from salt_core.layers.base import Layer
+from salt_core.layers.base import Layer, LayerOutput
 from salt_core.stream import EventStream
 from salt_core.trace import LayerForwardTrace
 
@@ -105,7 +105,7 @@ def run_network(layers: Sequence[Layer], weights: Sequence[LayerParams],
     """
     check_layer_connections(layers)
     stream = input_stream
-    outputs = []
+    outputs: list[LayerOutput] = []
     for layer, params in zip(layers, weights):
         output = layer.forward(params, stream, backend=backend, trace=trace)
         outputs.append(output)

@@ -13,6 +13,19 @@
 
 ## 待處理
 
+- **網路入口、組裝、config 整頓(2026-09-30 定案,照 A → B 順序做)。**
+  - A. 網路入口不綁圖片。`RawEvents(event_times, x, y, c, n_real_events)` 改成
+    `InputEvents(event_times, source_idx, n_real_events)`,`source_idx` 約定是 `input_shape` 的 row-major
+    攤平編號(跟 conv 層反解的規則一致);`Network.input_shape` 允許任意維度;`input_stream` 不再攤平。
+    圖片座標 (c, y, x) 的攤平搬到 example 端,用 `np.ravel_multi_index`。
+  - B. 通用組裝器 + yaml 分組。salt_core 加 `Network.build(input_shape, specs)`,`conv(...)`、`fc(...)` 是
+    「拿到輸入形狀就建出層」的描述,接形狀跟預設命名從 `example/models/conv_net.py` 搬進來,幾何退化檢查
+    搬進 `ConvLayer`。yaml 加 `model.layer_defaults`,每層分組:幾何(`type/name/oc/k/s/p/n_out`)留在最外層,
+    `neuron`(tau、v_th)、`training`(alpha、init_k)、`capacity`(chunk_size、max_queue_len、max_out_spikes、
+    max_extra_steps)、`growth`(GrowthPolicy 的 5 個 key)。
+  - 舊 run 的 `experiments/*/train/run.yaml`(`eval_test.py`、`golden_output.py` 會讀 model 區塊)用一次性
+    腳本轉成新格式,不留新舊相容分支;experiments 沒進 git,轉之前每份先備份成 `run.yaml.bak`。
+
 - **量化參數還沒定案。** 權重量化、膜電位量化的工具都做好了(`salt_core/quant/`,推導見
   [`math/權重量化推導.md`](math/權重量化推導.md)、[`math/膜電位量化推導.md`](math/膜電位量化推導.md)),
   還沒選定最後用哪一組:
