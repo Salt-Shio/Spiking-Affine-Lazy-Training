@@ -19,7 +19,7 @@ from data.src.nmnist import NMNISTDataset
 from example.models.conv_net import build_decoder
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
 from example.training.loop import epoch_permutation
-from example.utils import (WEIGHTS_DIRNAME, load_run_record, take_raw_events, split_raw_events,
+from example.utils import (WEIGHTS_DIRNAME, load_run_record, take_input_events, split_input_events,
                            weight_snapshot_path)
 from salt_core.io import load_weights
 
@@ -46,7 +46,7 @@ def per_sample_forward(run_record: dict, network, params: tuple, split,
     layers = network.layers
     decoder = build_decoder(run_record["config"]["model"], layers)
     n = split.labels.shape[0]
-    raw = split_raw_events(split)
+    raw = split_input_events(split, network.input_shape)
 
     @jax.jit
     def _fwd(params, raw_batch):
@@ -58,7 +58,7 @@ def per_sample_forward(run_record: dict, network, params: tuple, split,
     all_spikes = {layer.name: [] for layer in layers}
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
-        scores, diags = _fwd(params, take_raw_events(raw, slice(start, end)))
+        scores, diags = _fwd(params, take_input_events(raw, slice(start, end)))
         loss = optax.softmax_cross_entropy(scores, split.labels_onehot[start:end])
         all_loss.append(np.asarray(loss))
         all_pred.append(np.asarray(jnp.argmax(scores, axis=1)))

@@ -9,16 +9,16 @@ import numpy as np
 
 from salt_core.capacity import grown_to_fit_batch
 from salt_core.dormant import dormant_score
-from salt_core.network import Network, RawEvents
+from salt_core.network import InputEvents, Network
 
-from example.utils import take_raw_events
+from example.utils import take_input_events
 
 
 def _make_chunk_activity(network: Network, layer_names: tuple, use_s_value: bool):
-    """jit 過的 (params, 一批 RawEvents) -> ({層名: (B, n_neurons) 活動量}, 每層 LayerDiag, fits)。"""
+    """jit 過的 (params, 一批 InputEvents) -> ({層名: (B, n_neurons) 活動量}, 每層 LayerDiag, fits)。"""
 
     @jax.jit
-    def chunk_activity(params, raw_batch: RawEvents):
+    def chunk_activity(params, raw_batch: InputEvents):
         output = network.apply_batched(params, raw_batch)
         activity = {}
         for layer, result in zip(network.layers, output.results):
@@ -30,12 +30,12 @@ def _make_chunk_activity(network: Network, layer_names: tuple, use_s_value: bool
     return chunk_activity
 
 
-def dormant_report(network: Network, params, probe: RawEvents, policies: dict, *,
+def dormant_report(network: Network, params, probe: InputEvents, policies: dict, *,
                    layer_names, tau: float = 0.1, activity: str = "spike",
                    chunk: int = 16) -> tuple[dict, int]:
     """在 probe 上量 layer_names 每層的 dormant 比例。
 
-    probe: 一批 RawEvents(leading axis = 樣本數)。分 chunk 跑,避免整批建壓縮佇列 OOM。
+    probe: 一批 InputEvents(leading axis = 樣本數)。分 chunk 跑,避免整批建壓縮佇列 OOM。
     policies: 層名 -> GrowthPolicy;某個 chunk 容量出界時放大重算,放大只在這次呼叫內有效。
     activity: "spike" 用每樣本 spike 數;"s_value" 用每樣本 s_value 加總(連續版,
         全 0 的死神經元也能排序),取法見 docs/math/初始權重尺度推導.md 步驟 7.1。
@@ -52,7 +52,7 @@ def dormant_report(network: Network, params, probe: RawEvents, policies: dict, *
 
     totals: dict | None = None
     for lo in range(0, n, chunk):
-        chunk_raw = take_raw_events(probe, slice(lo, min(lo + chunk, n)))
+        chunk_raw = take_input_events(probe, slice(lo, min(lo + chunk, n)))
         acts, diags, fits = chunk_activity(params, chunk_raw)
         while not bool(jnp.all(fits)):
             layers = grown_to_fit_batch(layers, policies, diags)

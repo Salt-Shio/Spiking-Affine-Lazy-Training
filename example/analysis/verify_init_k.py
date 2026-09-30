@@ -29,7 +29,7 @@ from salt_core.stream import EventStream
 from salt_core.capacity import GrowthPolicy, grown_to_fit, grown_to_fit_batch, reduce_over_batch
 from example.models.conv_net import build_decoder, build_network
 from example.paths import DATASET_ROOT, resolve_config
-from example.utils import load_config, split_raw_events
+from example.utils import load_config, split_input_events
 
 # 掃描的 init_k;√3 = Lee 變異數保持、8/64 = 舊 firing-rate 準則。
 INIT_KS = (math.sqrt(3.0), 3.0, 5.0, 8.0, 64.0)
@@ -186,7 +186,7 @@ def _load_layers_and_stream(n_samples: int):
                            n_samples=max(n_samples, data_cfg["train_size"]),
                            which="train")
     sl = jax.tree_util.tree_map(lambda a: a[:n_samples], split)
-    stream = jax.vmap(network.input_stream)(split_raw_events(sl))
+    stream = jax.vmap(network.input_stream)(split_input_events(sl, network.input_shape))
     return model_cfg, layers, split, sl, stream
 
 
@@ -328,8 +328,8 @@ def run_v4(n_samples: int = 16) -> list[dict]:
     model_cfg, layers, _split, sl, _stream = _load_layers_and_stream(n_samples)
     decoder = build_decoder(model_cfg, layers)
     labels_oh = sl.labels_onehot
-    raw = split_raw_events(sl)
     network = build_network(model_cfg)
+    raw = split_input_events(sl, network.input_shape)
 
     def loss_fn(params, net):
         scores, _ = jax.vmap(decoder.decode)(net.apply_batched(params, raw).last)

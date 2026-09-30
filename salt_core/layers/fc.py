@@ -1,5 +1,8 @@
-"""FCLayer:全連接層。"""
-from dataclasses import dataclass, replace
+"""FCLayer:全連接層;FCSpec、fc:給 Network.build 的描述。"""
+import math
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from typing import Any, ClassVar
 
 import jax
 import jax.numpy as jnp
@@ -131,3 +134,25 @@ class FCLayer:
         (輸入流長度在建構時不知道,算不出一定夠的值)。
         """
         return replace(self, chunk_size=chunk_size)
+
+
+@dataclass(frozen=True)
+class FCSpec:
+    """FCLayer 少了 n_in 的描述,Network.build 接上前一層時補。
+
+    options: FCLayer 其餘欄位(init_k、tau、容量等)。
+    """
+    n_out: int
+    name: str | None = None
+    options: Mapping[str, Any] = field(default_factory=dict)
+    name_prefix: ClassVar[str] = "fc"
+
+    def build(self, input_shape: tuple[int, ...], name: str) -> FCLayer:
+        """接在輸出形狀 input_shape 後面的 FCLayer,n_in = input_shape 的元素總數。
+        options 有 FCLayer 不認得的欄位時 raise TypeError。"""
+        return FCLayer(name=name, n_in=math.prod(input_shape), n_out=self.n_out, **self.options)
+
+
+def fc(n_out: int, *, name: str | None = None, **options: Any) -> FCSpec:
+    """FCSpec 的簡寫,例如 fc(10, name="out", init_k=5.0, v_th=1e9)。"""
+    return FCSpec(n_out=n_out, name=name, options=options)

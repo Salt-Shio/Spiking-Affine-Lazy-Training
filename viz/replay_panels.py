@@ -28,7 +28,7 @@ class InputChannelPanel:
     """原始輸入某一個 channel 的逐幀空間快照,(h_in, w_in) 圖,永遠是離散量(這一刻有沒有事件)。
 
     樣本是 (event_times, x, y, c, n_real_events),格式同 example/replay_epoch.py 的 load_train_sample;
-    定址同 Network.input_stream 的 c*(h*w) + y*w + x。不跑 forward。
+    定址同 example/utils.py 的 grid_input_events:c*(h*w) + y*w + x。不跑 forward。
     """
 
     def __init__(self, channel: int, oc: int, h_in: int, w_in: int,

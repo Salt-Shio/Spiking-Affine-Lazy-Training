@@ -6,9 +6,9 @@ import numpy as np
 
 from example.metrics_log import KNOB_COLUMNS
 from example.replay_epoch import load_epoch_weights, load_train_sample, replay_sample
-from example.utils import TRAIN_DIRNAME, WEIGHTS_DIRNAME, load_run_record, weight_snapshot_path
+from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, grid_input_events, load_run_record,
+                           weight_snapshot_path)
 from salt_core.io import load_weights
-from salt_core.network import RawEvents
 
 # chunk_size 不同,浮點加總的順序就不同。這組資料 FC 吃約 2.2 萬筆事件,
 # chunk_size=1 跟 512 的 v_final 實測相對差約 6e-6,兩者離 float64 逐事件遞迴都在 6e-6 以內。
@@ -58,6 +58,7 @@ def test_replay_matches_training_forward(reference_run):
 
     training_network, _ = load_weights(
         weight_snapshot_path(os.path.join(exp_dir, WEIGHTS_DIRNAME), 0))
-    result = training_network.apply(params, RawEvents.checked(*sample)).last
+    result = training_network.apply(
+        params, grid_input_events(*sample, training_network.input_shape)).last
     np.testing.assert_allclose(np.asarray(traces[-1].v_steps[:, -1]),
                                np.asarray(result.v_final), rtol=RTOL)

@@ -12,9 +12,10 @@ import os
 
 from data.src.nmnist import NMNISTDataset
 from example.paths import DATASET_ROOT
-from example.utils import WEIGHTS_DIRNAME, load_run_record, weight_snapshot_path
+from example.utils import (WEIGHTS_DIRNAME, grid_input_events, load_run_record,
+                           weight_snapshot_path)
 from salt_core.io import load_weights
-from salt_core.network import Network, RawEvents
+from salt_core.network import Network
 from salt_core.trace import summarize_trace_scalars
 
 
@@ -28,7 +29,7 @@ def load_epoch_weights(exp_dir: str, epoch: int) -> tuple[Network, tuple]:
 def replay_sample(exp_dir: str, epoch: int, event_times, x, y, c, n_real_events) -> list:
     """一筆原始樣本 (event_times, x, y, c, n_real_events) -> 每層的 LayerForwardTrace(chunk_size=1)。"""
     network, params = load_epoch_weights(exp_dir, epoch)
-    raw = RawEvents.checked(event_times, x, y, c, n_real_events)
+    raw = grid_input_events(event_times, x, y, c, n_real_events, network.input_shape)
     return list(network.apply(params, raw, trace=True).traces)
 
 
@@ -53,7 +54,8 @@ def main() -> None:
     run_record = load_run_record(args.exp_dir)
     sample = load_train_sample(run_record, args.sample)
     network, params = load_epoch_weights(args.exp_dir, args.epoch)
-    traces = network.apply(params, RawEvents.checked(*sample), trace=True).traces
+    traces = network.apply(params, grid_input_events(*sample, network.input_shape),
+                           trace=True).traces
 
     print(f"epoch={args.epoch} sample={args.sample}(chunk_size 全部強制為 1,逐事件精確)\n")
     for layer, trace in zip(network.layers, traces):

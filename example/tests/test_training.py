@@ -27,7 +27,7 @@ from example.train import check_config_keys, train
 from example.training.loss import cross_entropy_loss
 from example.training.optim import build_learning_rate, build_optimizer
 from example.training.run_dir import make_exp_dir
-from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, load_config, split_raw_events,
+from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, load_config, split_input_events,
                            weight_snapshot_path)
 from salt_core.io import load_weights, network_from_dict
 
@@ -193,8 +193,8 @@ def test_build_learning_rate_cosine_decay_starts_high_ends_low():
 def test_synthetic_conv1_queue_need_equals_event_count(synth):
     """所有事件落在同一個像素,涵蓋它的 conv1 神經元每顆都收到全部事件。"""
     network = build_network(synthetic_cfg("check", synth.seed)["model"])
-    output = jax.jit(network.apply_batched)(network.init(jax.random.PRNGKey(0)),
-                                            split_raw_events(synth.data.train))
+    raw = split_input_events(synth.data.train, network.input_shape)
+    output = jax.jit(network.apply_batched)(network.init(jax.random.PRNGKey(0)), raw)
     np.testing.assert_array_equal(np.asarray(output.diags[0].needed["max_queue_len"]),
                                   synth.needs)
 

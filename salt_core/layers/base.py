@@ -52,6 +52,16 @@ class Layer(ScanLayer, Protocol):
         ...
 
 
+class LayerSpec(Protocol):
+    """Network.build 用的層描述:少了輸入面的欄位,接上前一層時才補。只當文件用。"""
+    name: str | None  # None 時 Network.build 照 name_prefix 編號,例如 conv1、conv2
+    name_prefix: str
+
+    def build(self, input_shape: tuple[int, ...], name: str) -> Layer:
+        """接在輸出形狀 input_shape 後面的層。接不上時 raise ValueError。"""
+        ...
+
+
 class LayerOutput(NamedTuple):
     """一層 forward 的輸出。"""
     stream: EventStream                  # 給下一層的輸出事件流

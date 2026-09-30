@@ -17,8 +17,9 @@ EVAL_BATCH = 3
 
 
 def _split() -> NMNISTSplit:
-    et, x, y, c, nr = raw_batch(seed=4, n_samples=N_SAMPLES)
+    et, source_idx, nr = raw_batch(seed=4, n_samples=N_SAMPLES)
     et = jnp.floor(et)  # make_evaluate 會檢查時間是整數毫秒
+    c, y, x = (jnp.asarray(v) for v in np.unravel_index(np.asarray(source_idx), INPUT_SHAPE))
     labels = jax.random.randint(jax.random.PRNGKey(5), (N_SAMPLES,), 0, 10)
     return NMNISTSplit(event_times=et, x=x, y=y, c=c, n_real_events=nr, labels=labels,
                        labels_onehot=jax.nn.one_hot(labels, 10))

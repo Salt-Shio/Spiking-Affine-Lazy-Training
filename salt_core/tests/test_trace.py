@@ -13,7 +13,8 @@ import numpy as np
 from salt_core.float.scan import run_layer, run_layer_traced
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.layers import ConvLayer, FCLayer
-from salt_core.network import Network, RawEvents, run_network
+from salt_core.network import InputEvents, Network, run_network
+from salt_core.tests._small_network import synthetic_raw_batch
 from salt_core.trace import (LayerForwardTrace, resolve_ms_conv,
                                 resolve_ms_fc, summarize_trace_scalars)
 
@@ -35,28 +36,8 @@ def _params(layers, seed=0):
     return tuple(layer.init_weight(k) for layer, k in zip(layers, keys))
 
 
-def _raw_batch(key, n_samples, max_len, h_in, w_in, ic):
-    ks = jax.random.split(key, n_samples * 4)
-    et = jnp.zeros((n_samples, max_len), dtype=jnp.float32)
-    xs = jnp.zeros((n_samples, max_len), dtype=jnp.int32)
-    ys = jnp.zeros((n_samples, max_len), dtype=jnp.int32)
-    cs = jnp.zeros((n_samples, max_len), dtype=jnp.int32)
-    nr = []
-    for i in range(n_samples):
-        kt, kx, ky, kc = ks[4 * i:4 * i + 4]
-        n = max_len - (i % 3)
-        t = jnp.sort(jax.random.uniform(kt, (n,), minval=1.0, maxval=30.0))
-        et = et.at[i, :n].set(t)
-        et = et.at[i, n:].set(t[-1])
-        xs = xs.at[i, :n].set(jax.random.randint(kx, (n,), 0, w_in))
-        ys = ys.at[i, :n].set(jax.random.randint(ky, (n,), 0, h_in))
-        cs = cs.at[i, :n].set(jax.random.randint(kc, (n,), 0, ic))
-        nr.append(n)
-    return et, xs, ys, cs, jnp.array(nr, dtype=jnp.int32)
-
-
 def _stream0(batch, layer0):
-    raw = RawEvents(*(v[0] for v in batch))
+    raw = InputEvents(*(v[0] for v in batch))
     return Network(layer0.input_shape, [layer0]).input_stream(raw)
 
 
@@ -141,7 +122,7 @@ def test_resolve_ms_conv_hand():
 def test_traced_event_ms_within_input_range_or_nan():
     layers = _layers()
     params = _params(layers)
-    batch = _raw_batch(jax.random.PRNGKey(2), 3, 20, 34, 34, 2)
+    batch = synthetic_raw_batch(jax.random.PRNGKey(2), 3, 20, 34, 34, 2)
     stream = _stream0(batch, layers[0])
     trace = layers[0].forward(params[0], stream, trace=True).trace
     ms = np.asarray(trace.event_ms)
@@ -155,7 +136,7 @@ def test_traced_event_ms_within_input_range_or_nan():
 def test_run_network_trace_shape_and_alignment():
     layers = _layers()
     params = _params(layers)
-    stream = _stream0(_raw_batch(jax.random.PRNGKey(3), 3, 20, 34, 34, 2), layers[0])
+    stream = _stream0(synthetic_raw_batch(jax.random.PRNGKey(3), 3, 20, 34, 34, 2), layers[0])
     traces = run_network(layers, params, stream, trace=True).traces
     assert len(traces) == len(layers)
     for layer, t in zip(layers, traces):
@@ -166,7 +147,7 @@ def test_run_network_trace_shape_and_alignment():
 def test_run_network_trace_stops_gradient():
     layers = _layers()
     params = _params(layers)
-    stream = _stream0(_raw_batch(jax.random.PRNGKey(4), 2, 16, 34, 34, 2), layers[0])
+    stream = _stream0(synthetic_raw_batch(jax.random.PRNGKey(4), 2, 16, 34, 34, 2), layers[0])
 
     def loss(ps):
         traces = run_network(layers, ps, stream, trace=True).traces
@@ -181,7 +162,7 @@ def test_run_network_trace_matches_run_network_without_trace():
     """帶軌跡的最後一層軌跡,跟不帶軌跡的最後一層結果一致。"""
     layers = _layers()
     params = _params(layers)
-    stream = _stream0(_raw_batch(jax.random.PRNGKey(5), 3, 20, 34, 34, 2), layers[0])
+    stream = _stream0(synthetic_raw_batch(jax.random.PRNGKey(5), 3, 20, 34, 34, 2), layers[0])
 
     result = run_network(layers, params, stream).last
     traces = run_network(layers, params, stream, trace=True).traces

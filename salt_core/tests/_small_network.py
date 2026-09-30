@@ -1,4 +1,4 @@
-"""測試用的小網路跟合成原始事件,給容量出界相關的測試共用。"""
+"""測試用的小網路跟合成輸入事件,給容量出界相關的測試共用。"""
 from dataclasses import replace
 
 import jax
@@ -15,9 +15,11 @@ GENEROUS = {"conv1": dict(max_queue_len=MAX_LEN, max_out_spikes=512),
 
 
 def synthetic_raw_batch(key, n_samples, max_len, h_in, w_in, ic):
-    """n_samples 筆隨機原始事件,每筆長度 max_len,第 i 筆的真事件數是 max_len - i % 3。
+    """n_samples 筆隨機輸入事件,座標落在 (ic, h_in, w_in) 網格,每筆長度 max_len,
+    第 i 筆的真事件數是 max_len - i % 3。
 
-    回傳 (event_times, x, y, c, n_real_events),leading axis 是樣本數。
+    回傳 (event_times, source_idx, n_real_events),leading axis 是樣本數;
+    source_idx = c*h_in*w_in + y*w_in + x。
     """
     ks = jax.random.split(key, n_samples * 4)
     et = jnp.zeros((n_samples, max_len), dtype=jnp.float32)
@@ -35,7 +37,8 @@ def synthetic_raw_batch(key, n_samples, max_len, h_in, w_in, ic):
         ys = ys.at[i, :n].set(jax.random.randint(ky, (n,), 0, h_in))
         cs = cs.at[i, :n].set(jax.random.randint(kc, (n,), 0, ic))
         nr.append(n)
-    return et, xs, ys, cs, jnp.array(nr, dtype=jnp.int32)
+    source_idx = cs * (h_in * w_in) + ys * w_in + xs
+    return et, source_idx, jnp.array(nr, dtype=jnp.int32)
 
 
 def small_layers(capacity: dict = GENEROUS) -> list:

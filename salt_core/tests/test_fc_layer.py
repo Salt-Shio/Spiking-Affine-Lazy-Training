@@ -9,7 +9,7 @@ import numpy as np
 from salt_core.connectivity.fc import build_fc_structure, fc_float_values
 from salt_core.float.scan import run_layer
 from salt_core.layers import FCLayer
-from salt_core.network import Network, RawEvents, run_network
+from salt_core.network import InputEvents, Network, run_network
 from salt_core.quant.backend import QuantBackend
 from salt_core.quant.params import QuantizedLayerParams
 from salt_core.quant.codes import build_decay_table_int
@@ -23,11 +23,11 @@ _SOURCE = jnp.array([0, 1, 1, 1, 1, 0, 1, 1, 1, 1])
 
 
 def _two_fire_case(**fc_fields):
-    """(network, raw):輸入網格 (2, 1, 1),來源編號 = channel。"""
+    """(network, raw):輸入形狀 (2,),兩個來源。"""
     layer = FCLayer(name="fc", n_in=2, n_out=1, init_k=1.0, tau=16.0, v_th=1.0, **fc_fields)
-    raw = RawEvents(event_times=jnp.arange(10.0), x=jnp.zeros(10, dtype=jnp.int32),
-                    y=jnp.zeros(10, dtype=jnp.int32), c=_SOURCE, n_real_events=jnp.array(10))
-    return Network((2, 1, 1), [layer]), raw
+    raw = InputEvents(event_times=jnp.arange(10.0), source_idx=_SOURCE,
+                      n_real_events=jnp.array(10))
+    return Network((2,), [layer]), raw
 
 
 def test_too_few_extra_steps_is_caught_by_fits():
@@ -106,7 +106,7 @@ def _primitive_fc(layer: FCLayer, w, stream):
 def test_conv_fc_fc_chain_matches_primitive_layer_by_layer():
     network = _chain()
     weights = init_params(list(network.layers), seed=3)
-    raw = jax.tree_util.tree_map(lambda a: a[0], RawEvents(*raw_batch(seed=4)))
+    raw = jax.tree_util.tree_map(lambda a: a[0], InputEvents(*raw_batch(seed=4)))
     out = run_network(network.layers, weights, network.input_stream(raw))
     assert bool(out.fits)
 

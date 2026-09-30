@@ -32,16 +32,16 @@ from example.training.optim import build_optimizer
 from example.training.run_dir import (make_exp_dir, metrics_csv_path, params_path, resume_entry,
                                       run_header, write_run_record, write_weights)
 from example.utils import (TRAIN_DIRNAME, WEIGHTS_DIRNAME, load_config, load_run_record,
-                           split_raw_events, take_raw_events)
+                           split_input_events, take_input_events)
 from salt_core.io import network_to_dict
 from salt_core.network import Network
 
 # dormant 統計的固定探測樣本數(train split 的前幾筆)
 _N_PROBE = 128
 
-# config 各節認得的 key。model.layers 每一層的 key 由層類別自己檢查。
+# config 各節認得的 key。model.layers、model.layer_defaults 裡的 key 由 build_network 檢查。
 _TOP_KEYS = {"run_name", "model", "data", "train"}
-_MODEL_KEYS = {"decoder", "input_shape", "layers"}
+_MODEL_KEYS = {"decoder", "input_shape", "layer_defaults", "layers"}
 _DATA_KEYS = {"max_events", "seed_train", "seed_val", "train_size", "val_size"}
 _TRAIN_KEYS = {"lr", "epochs", "batch_size", "seed", "weight_decay", "lr_cosine_decay",
                "lr_cosine_alpha", "grad_clip_norm", "score_cap", "dormant_layers",
@@ -83,7 +83,7 @@ def _make_context(cfg: dict, data: TrainData, network: Network, exp_dir: str) ->
     decoder.validate(layers[-1])
     n_train = int(data.train.labels.shape[0])
     batch_size = min(train_cfg["batch_size"], n_train)
-    train_raw = split_raw_events(data.train)
+    train_raw = split_input_events(data.train, network.input_shape)
     snapshot_every = int(train_cfg.get("weight_snapshot_every", 0))
     snapshot_dir = os.path.join(exp_dir, WEIGHTS_DIRNAME)
     if snapshot_every > 0:
@@ -96,7 +96,7 @@ def _make_context(cfg: dict, data: TrainData, network: Network, exp_dir: str) ->
                          f"網路的層是 {[layer.name for layer in layers]}")
     return RunContext(
         data=data, train_raw=train_raw,
-        probe=take_raw_events(train_raw, slice(0, min(_N_PROBE, n_train))),
+        probe=take_input_events(train_raw, slice(0, min(_N_PROBE, n_train))),
         batch_size=batch_size, epochs=train_cfg["epochs"], seed=train_cfg["seed"],
         optimizer=build_optimizer(train_cfg, n_train, batch_size), decoder=decoder,
         score_cap=train_cfg.get("score_cap"), dormant_names=dormant_names,

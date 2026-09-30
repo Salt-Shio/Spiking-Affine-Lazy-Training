@@ -89,7 +89,7 @@ def apply_decay_table_int(delta_t: jnp.ndarray, table_int: jnp.ndarray
     """用 dt 當 index 查整數衰減表。
 
     delta_t: 浮點陣列,值是整數毫秒。不是整數、或不在 [0, 2 ** 31) 時 raise ValueError;
-        jit 裡(traced 值)沒辦法 raise,只做轉型,呼叫端要在 jit 外檢查過(RawEvents.checked)。
+        jit 裡(traced 值)沒辦法 raise,只做轉型,呼叫端要在 jit 外檢查過(InputEvents.checked)。
     回傳 (a_int, is_identity),形狀同 delta_t:dt=0 時 is_identity=True、a_int 沒有意義;
         dt 超過表深度時 a_int=0。
     """

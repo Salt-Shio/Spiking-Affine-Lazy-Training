@@ -25,7 +25,7 @@ import yaml
 from data.src.nmnist import NMNISTDataset
 from example.models.conv_net import build_decoder, build_growth_policies
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
-from example.utils import load_run_params, load_run_record, split_raw_events, take_raw_events
+from example.utils import load_run_params, load_run_record, split_input_events, take_input_events
 from salt_core.capacity import Capacity, LayerDiag, grown_to_fit
 from salt_core.network import Network
 from salt_core.quant.backend import QuantBackend
@@ -77,12 +77,12 @@ def forward_split(network: Network, decoder, params, split, batch_size: int) -> 
         scores, _ = jax.vmap(decoder.decode)(output.last)
         return scores, output.diags
 
-    raw = split_raw_events(split)
+    raw = split_input_events(split, network.input_shape)
     parts = []
     n = split.labels.shape[0]
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
-        scores, diags = run_batch(params, take_raw_events(raw, slice(start, end)))
+        scores, diags = run_batch(params, take_input_events(raw, slice(start, end)))
         parts.append((np.asarray(scores),
                       np.stack([np.asarray(d.spike_count) for d in diags], axis=1),
                       [jax.tree_util.tree_map(np.asarray, d.needed) for d in diags]))
@@ -180,9 +180,9 @@ def compare() -> int:
 
 def build_golden_quant_params(network: Network, params, split) -> list:
     """照 QUANT_SPEC 算每層的量化參數,M 用 split 前 QUANT_CALIBRATION_SAMPLES 筆逐筆量。"""
-    raw = split_raw_events(split)
+    raw = split_input_events(split, network.input_shape)
     per_sample = [v_range_per_channel(network.layers, network.apply(
-                      params, take_raw_events(raw, i), trace=True).traces)
+                      params, take_input_events(raw, i), trace=True).traces)
                   for i in range(QUANT_CALIBRATION_SAMPLES)]
     v_abs_max = v_abs_max_per_channel(merge_v_ranges(per_sample))
     spec = LayerQuantSpec(bits=QUANT_SPEC["bits"], f_a=QUANT_SPEC["f_a"], f_V=QUANT_SPEC["f_V"],
@@ -214,10 +214,10 @@ def quant_forward_split(network: Network, decoder, quant_params: list, split,
                 "overflowed": jnp.stack([jnp.any(r.overflowed, axis=(1, 2))
                                          for r in output.results], axis=1)}
 
-    raw = split_raw_events(split)
+    raw = split_input_events(split, network.input_shape)
     n = split.labels.shape[0]
-    parts = [jax.tree_util.tree_map(np.asarray,
-                                    run_batch(take_raw_events(raw, slice(start, start + batch_size))))
+    parts = [jax.tree_util.tree_map(
+                 np.asarray, run_batch(take_input_events(raw, slice(start, start + batch_size))))
              for start in range(0, n, batch_size)]
     return {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
 

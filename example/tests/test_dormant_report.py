@@ -10,7 +10,7 @@ import numpy as np
 from example.dormant import dormant_report
 from salt_core.dormant import dormant_score
 from salt_core.layers import ConvLayer, FCLayer
-from salt_core.network import Network, RawEvents
+from salt_core.network import InputEvents, Network
 from salt_core.tests._small_network import (INPUT_SHAPE, init_params, raw_batch, small_layers,
                                              small_policies, synthetic_raw_batch, with_conv_knob)
 
@@ -38,7 +38,7 @@ _DORMANT_LAYERS = ("conv1", "conv2")
 
 def _report(layers, params, batch, *, input_shape=_INPUT, **kwargs):
     """conv1、conv2 的 dormant_report。"""
-    return dormant_report(Network(input_shape, layers), params, RawEvents(*batch),
+    return dormant_report(Network(input_shape, layers), params, InputEvents(*batch),
                           small_policies(layers), layer_names=_DORMANT_LAYERS, **kwargs)
 
 
@@ -77,15 +77,15 @@ def test_dormant_report_matches_manual_reduction():
     n = 6
     batch = synthetic_raw_batch(jax.random.PRNGKey(5), n_samples=n, max_len=20,
                                   h_in=34, w_in=34, ic=2)
-    et, x, y, c, nr = batch
+    et, source_idx, nr = batch
     conv1 = layers[0]
 
-    def one(e, xx, yy, cc, rr):
-        s = Network(_INPUT, layers).input_stream(RawEvents(e, xx, yy, cc, rr))
+    def one(e, src, rr):
+        s = Network(_INPUT, layers).input_stream(InputEvents(e, src, rr))
         result = conv1.forward(params[0], s).result
         return jnp.sum(result.spike_mask, axis=1)
 
-    per_sample = jax.vmap(one)(et, x, y, c, nr)          # (n, n_neurons)
+    per_sample = jax.vmap(one)(et, source_idx, nr)          # (n, n_neurons)
     activity = np.asarray(jnp.mean(per_sample, axis=0))
     expect = dormant_score(activity, tau=0.1)
     got = _report(layers, params, batch, chunk=4)[0]["conv1"]
@@ -98,17 +98,17 @@ def test_dormant_report_s_value_matches_manual_reduction():
     params = _params(layers, seed=6)
     batch = synthetic_raw_batch(jax.random.PRNGKey(7), n_samples=4, max_len=18,
                                   h_in=34, w_in=34, ic=2)
-    et, x, y, c, nr = batch
+    et, source_idx, nr = batch
     conv1, conv2 = layers[0], layers[1]
 
-    def one(e, xx, yy, cc, rr):
-        s = Network(_INPUT, layers).input_stream(RawEvents(e, xx, yy, cc, rr))
+    def one(e, src, rr):
+        s = Network(_INPUT, layers).input_stream(InputEvents(e, src, rr))
         out1 = conv1.forward(params[0], s)
         result1 = out1.result
         result2 = conv2.forward(params[1], out1.stream).result
         return jnp.sum(result1.s_value, axis=1), jnp.sum(result2.s_value, axis=1)
 
-    per_sample = jax.vmap(one)(et, x, y, c, nr)
+    per_sample = jax.vmap(one)(et, source_idx, nr)
     report, _ = _report(layers, params, batch, activity="s_value", chunk=2)
     assert set(report) == {"conv1", "conv2"}
     for name, samples in zip(("conv1", "conv2"), per_sample):

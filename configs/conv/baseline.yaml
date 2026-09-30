@@ -25,53 +25,47 @@ model:
 
   input_shape: [2, 34, 34]
 
+  # 每層共用的值;層裡同一組的同名 key 蓋過這裡
+  layer_defaults:
+    neuron:
+      tau: 16.0
+      v_th: 1.0
+    training:
+      alpha: 2.0
+      init_k: 5.0
+    capacity:
+      chunk_size: 4
+      max_out_spikes: 1
+      max_extra_steps: 0
+    growth:
+      max_queue_len_grow_factor: 1.5
+      out_grow_factor: 1.5
+      out_shrink_threshold: 0.5
+      max_extra_steps_grow_factor: 1.5
+      max_extra_steps_shrink_threshold: 0.5
+
   layers:
     - type: conv
       oc: 8
       k: 3
       s: 2
       p: 1
-      tau: 16.0
-      v_th: 1.0
-      alpha: 2.0
-      chunk_size: 4
-      max_queue_len: 185
-      max_out_spikes: 1
-      max_extra_steps: 0
-      init_k: 5.0
-      max_queue_len_grow_factor: 1.5
-      out_grow_factor: 1.5
-      out_shrink_threshold: 0.5
-      max_extra_steps_grow_factor: 1.5
-      max_extra_steps_shrink_threshold: 0.5
+      capacity:
+        max_queue_len: 185
     - type: conv
       oc: 16
       k: 3
       s: 2
       p: 1
-      tau: 16.0
-      v_th: 1.0
-      alpha: 2.0
-      chunk_size: 4
-      max_queue_len: 32
-      max_out_spikes: 1
-      max_extra_steps: 0
-      init_k: 5.0
-      max_queue_len_grow_factor: 1.5
-      out_grow_factor: 1.5
-      out_shrink_threshold: 0.5
-      max_extra_steps_grow_factor: 1.5
-      max_extra_steps_shrink_threshold: 0.5
+      capacity:
+        max_queue_len: 32
     - type: fc
       name: out
       n_out: 10
-      tau: 16.0
-      v_th: 1.0e+9
-      alpha: 2.0
-      chunk_size: 1024
-      max_out_spikes: 1
-      max_extra_steps: 0
-      init_k: 5.0
+      neuron:
+        v_th: 1.0e+9
+      capacity:
+        chunk_size: 1024
 
 data:
   max_events: 2000

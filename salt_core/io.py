@@ -22,7 +22,7 @@ _LAYER_TYPES = {"conv": ConvLayer, "fc": FCLayer}
 class NetworkDescription(TypedDict):
     """network_to_dict 的回傳。"""
     format: int                    # FORMAT_VERSION
-    input_shape: list[int]         # (C, H, W)
+    input_shape: list[int]         # 網路的輸入形狀
     layers: list[dict[str, Any]]   # 每層 {"type": "conv" 或 "fc", 其餘是層的欄位名 -> 值}
 
 

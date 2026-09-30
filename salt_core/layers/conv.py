@@ -1,5 +1,7 @@
-"""ConvLayer:conv 層。"""
-from dataclasses import dataclass, replace
+"""ConvLayer:conv 層;ConvSpec、conv:給 Network.build 的描述。"""
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from typing import Any, ClassVar
 
 import jax
 import jax.numpy as jnp
@@ -22,7 +24,8 @@ class ConvLayer:
     """conv 層。每顆神經元的佇列只放落在它感受野裡的事件。
 
     輸入面幾何(ic、h_in、w_in)要等於上一層的輸出形狀,Network 建構時檢查;第一層對的是
-    網路的輸入網格。h_out、w_out 由 h_in、w_in、k、s、p 算:(h_in + 2p - k) // s + 1。
+    網路的輸入形狀。h_out、w_out 由 h_in、w_in、k、s、p 算:(h_in + 2p - k) // s + 1。
+    h_out 或 w_out 小於 1 時 raise ValueError。
     """
     name: str
     # 輸入面幾何
@@ -49,6 +52,10 @@ class ConvLayer:
     max_extra_steps: int | None = None
 
     def __post_init__(self) -> None:
+        if self.h_out < 1 or self.w_out < 1:
+            raise ValueError(
+                f"{self.name} 幾何退化:輸入 {self.h_in}x{self.w_in}、k={self.k} s={self.s} "
+                f"p={self.p} -> 輸出 {self.h_out}x{self.w_out}")
         if self.max_extra_steps is None:
             object.__setattr__(self, "max_extra_steps",
                                safe_extra_steps(self.max_queue_len, self.chunk_size))
@@ -175,3 +182,33 @@ class ConvLayer:
         """
         return replace(self, chunk_size=chunk_size,
                        max_extra_steps=safe_extra_steps(self.max_queue_len, chunk_size))
+
+
+@dataclass(frozen=True)
+class ConvSpec:
+    """ConvLayer 少了輸入面幾何(ic、h_in、w_in)的描述,Network.build 接上前一層時補。
+
+    options: ConvLayer 其餘欄位(init_k、tau、容量等)。
+    """
+    oc: int
+    k: int
+    s: int
+    p: int
+    name: str | None = None
+    options: Mapping[str, Any] = field(default_factory=dict)
+    name_prefix: ClassVar[str] = "conv"
+
+    def build(self, input_shape: tuple[int, ...], name: str) -> ConvLayer:
+        """接在輸出形狀 input_shape = (C, H, W) 後面的 ConvLayer。
+        input_shape 不是三維、或幾何退化時 raise ValueError;options 有 ConvLayer 不認得的欄位時
+        raise TypeError。"""
+        if len(input_shape) != 3:
+            raise ValueError(f"{name}:conv 要空間輸入 (C, H, W),前一層的輸出是攤平的 {input_shape}")
+        ic, h_in, w_in = input_shape
+        return ConvLayer(name=name, ic=ic, h_in=h_in, w_in=w_in, oc=self.oc, k=self.k, s=self.s,
+                         p=self.p, **self.options)
+
+
+def conv(oc: int, k: int, s: int, p: int, *, name: str | None = None, **options: Any) -> ConvSpec:
+    """ConvSpec 的簡寫,例如 conv(8, k=3, s=2, p=1, init_k=5.0)。"""
+    return ConvSpec(oc=oc, k=k, s=s, p=p, name=name, options=options)

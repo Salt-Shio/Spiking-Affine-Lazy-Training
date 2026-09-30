@@ -10,7 +10,7 @@ from example.models.conv_net import build_network
 from example.train import TrainResult, load_nmnist_data, train
 from example.training.loop import TrainData, epoch_permutation
 from example.training.run_dir import make_exp_dir
-from example.utils import set_seed, split_raw_events, take_raw_events
+from example.utils import set_seed, split_input_events, take_input_events
 from salt_core.capacity import reduce_over_batch
 from salt_core.float.affine import safe_extra_steps
 
@@ -29,20 +29,22 @@ def reference_cfg() -> dict:
     2 epoch、每個 epoch 存權重快照。"""
     def _conv(oc, max_queue_len, max_out_spikes, init_k):
         return {"type": "conv", "oc": oc, "k": 3, "s": 2, "p": 1,
-                "tau": 16.0, "v_th": 1.0, "alpha": 2.0, "chunk_size": 1,
-                "max_queue_len": max_queue_len, "max_out_spikes": max_out_spikes, "init_k": init_k,
-                "max_queue_len_grow_factor": 2.0, "out_grow_factor": 2.0}
+                "training": {"init_k": init_k},
+                "capacity": {"chunk_size": 1, "max_queue_len": max_queue_len,
+                             "max_out_spikes": max_out_spikes},
+                "growth": {"max_queue_len_grow_factor": 2.0, "out_grow_factor": 2.0}}
     return {
         "run_name": "reference",
         "model": {
             "decoder": "membrane_regression",
             "input_shape": [2, 34, 34],
+            "layer_defaults": {"neuron": {"tau": 16.0, "v_th": 1.0}, "training": {"alpha": 2.0}},
             "layers": [
                 _conv(8, 185, 8000, 8.0),
                 _conv(16, 5000, 35000, 64.0),
-                {"type": "fc", "name": "out", "n_out": 10, "tau": 16.0,
-                 "v_th": 1.0e9, "alpha": 2.0, "chunk_size": 512, "init_k": 5.0,
-                 "max_out_spikes": 1},
+                {"type": "fc", "name": "out", "n_out": 10, "neuron": {"v_th": 1.0e9},
+                 "training": {"init_k": 5.0},
+                 "capacity": {"chunk_size": 512, "max_out_spikes": 1}},
             ],
         },
         "data": {"max_events": 2000, "train_size": 16, "val_size": 8,
@@ -138,32 +140,34 @@ def synthetic_cfg(run_name: str, seed: int, *, conv1: dict | None = None,
     conv1、conv2、hidden:覆寫該層的容量(例如 {"max_queue_len": 1}),沒給的旋鈕是理論上限。
     grow:所有旋鈕共用的放大倍率。縮小關掉,每個 epoch 存權重快照。
     """
-    policy = {"max_queue_len_grow_factor": grow, "out_grow_factor": grow,
+    growth = {"max_queue_len_grow_factor": grow, "out_grow_factor": grow,
               "max_extra_steps_grow_factor": grow}
 
     def _conv(max_queue_len, max_out_spikes, overrides):
-        entry = {"type": "conv", "oc": SYNTH_OC, "k": 3, "s": 2, "p": 1,
-                 "tau": 16.0, "v_th": 1.0, "alpha": 2.0, "chunk_size": 1, "init_k": 8.0,
-                 "max_queue_len": max_queue_len, "max_out_spikes": max_out_spikes, **policy}
-        entry.update(overrides or {})
-        return entry
-    hidden_entry = {"type": "fc", "name": "hidden", "n_out": SYNTH_HIDDEN, "tau": 16.0,
-                    "v_th": 1.0, "alpha": 2.0, "chunk_size": SYNTH_HIDDEN_CHUNK,
-                    "init_k": SYNTH_HIDDEN_INIT_K, "max_out_spikes": HIDDEN_OUT_BOUND,
-                    "max_extra_steps": HIDDEN_EXTRA_STEPS_BOUND, **policy}
-    hidden_entry.update(hidden or {})
+        return {"type": "conv", "oc": SYNTH_OC, "k": 3, "s": 2, "p": 1,
+                "training": {"init_k": 8.0},
+                "capacity": {"chunk_size": 1, "max_queue_len": max_queue_len,
+                             "max_out_spikes": max_out_spikes, **(overrides or {})},
+                "growth": growth}
+    hidden_entry = {"type": "fc", "name": "hidden", "n_out": SYNTH_HIDDEN,
+                    "training": {"init_k": SYNTH_HIDDEN_INIT_K},
+                    "capacity": {"chunk_size": SYNTH_HIDDEN_CHUNK,
+                                 "max_out_spikes": HIDDEN_OUT_BOUND,
+                                 "max_extra_steps": HIDDEN_EXTRA_STEPS_BOUND, **(hidden or {})},
+                    "growth": growth}
     return {
         "run_name": run_name,
         "model": {
             "decoder": "membrane_regression",
             "input_shape": [2, 8, 8],
+            "layer_defaults": {"neuron": {"tau": 16.0, "v_th": 1.0}, "training": {"alpha": 2.0}},
             "layers": [
                 _conv(CONV1_QUEUE_BOUND, CONV1_OUT_BOUND, conv1),
                 _conv(CONV2_QUEUE_BOUND, CONV2_OUT_BOUND, conv2),
                 hidden_entry,
-                {"type": "fc", "name": "out", "n_out": len(CLASS_NAMES), "tau": 16.0,
-                 "v_th": 1.0e9, "alpha": 2.0, "chunk_size": 256, "init_k": 5.0,
-                 "max_out_spikes": 1},
+                {"type": "fc", "name": "out", "n_out": len(CLASS_NAMES),
+                 "neuron": {"v_th": 1.0e9}, "training": {"init_k": 5.0},
+                 "capacity": {"chunk_size": 256, "max_out_spikes": 1}},
             ],
         },
         "train": {"lr": 1.0e-2, "epochs": epochs, "batch_size": SYNTH_BATCH_SIZE, "seed": seed,
@@ -176,7 +180,7 @@ def first_batch_needed(cfg: dict, synth: Synthetic) -> dict:
     network = build_network(cfg["model"])
     params = network.init(set_seed(cfg["train"]["seed"]))
     idx = epoch_permutation(synth.seed, SYNTH_N_TRAIN, 0)[:SYNTH_BATCH_SIZE]
-    raw = take_raw_events(split_raw_events(synth.data.train), idx)
+    raw = take_input_events(split_input_events(synth.data.train, network.input_shape), idx)
     output = jax.jit(network.apply_batched)(params, raw)
     return {layer.name: {knob: int(v) for knob, v in reduce_over_batch(diag).needed.items()}
             for layer, diag in zip(network.layers, output.diags)}

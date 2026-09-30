@@ -1,4 +1,4 @@
-"""example 共用的小工具:種子、git commit、config、批次評估、讀 run 紀錄跟權重、RawEvents 轉換。
+"""example 共用的小工具:種子、git commit、config、批次評估、讀 run 紀錄跟權重、資料轉成 InputEvents。
 
 TRAIN_DIRNAME、WEIGHTS_DIRNAME、EVAL_DIRNAME 是 experiments/<run>/ 底下三個子資料夾的名字:
 訓練產物、逐 epoch 權重快照、事後評估。寫的一邊跟讀的一邊都從這裡拿名字。
@@ -17,7 +17,7 @@ from example.training.capacity_control import knob_changes
 from salt_core.capacity import grown_to_fit_batch, reduce_over_batch
 from salt_core.decoder import Decoder
 from salt_core.io import load_weights
-from salt_core.network import Network, RawEvents
+from salt_core.network import InputEvents, Network
 
 TRAIN_DIRNAME = "train"
 WEIGHTS_DIRNAME = "weights"
@@ -57,14 +57,26 @@ def load_run_record(exp_dir: str) -> dict:
         return yaml.safe_load(f)
 
 
-def split_raw_events(split: NMNISTSplit) -> RawEvents:
-    """資料端 split 的事件欄位包成 RawEvents(leading axis = 樣本數),包之前檢查時間。
-    時間不合法時 raise ValueError(見 RawEvents.checked)。"""
-    return RawEvents.checked(split.event_times, split.x, split.y, split.c, split.n_real_events)
+def grid_input_events(event_times: jax.Array | np.ndarray, x: jax.Array | np.ndarray,
+                      y: jax.Array | np.ndarray, c: jax.Array | np.ndarray,
+                      n_real_events: jax.Array | np.ndarray | int,
+                      grid_shape: tuple[int, ...]) -> InputEvents:
+    """網格座標的事件轉成 InputEvents:source_idx 是 (c, y, x) 在 grid_shape = (C, H, W) 的
+    row-major 攤平編號,可以單筆也可以一批。
+    座標超出 grid_shape 時 raise ValueError;時間不合法時 raise ValueError(見 InputEvents.checked)。"""
+    source_idx = np.ravel_multi_index((np.asarray(c), np.asarray(y), np.asarray(x)), grid_shape)
+    return InputEvents.checked(event_times, jnp.asarray(source_idx, dtype=jnp.int32),
+                               n_real_events)
 
 
-def take_raw_events(raw: RawEvents, idx) -> RawEvents:
-    """從一批 RawEvents 取出 idx(index 陣列或 slice)那幾筆。"""
+def split_input_events(split: NMNISTSplit, grid_shape: tuple[int, ...]) -> InputEvents:
+    """資料端 split 的事件轉成 InputEvents(leading axis = 樣本數),見 grid_input_events。"""
+    return grid_input_events(split.event_times, split.x, split.y, split.c, split.n_real_events,
+                             grid_shape)
+
+
+def take_input_events(raw: InputEvents, idx) -> InputEvents:
+    """從一批 InputEvents 取出 idx(index 陣列或 slice)那幾筆。"""
     return jax.tree_util.tree_map(lambda a: a[idx], raw)
 
 
@@ -77,7 +89,7 @@ def load_run_params(exp_dir: str, which_params: str) -> tuple[Network, tuple]:
 
 def _make_scores_fn(network: Network, decoder: Decoder):
     @jax.jit
-    def scores_fn(params, raw_batch: RawEvents):
+    def scores_fn(params, raw_batch: InputEvents):
         output = network.apply_batched(params, raw_batch)
         scores, _ = jax.vmap(decoder.decode)(output.last)
         return scores, output.diags, output.fits
@@ -97,13 +109,13 @@ def make_evaluate(network: Network, decoder: Decoder, eval_batch_size: int, poli
 
     def evaluate(params, split: NMNISTSplit):
         nonlocal layers, scores_fn
-        raw = split_raw_events(split)
+        raw = split_input_events(split, network.input_shape)
         n = split.labels.shape[0]
         scores_parts = []
         regrows = 0
         for start in range(0, n, eval_batch_size):
             end = min(start + eval_batch_size, n)
-            batch = take_raw_events(raw, slice(start, end))
+            batch = take_input_events(raw, slice(start, end))
             scores, diags, fits = scores_fn(params, batch)
             while not bool(jnp.all(fits)):
                 print(f"[評估出界] batch={start // eval_batch_size}: 放大評估容量重算")

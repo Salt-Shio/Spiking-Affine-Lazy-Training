@@ -14,9 +14,9 @@ from example.dormant import dormant_report
 from example.metrics_log import MetricsLog
 from example.training.capacity_control import CapacityControl
 from example.training.step import make_train_step
-from example.utils import make_evaluate, set_seed, take_raw_events, weight_snapshot_path
+from example.utils import make_evaluate, set_seed, take_input_events, weight_snapshot_path
 from salt_core.io import save_weights
-from salt_core.network import Network, RawEvents
+from salt_core.network import InputEvents, Network
 
 
 class TrainData(NamedTuple):
@@ -38,12 +38,12 @@ class TrainState(NamedTuple):
 class RunContext:
     """一次 run 裡不變的東西。
 
-    train_raw: train split 轉成的 RawEvents;probe: dormant 統計用的固定樣本。
+    train_raw: train split 轉成的 InputEvents;probe: dormant 統計用的固定樣本。
     snapshot_every: 每幾個 epoch 存一份權重快照到 snapshot_dir,0 不存。
     """
     data: TrainData
-    train_raw: RawEvents
-    probe: RawEvents
+    train_raw: InputEvents
+    probe: InputEvents
     batch_size: int
     epochs: int
     seed: int
@@ -145,7 +145,7 @@ def run_epochs(ctx: RunContext, network: Network, state: TrainState) -> EpochsOu
 
         for b in range(n_batches):
             idx = perm[b * ctx.batch_size:(b + 1) * ctx.batch_size]
-            out = train_step(params, opt_state, take_raw_events(ctx.train_raw, idx),
+            out = train_step(params, opt_state, take_input_events(ctx.train_raw, idx),
                              train_split.labels_onehot[idx])
             if not bool(out.fits):
                 resumed_from = ctx.checkpointer.last_epoch if ctx.checkpointer.exists() else None
