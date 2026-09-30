@@ -76,24 +76,26 @@ SYNTH_HIDDEN_INIT_K = 8.0
 
 # 不測的旋鈕給理論上限,保證不會出界。k=3、s=2、p=1 時一個輸入位置最多落在 2 x 2 個輸出位置的
 # 感受野裡,每筆輸入事件最多讓 4 x oc 顆神經元各 fire 一次;FC 每筆輸入事件最多讓每顆神經元
-# 各 fire 一次。額外步數的上限是總步數等於輸入流長度(每步至少吃一筆)。
-CONV1_QUEUE_BOUND = SYNTH_MAX_EVENTS
-CONV1_OUT_BOUND = CONV1_QUEUE_BOUND * 4 * SYNTH_OC
-CONV2_QUEUE_BOUND = CONV1_OUT_BOUND
-CONV2_OUT_BOUND = CONV2_QUEUE_BOUND * 4 * SYNTH_OC
+# 各 fire 一次。佇列在真事件之後多 1 欄 catch-up。額外步數的上限是總步數等於輸入流長度(每步至少吃一筆)。
+CONV1_QUEUE_BOUND = SYNTH_MAX_EVENTS + 1
+CONV1_OUT_BOUND = SYNTH_MAX_EVENTS * 4 * SYNTH_OC
+CONV2_QUEUE_BOUND = CONV1_OUT_BOUND + 1
+CONV2_OUT_BOUND = CONV1_OUT_BOUND * 4 * SYNTH_OC
 HIDDEN_OUT_BOUND = CONV2_OUT_BOUND * SYNTH_HIDDEN
 HIDDEN_EXTRA_STEPS_BOUND = safe_extra_steps(CONV2_OUT_BOUND, SYNTH_HIDDEN_CHUNK)
 
 
 class Synthetic(NamedTuple):
-    """seed:訓練用的 seed。needs:每筆訓練樣本的事件數,也就是 conv1 的佇列需求。"""
+    """seed:訓練用的 seed。needs:每筆訓練樣本的 conv1 佇列需求(事件數 + 1 欄 catch-up)。"""
     seed: int
     data: TrainData
     needs: np.ndarray
 
 
-def _split(n_events: np.ndarray) -> NMNISTSplit:
-    """第 i 筆樣本有 n_events[i] 筆事件,全部在同一個像素,時間 0, 1, 2, ... ms。"""
+def _split(needs: np.ndarray) -> NMNISTSplit:
+    """第 i 筆樣本的 conv1 佇列需求是 needs[i]:放 needs[i] - 1 筆事件(另 1 欄是 catch-up),
+    全部在同一個像素,時間 0, 1, 2, ... ms。"""
+    n_events = needs - 1
     n = len(n_events)
     times = np.zeros((n, SYNTH_MAX_EVENTS), dtype=np.int32)
     for i, count in enumerate(n_events):
@@ -109,9 +111,9 @@ def _split(n_events: np.ndarray) -> NMNISTSplit:
 def synthetic_setup() -> Synthetic:
     """合成的訓練、驗證資料跟 seed。
 
-    挑一顆 seed,讓 epoch 0 湊不滿 batch 而沒用到的那筆,epoch 1 會用到。需求最大的樣本(12 筆
-    事件)放在那個位置;epoch 0 其餘 8 筆照順序是 2, 3, ..., 9 筆事件,所以 epoch 0 各 batch 的
-    最大需求是 3, 5, 7, 9。
+    挑一顆 seed,讓 epoch 0 湊不滿 batch 而沒用到的那筆,epoch 1 會用到。需求最大的樣本(需求 12)
+    放在那個位置;epoch 0 其餘 8 筆照順序是需求 2, 3, ..., 9,所以 epoch 0 各 batch 的最大需求是
+    3, 5, 7, 9。
     """
     seed = next(s for s in range(100)
                 if epoch_permutation(s, SYNTH_N_TRAIN, 1)[-1]

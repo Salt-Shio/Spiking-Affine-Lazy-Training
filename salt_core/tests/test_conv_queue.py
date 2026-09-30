@@ -4,6 +4,7 @@
 2. build_conv_structure + conv_float_values 跟參考實作(_reference.dense_conv_affine_map)比:
    run_layer 之後的 v_final、spike 細節、梯度。不 fire 時 v_final 對 W、gain 是線性的,
    梯度用中央差分對參考算;會 fire 的場景用參考的 autodiff 對照。
+3. 佇列剛好裝滿真事件時沒有 catch-up 欄:ConvLayer 的需求要算進 catch-up,判成出界。
 幾何變化跟跨層梯度在 test_conv_geometry.py。
 """
 
@@ -15,6 +16,8 @@ from salt_core.float.scan import run_layer
 from salt_core.connectivity.conv import (ConvQueueStructure, _compress_candidates,
                                           _delta_t_three_regimes, build_conv_structure,
                                           conv_float_values, conv_weight_codes, tile_channels)
+from salt_core.layers import ConvLayer
+from salt_core.network import InputEvents, Network
 from salt_core.tests._reference import dense_conv_affine_map, finite_diff_grad
 
 TOL = 1e-6
@@ -601,3 +604,31 @@ def test_conv_weight_codes_are_int32_and_match_float_values_b():
     assert codes.dtype == jnp.int32
     assert codes.shape == (2 * H_OUT * W_OUT, 3)
     assert jnp.array_equal(codes, conv_float_values(structure, q, TAU, None).b)
+
+
+# ============================================================================
+# 3. 佇列剛好裝滿真事件:需求算進 catch-up 欄
+# ============================================================================
+
+def _full_queue_case(max_queue_len):
+    """輸入 1x4x4、k=3 s=2 p=1 -> 2x2,tau=4,權重全 0.1,不 fire。事件:t=1 像素 0、t=2 像素 3、
+    t=3 像素 0、t=5 像素 15。位置 0 收 2 筆(最後一筆 t=3),全域最後一筆 T=5。"""
+    layer = ConvLayer(name="conv", ic=1, h_in=4, w_in=4, oc=1, k=3, s=2, p=1, init_k=1.0,
+                      tau=4.0, v_th=1e9, max_queue_len=max_queue_len, max_out_spikes=16)
+    raw = InputEvents(jnp.array([1.0, 2.0, 3.0, 5.0]), jnp.array([0, 3, 0, 15]), jnp.array(4))
+    return Network((1, 4, 4), [layer]).apply((jnp.full((1, 1, 3, 3), 0.1),), raw)
+
+
+def test_queue_full_of_real_events_is_reported_as_overflow():
+    """位置 0 的 2 筆真事件佔滿 2 欄,catch-up 沒位置放,需求是 2 + 1 = 3。"""
+    out = _full_queue_case(max_queue_len=2)
+    assert int(out.diags[0].needed["max_queue_len"]) == 3
+    assert not bool(out.fits)
+
+
+def test_queue_with_room_for_catchup_decays_to_global_last_time():
+    """位置 0:t=1 時 V=0.1,t=3 時 V=0.1*0.75**2 + 0.1 = 0.15625,catch-up 衰減到 T=5:
+    0.15625 * 0.75**2 = 0.087890625。"""
+    out = _full_queue_case(max_queue_len=3)
+    assert bool(out.fits)
+    assert_allclose(out.last.v_final[0], 0.087890625, "位置 0 的 v_final")

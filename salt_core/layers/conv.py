@@ -45,6 +45,7 @@ class ConvLayer:
     alpha: float = 2.0
     chunk_size: int = 1
     # 容量。訓練時出界會放大,預設值只影響開頭要重編譯幾次。
+    # max_queue_len 是每個位置的佇列欄數,真事件之後要留 1 欄給 catch-up。
     max_queue_len: int = 128
     max_out_spikes: int = 8192
     # 掃描步數 = ceil(max_queue_len / chunk_size) + max_extra_steps,見 docs/math/掃描步數上界推導.md。
@@ -133,8 +134,9 @@ class ConvLayer:
         out_stream = extract_output_events_conv(
             scan.result.spike_mask, scan.result.spike_event_idx, scan.spike_gain,
             in_stream.event_times, local_to_global_j, max_total_spikes=self.max_out_spikes)
+        # 佇列需求多 1 欄給 catch-up,理由見 docs/問題紀錄.md「決策:conv 佇列需求算進 catch-up 欄」
         diag = _layer_diag(scan.result.spike_mask, self.n_neurons, in_stream.n_real_events,
-                           needed={"max_queue_len": jnp.max(structure.n_real_events),
+                           needed={"max_queue_len": jnp.max(structure.n_real_events) + 1,
                                    "max_out_spikes": out_stream.n_real_events,
                                    "max_extra_steps": scan.extra_steps_needed})
         layer_trace = None

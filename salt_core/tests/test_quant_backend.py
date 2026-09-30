@@ -48,10 +48,10 @@ def _params(q, *, tau, f_a, f_V, i_V, v_th_int, scale=1.0, overflow_mode="wrap")
 
 
 def _conv_3x3_setup():
-    """3x3 輸入、3x3 kernel、單一輸出神經元,9 筆事件依序打在 9 個 synapse 上。"""
+    """3x3 輸入、3x3 kernel、單一輸出神經元,9 筆事件依序打在 9 個 synapse 上;佇列 9 欄加 catch-up 1 欄。"""
     tau = 4.0
     conv = ConvLayer(name="conv", ic=1, h_in=3, w_in=3, oc=1, k=3, s=1, p=0,
-                     init_k=5.0, tau=tau, v_th=1.0, chunk_size=1, max_queue_len=9, max_out_spikes=9)
+                     init_k=5.0, tau=tau, v_th=1.0, chunk_size=1, max_queue_len=10, max_out_spikes=9)
     n = 9
     in_stream = EventStream(event_times=jnp.arange(1.0, n + 1.0),
                             event_source_idx=jnp.arange(n),  # ic=1 時 flat index = y*w_in+x
@@ -224,7 +224,8 @@ def test_forward_quantized_rejects_non_integer_weight_codes():
 
 
 def test_conv_forward_quantized_reports_queue_truncation():
-    """神經元需要 9 欄的佇列,max_queue_len=4 裝不下,後面的輸入事件被截掉,capacity.fits 要是 False。"""
+    """神經元收 9 筆事件,加 catch-up 需要 10 欄,max_queue_len=4 裝不下,後面的輸入事件被截掉,
+    capacity.fits 要是 False。"""
     conv, in_stream = _conv_3x3_setup()
     small_queue = dataclasses.replace(conv, max_queue_len=4)
     q = jnp.ones(conv.weight_shape, dtype=jnp.int32)
@@ -233,7 +234,7 @@ def test_conv_forward_quantized_reports_queue_truncation():
     diag = small_queue.forward(params, in_stream, backend=QUANT).diag
     diag_ok = conv.forward(params, in_stream, backend=QUANT).diag
 
-    assert int(diag.needed["max_queue_len"]) == 9
+    assert int(diag.needed["max_queue_len"]) == 10
     assert not bool(small_queue.capacity.fits(diag))
     assert bool(conv.capacity.fits(diag_ok))
 

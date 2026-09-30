@@ -190,8 +190,8 @@ def test_build_learning_rate_cosine_decay_starts_high_ends_low():
 # B. 合成資料的構造
 # ============================================================================
 
-def test_synthetic_conv1_queue_need_equals_event_count(synth):
-    """所有事件落在同一個像素,涵蓋它的 conv1 神經元每顆都收到全部事件。"""
+def test_synthetic_conv1_queue_need_is_event_count_plus_catchup(synth):
+    """所有事件落在同一個像素,涵蓋它的 conv1 神經元每顆都收到全部事件,需求是事件數 + 1。"""
     network = build_network(synthetic_cfg("check", synth.seed)["model"])
     raw = split_input_events(synth.data.train, network.input_shape)
     output = jax.jit(network.apply_batched)(network.init(jax.random.PRNGKey(0)), raw)
