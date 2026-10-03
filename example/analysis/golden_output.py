@@ -24,8 +24,8 @@ import yaml
 from data.src.nmnist import NMNISTDataset
 from example.models.conv_net import build_decoder, build_growth_policies
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
-from example.quantize import (calibrate_v_abs_max, grown_for_needed, quant_forward_split,
-                              quant_layer_specs, reference_arrays)
+from example.quant_run import (calibrate_v_abs_max, grown_for_needed, quant_forward_split,
+                               quant_layer_specs, reference_arrays)
 from example.utils import load_run_params, load_run_record, split_input_events, take_input_events
 from salt_core.capacity import Capacity
 from salt_core.network import Network
@@ -174,10 +174,11 @@ def compare() -> int:
     return int(bool(pred_diff.size or spike_diff.size or v_diff.size))
 
 
-def build_golden_quant_params(network: Network, params, split) -> list:
-    """照 QUANT_SPEC 算每層的量化參數,M 用 split 前 QUANT_CALIBRATION_SAMPLES 筆逐筆量。"""
-    raw = split_input_events(split, network.input_shape)
-    v_abs_max = calibrate_v_abs_max(network, params, raw, QUANT_CALIBRATION_SAMPLES)
+def build_golden_quant_params(network: Network, params, split, batch_size: int) -> list:
+    """照 QUANT_SPEC 算每層的量化參數,M 用 split 前 QUANT_CALIBRATION_SAMPLES 筆量。"""
+    raw = take_input_events(split_input_events(split, network.input_shape),
+                            slice(0, QUANT_CALIBRATION_SAMPLES))
+    v_abs_max = calibrate_v_abs_max(network, params, raw, batch_size)
     spec = LayerQuantSpec(bits=QUANT_SPEC["bits"], f_a=QUANT_SPEC["f_a"], f_V=QUANT_SPEC["f_V"],
                           overflow_mode=QUANT_SPEC["overflow_mode"])
     return build_quantized_params(network.layers, params,
@@ -200,7 +201,8 @@ def load_quant_run() -> tuple:
     network, decoder, params, split, batch_size = load_run()
     network = with_capacity(network, report["golden_capacity"])
     network = network.replace_layers([layer.with_chunk_size(1) for layer in network.layers])
-    return network, decoder, build_golden_quant_params(network, params, split), split, batch_size
+    return (network, decoder, build_golden_quant_params(network, params, split, batch_size),
+            split, batch_size)
 
 
 def save_quant() -> None:

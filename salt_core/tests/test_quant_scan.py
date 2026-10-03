@@ -90,6 +90,36 @@ def test_run_layer_overflow_flag_set_and_propagates_to_v_final():
     assert not bool(result.spike_mask[0, 0])
 
 
+def test_run_layer_unfitted_extremes_include_value_before_reset_and_wrap():
+    """v_unfitted_min/max 記的是寫回之前的真實值,fire 歸零、溢位繞回都看得到。
+    f_V=0、i_V=6(範圍 [-32,31]),全部 identity(不衰減)。
+
+    - 神經元 0,v_th=15:q = 20 => 真實值 20,fire 歸零;q = -3 => -3。
+      寫回之後的值是 [0, -3],最大只看得到 0;真實值的最大是 20、最小是 -3。
+    - 神經元 1,不會 fire(v_th=100):q = -30、-5 => -30、-35,-35 超出下限,
+      繞回成 -35+64=29。真實值的最小是 -35,最大是初始值 0。"""
+    a_int = jnp.full((2, 2), 999)
+    is_identity = jnp.ones((2, 2), dtype=bool)
+    q_int = jnp.array([[20, -3], [-30, -5]])
+    v_th_int = jnp.array([15, 100])
+
+    result = run_layer(a_int, is_identity, q_int, v_th_int, f_a=4, f_V=0, i_V=6)
+
+    assert [int(v) for v in result.v_final] == [-3, 29]
+    assert bool(result.overflowed[1, 1])
+    assert [int(v) for v in result.v_unfitted_max] == [20, 0]
+    assert [int(v) for v in result.v_unfitted_min] == [-3, -35]
+
+
+def test_process_event_reports_value_before_wrap():
+    """跟 test_run_layer_overflow_flag_set_and_propagates_to_v_final 同一組數字:
+    真實值 9 繞回成 -7,v_unfitted 是 9。"""
+    result = process_event(v0_int=0, a_int=999, is_identity=True, q_int=9,
+                           v_th_int=100, f_a=4, f_V=0, i_V=4)
+    assert int(result.v_final) == -7
+    assert int(result.v_unfitted) == 9
+
+
 def test_run_layer_traced_matches_untraced_and_last_v_step_is_v_final():
     a_int = jnp.array([[999, 12]])
     is_identity = jnp.array([[True, False]])

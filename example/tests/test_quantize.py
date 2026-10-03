@@ -1,8 +1,8 @@
 """example/quantize.py。
 
-- spec_name、quant_dir_name、check_quant_config、quant_layer_specs:小例子。
-- quantize、check:對共用的參考訓練(conftest.py 的 reference_run)產生量化資料夾,
-  報告跟參考輸出要一致,check 重跑要逐筆相同;參考輸出被改過時 check 要抓到。
+- spec_name、quant_dir_name、check_quant_config:小例子。
+- quantize、check、evaluate:對共用的參考訓練(conftest.py 的 reference_run)產生量化資料夾,
+  報告跟參考輸出、模型要一致,check 重跑要逐筆相同;參考輸出被改過時 check 要抓到。
 """
 import os
 
@@ -11,20 +11,20 @@ import pytest
 import yaml
 
 from example.quantize import (MODEL_FILENAME, QUANT_DIRNAME, REFERENCE_FILENAME, REPORT_FILENAME,
-                              check, check_quant_config, quant_dir_name, quant_layer_specs, quantize,
+                              check, check_quant_config, evaluate, quant_dir_name, quantize,
                               spec_name)
+from example.utils import EVAL_DIRNAME
 from salt_core.io import load_quantized
-from salt_core.quant.convert import LayerQuantSpec
 from salt_core.quant.fixed_point import RoundMode
 
 SPEC = {"bits": 8, "f_a": 10, "f_V": 10, "round_mode": "round", "out_granularity": "per_channel",
-        "clip_percentile": 100, "overflow_mode": "wrap"}
+        "clip_percentile": 100, "overflow_mode": "wrap", "guard_bits": 1}
 
 
 def _cfg(run: str, **spec_overrides) -> dict:
-    """參考訓練的 val 只有 8 筆:量 M 用前 4 筆,驗證用全部。"""
+    """參考訓練的 val 只有 8 筆:量 M 用 val 前 4 筆,驗證用全部。"""
     return {"source": {"run": run, "params": "best"},
-            "calibration": {"n_samples": 4},
+            "calibration": {"split": "val", "n_samples": 4},
             "verify": {"n_samples": None},
             "spec": {**SPEC, **spec_overrides}}
 
@@ -34,16 +34,18 @@ def _cfg(run: str, **spec_overrides) -> dict:
 # ============================================================================
 
 def test_spec_name():
-    assert spec_name(SPEC) == "b8_fa10_fv10_round_pc_clip100_wrap"
+    assert spec_name(SPEC) == "b8_fa10_fv10_round_pc_clip100_wrap_g1"
     assert spec_name({**SPEC, "out_granularity": "per_tensor", "clip_percentile": 99.5,
-                      "round_mode": "truncate"}) == "b8_fa10_fv10_truncate_pt_clip99.5_wrap"
+                      "round_mode": "truncate", "guard_bits": 0}) == \
+        "b8_fa10_fv10_truncate_pt_clip99.5_wrap_g0"
 
 
-def test_quant_dir_name_prefixes_weight_source():
+def test_quant_dir_name_has_weight_source_and_calibration():
     cfg = _cfg("x")
-    assert quant_dir_name(cfg) == "best_b8_fa10_fv10_round_pc_clip100_wrap"
+    assert quant_dir_name(cfg) == "best_val4_b8_fa10_fv10_round_pc_clip100_wrap_g1"
     cfg["source"]["params"] = 59
-    assert quant_dir_name(cfg) == "e59_b8_fa10_fv10_round_pc_clip100_wrap"
+    cfg["calibration"] = {"split": "train", "n_samples": 10000}
+    assert quant_dir_name(cfg) == "e59_train10000_b8_fa10_fv10_round_pc_clip100_wrap_g1"
     cfg["source"]["params"] = "last"
     with pytest.raises(ValueError, match="source.params"):
         quant_dir_name(cfg)
@@ -56,6 +58,13 @@ def test_check_quant_config_unknown_key_raises():
         check_quant_config(cfg)
 
 
+def test_check_quant_config_missing_key_raises():
+    cfg = _cfg("x")
+    del cfg["spec"]["guard_bits"]
+    with pytest.raises(ValueError, match="guard_bits"):
+        check_quant_config(cfg)
+
+
 def test_check_quant_config_missing_section_raises():
     cfg = _cfg("x")
     del cfg["verify"]
@@ -63,50 +72,72 @@ def test_check_quant_config_missing_section_raises():
         check_quant_config(cfg)
 
 
-def test_check_quant_config_bad_granularity_raises():
-    with pytest.raises(ValueError, match="out_granularity"):
-        check_quant_config(_cfg("x", out_granularity="per_layer"))
-
-
-def test_quant_layer_specs_only_last_layer_changes():
-    base = LayerQuantSpec(bits=4, f_a=8, f_V=6, clip_percentile=90.0)
-    specs = quant_layer_specs(base, 3, out_per_channel=False)
-    assert specs[:2] == [base, base]
-    assert specs[2] == base._replace(per_channel=False, fires=False)
+@pytest.mark.parametrize("section, key, value", [
+    ("spec", "out_granularity", "per_layer"),
+    ("calibration", "split", "test"),
+    ("spec", "guard_bits", -1),
+])
+def test_check_quant_config_bad_value_raises(section, key, value):
+    cfg = _cfg("x")
+    cfg[section][key] = value
+    with pytest.raises(ValueError, match=key):
+        check_quant_config(cfg)
 
 
 # ============================================================================
-# B. quantize、check:對真正訓練出的 run 跑
+# B. quantize、check、evaluate:對真正訓練出的 run 跑
 # ============================================================================
+
+def _quantize(reference_run, cfg):
+    exp_dir = reference_run.exp_dir
+    return quantize(cfg, experiments_dir=os.path.dirname(exp_dir))
+
 
 @pytest.fixture(scope="module")
 def quant_dir(reference_run):
-    exp_dir = reference_run.exp_dir
-    return quantize(_cfg(os.path.basename(exp_dir)), experiments_dir=os.path.dirname(exp_dir))
+    return _quantize(reference_run, _cfg(os.path.basename(reference_run.exp_dir)))
+
+
+def _report(quant_dir) -> dict:
+    with open(os.path.join(quant_dir, REPORT_FILENAME), encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
 def test_quantize_writes_folder_under_source_run(reference_run, quant_dir):
     assert quant_dir == os.path.join(reference_run.exp_dir, QUANT_DIRNAME,
-                                     "best_" + spec_name(SPEC))
+                                     "best_val4_" + spec_name(SPEC))
     for name in (MODEL_FILENAME, REFERENCE_FILENAME, REPORT_FILENAME):
         assert os.path.isfile(os.path.join(quant_dir, name))
 
 
 def test_report_matches_reference_and_model(quant_dir):
-    with open(os.path.join(quant_dir, REPORT_FILENAME), encoding="utf-8") as f:
-        report = yaml.safe_load(f)
+    report = _report(quant_dir)
     reference = np.load(os.path.join(quant_dir, REFERENCE_FILENAME))
     model = load_quantized(os.path.join(quant_dir, MODEL_FILENAME))
+    names = [layer.name for layer in model.network.layers]
 
     assert reference["preds"].shape == (8,)
-    assert report["data"]["n_verify"] == 8
+    assert report["data"]["verify"]["n"] == 8
+    assert report["data"]["calibration"] == {"split": "val", "seed": 0, "n": 4}
     assert report["accuracy"] == pytest.approx(np.mean(reference["preds"] == reference["labels"]))
-    assert report["truncated_samples"] == {layer.name: 0 for layer in model.network.layers}
-    assert report["i_V"] == {layer.name: p.i_V for layer, p in zip(model.network.layers,
-                                                                   model.params)}
+    assert report["truncated_samples"] == {name: 0 for name in names}
+    assert report["overflowed_samples"] == {name: int(reference["overflowed"][:, i].sum())
+                                            for i, name in enumerate(names)}
+    assert report["i_V"] == {name: p.i_V for name, p in zip(names, model.params)}
+    assert set(report["headroom_bits"]) == set(names)
     assert model.round_mode is RoundMode.ROUND
     assert [layer.chunk_size for layer in model.network.layers] == [1] * 3
     assert model.params[-1].v_th_int is None
+
+
+def test_guard_bits_add_to_calibrated_i_V(reference_run, quant_dir):
+    """同一份校準,guard_bits 0 跟 1 的 i_V 差 1;report 的 i_V_calibrated 相同。"""
+    no_guard_dir = _quantize(reference_run,
+                             _cfg(os.path.basename(reference_run.exp_dir), guard_bits=0))
+    with_guard, no_guard = _report(quant_dir), _report(no_guard_dir)
+
+    assert with_guard["i_V_calibrated"] == no_guard["i_V_calibrated"] == no_guard["i_V"]
+    assert with_guard["i_V"] == {name: v + 1 for name, v in no_guard["i_V"].items()}
 
 
 def test_check_rerun_matches(quant_dir):
@@ -125,16 +156,26 @@ def test_check_detects_changed_reference(quant_dir, tmp_path):
     assert check(str(changed_dir)) == 1
 
 
+def test_evaluate_val_matches_reference(quant_dir):
+    """val、seed 0、8 筆就是驗證樣本,評估輸出要跟 reference.npz 相同,並寫進 eval/。"""
+    result = evaluate(quant_dir, "val", None, 0)
+    outputs = np.load(os.path.join(quant_dir, EVAL_DIRNAME, "val_outputs.npz"))
+    reference = np.load(os.path.join(quant_dir, REFERENCE_FILENAME))
+
+    assert result["n_samples"] == 8
+    assert os.path.isfile(os.path.join(quant_dir, EVAL_DIRNAME, "val.yaml"))
+    for key in reference.files:
+        np.testing.assert_array_equal(outputs[key], reference[key])
+    assert result["accuracy"] == _report(quant_dir)["accuracy"]
+
+
 def test_quantize_existing_folder_raises(reference_run, quant_dir):
-    exp_dir = reference_run.exp_dir
     with pytest.raises(FileExistsError):
-        quantize(_cfg(os.path.basename(exp_dir)), experiments_dir=os.path.dirname(exp_dir))
+        _quantize(reference_run, _cfg(os.path.basename(reference_run.exp_dir)))
 
 
-def test_quantize_calibration_more_than_verify_raises(reference_run):
-    exp_dir = reference_run.exp_dir
-    cfg = _cfg(os.path.basename(exp_dir), bits=4)
-    cfg["calibration"]["n_samples"] = 6
-    cfg["verify"]["n_samples"] = 5
-    with pytest.raises(ValueError, match="calibration"):
-        quantize(cfg, experiments_dir=os.path.dirname(exp_dir))
+def test_quantize_val_calibration_more_than_val_size_raises(reference_run):
+    cfg = _cfg(os.path.basename(reference_run.exp_dir), bits=4)
+    cfg["calibration"]["n_samples"] = 9
+    with pytest.raises(ValueError, match="val_size"):
+        _quantize(reference_run, cfg)

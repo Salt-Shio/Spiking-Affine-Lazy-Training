@@ -16,6 +16,7 @@ class QuantEventResult(NamedTuple):
     v_final: jax.Array     # int32,這筆事件之後的暫存器值;fire 時是 0
     is_spiked: jax.Array   # bool
     overflowed: jax.Array  # bool,寫回之前的真實值有沒有超出 i_V+f_V 位元
+    v_unfitted: jax.Array  # int32,寫回之前的真實值(溢位處理、fire 之前)
 
 
 def process_event(v0_int: jax.Array, a_int: jax.Array, is_identity: jax.Array,
@@ -44,10 +45,11 @@ def process_event(v0_int: jax.Array, a_int: jax.Array, is_identity: jax.Array,
 
     if v_th_int is None:
         return QuantEventResult(v_final=fitted, is_spiked=jnp.zeros_like(fitted, dtype=bool),
-                                overflowed=overflowed)
+                                overflowed=overflowed, v_unfitted=v_unfitted)
     is_spiked = fitted >= jnp.asarray(v_th_int, dtype=jnp.int32)
     v_final = jnp.where(is_spiked, jnp.zeros_like(fitted), fitted)
-    return QuantEventResult(v_final=v_final, is_spiked=is_spiked, overflowed=overflowed)
+    return QuantEventResult(v_final=v_final, is_spiked=is_spiked, overflowed=overflowed,
+                            v_unfitted=v_unfitted)
 
 
 class QuantLayerResult(NamedTuple):
@@ -56,6 +58,8 @@ class QuantLayerResult(NamedTuple):
     spike_event_idx: jax.Array  # (n, queue_len) int32,佇列欄位,跟 FloatLayerResult 同一個慣例
     v_final: jax.Array          # (n,) int32 暫存器值;QuantBackend.readout 之後是物理尺度 float32
     overflowed: jax.Array       # (n, queue_len) bool,這一步寫回之前的值有沒有超出 i_V + f_V 位元
+    v_unfitted_min: jax.Array   # (n,) int32,所有步寫回之前的真實值跟初始值 0 裡最小的;算暫存器餘裕用
+    v_unfitted_max: jax.Array   # (n,) int32,同上,最大的
 
 
 def run_layer(a_int: jax.Array, is_identity: jax.Array, q_int: jax.Array,
@@ -103,21 +107,25 @@ def _run_layer_scan(a_int: jax.Array, is_identity: jax.Array, q_int: jax.Array,
                                 round_mode=round_mode, overflow_mode=overflow_mode)
     vmapped_step = jax.vmap(step_fn)
 
-    def step(v, t):
+    def step(carry, t):
+        v, v_min, v_max = carry
         step_result = vmapped_step(v, a_int[:, t], is_identity[:, t], q_int[:, t], v_th_arr)
         ys = (step_result.is_spiked, step_result.overflowed)
         if trace:
             ys = ys + (step_result.v_final,)
-        return step_result.v_final, ys
+        return (step_result.v_final, jnp.minimum(v_min, step_result.v_unfitted),
+                jnp.maximum(v_max, step_result.v_unfitted)), ys
 
-    v_final, ys = jax.lax.scan(step, jnp.zeros(n_out_neurons, dtype=jnp.int32),
-                               jnp.arange(queue_len))
+    zeros = jnp.zeros(n_out_neurons, dtype=jnp.int32)
+    (v_final, v_unfitted_min, v_unfitted_max), ys = jax.lax.scan(
+        step, (zeros, zeros, zeros), jnp.arange(queue_len))
     spike_mask, overflowed = ys[0], ys[1]
 
     # scan 疊出來是 (queue_len, n),轉成 (n, queue_len)
     spike_event_idx = jnp.broadcast_to(jnp.arange(queue_len), (n_out_neurons, queue_len))
     result = QuantLayerResult(spike_mask=spike_mask.T, spike_event_idx=spike_event_idx,
-                                   v_final=v_final, overflowed=overflowed.T)
+                              v_final=v_final, overflowed=overflowed.T,
+                              v_unfitted_min=v_unfitted_min, v_unfitted_max=v_unfitted_max)
     if not trace:
         return result, None
     v_steps = ys[2]

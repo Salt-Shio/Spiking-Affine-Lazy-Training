@@ -1,5 +1,5 @@
 # 量化實驗:python -m example.quantize configs/quant/baseline.yaml
-# 輸出到 experiments/<source.run>/quant/<權重來源>_<規格名>/,名字由 source.params 跟 spec 自動組成。
+# 輸出到 experiments/<source.run>/quant/<資料夾名>/,名字由 source.params、calibration、spec 自動組成。
 # 規格跟 example/analysis/golden_output.py 的 QUANT_SPEC 相同。
 
 source:
@@ -7,7 +7,8 @@ source:
   params: best                     # best、final,或 epoch 編號(weights/epoch_XXX.npz)
 
 calibration:
-  n_samples: 50                    # 量膜電位範圍 M 用 val 的前幾筆
+  split: val                       # 量膜電位範圍 M 用哪個 split:val 或 train(seed 照來源 run)
+  n_samples: 50                    # 用前幾筆;val 不能超過來源 run 的 val_size
 
 verify:
   n_samples: null                  # 跑幾筆 val 存成參考輸出;null 是 run 的整個 val
@@ -20,3 +21,4 @@ spec:
   out_granularity: per_channel     # 輸出層的 s_c:per_channel 或 per_tensor;其他層固定逐 channel
   clip_percentile: 100             # 權重截斷門檻取 |w| 的第幾百分位,100 = 不截斷
   overflow_mode: wrap              # 暫存器溢位:wrap 或 saturate
+  guard_bits: 0                    # 保護位元:每層 i_V 在校準算出的值上再加幾個位元
