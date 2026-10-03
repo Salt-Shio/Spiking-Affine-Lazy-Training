@@ -22,7 +22,7 @@
   - i_V 要用多少樣本量膜電位範圍。2026-09-27 實測:b=8、f_a=10、f_V=10,用 val 前 50 筆量範圍算出 i_V
     (conv1 12、conv2 14、out 14),跑滿 val 2000 筆後 conv1、out 各有 1 筆暫存器溢位(繞回)。驗證溢位時
     用的是量範圍的同一批樣本,看不到這種情況;要決定量範圍用多少樣本、驗證要不要換一批。
-- **量化實驗資料夾(進行中,2026-10-03 定案)。** 量化模型要像浮點版一樣有自己的一份實驗結果:只靠這份
+- **量化實驗資料夾(1~8 已實作,commit 955fc2e,等使用者確認好用再刪這項)。** 量化模型要像浮點版一樣有自己的一份實驗結果:只靠這份
   就能獨立重跑,附逐筆參考輸出,之後拿來比對 FPGA 的執行結果。FPGA 檔案格式不在這次範圍(見最後一節)。
   1. `salt_core/io.py` 加 `save_quantized` / `load_quantized`:網路描述、每層 `QuantizedLayerParams`
      原樣(逐神經元)、`round_mode`、呼叫端給的中繼資料,存成一個 npz。測試:存讀逐值相等、讀回來
@@ -42,6 +42,16 @@
      val 2000 筆實測逐位元相同。
   8. `python -m example.quantize --eval <量化資料夾> --which test`:在沒用過的資料上跑,寫進資料夾的
      `eval/`(準確率、溢位筆數跟位置、餘裕、最少要加幾 bits),檢驗餘裕夠不夠。
+- **膜電位暫存器 i_V 太大,想縮小(2026-10-03 提出,還沒開始)。** 目前選的
+  `best_val50_b8_fa6_fv6_round_pc_clip100_wrap_g1`:i_V conv1 13、conv2 15、out 15,暫存器 19/21/21 bits;
+  val 0.9270、test 10000 筆 0.9236、0 溢位、餘裕約 1 bit。i_V ≈ log2(v_th/s_c) + log2(M/v_th) + 2(+ guard):
+  - 第一段是權重 8 bits 讓整數單位很細:conv1 5.6~7.0 bits、conv2 5.4~6.6 bits。
+  - 第二段是負膜電位沒有下限:conv1 4.25 bits(M=19)、conv2 6.56 bits(M=94)。負值是常態,不是極端:
+    conv2 中位數 −7.86,82% 的時間 < −v_th,50% 的時間 < −8 v_th(val 200 筆、所有事件步)。
+  候選方向(使用者要另開 session 自由試):
+  - A. 降權重位元 b(6、5、4,搭配 clip 90):用 `configs/quant/` 直接試,看 i_V + f_V 總寬度跟 test 準確率。
+  - B. 負膜電位設下限(例如 V ≥ −4 v_th):省 conv1 約 2、conv2 約 4.5 bits,但改變模型行為(conv2 65% 時間
+    < −4 v_th),要浮點訓練、整數模擬、FPGA 三邊一起加,要重新訓練。先寫推導跟方案給使用者看再動手。
 - **`max_queue_len` 只長不縮。** firing rate 訓練中單調下降(見 [`問題紀錄.md`](問題紀錄.md)
   「決策:firing rate 訓練過程單調下降,判斷不是問題、不處理」)→ 下游事件變少 → 佇列需求
   `LayerDiag.needed["max_queue_len"]` 掉,max_queue_len 有收縮空間,偵測訊號現成。要做成有 hysteresis 的啟發式
