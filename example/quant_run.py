@@ -15,7 +15,7 @@ from salt_core.network import InputEvents, Network
 from salt_core.quant.backend import QuantBackend
 from salt_core.quant.calibrate import merge_v_ranges, v_abs_max_per_channel, v_range_per_channel
 from salt_core.quant.convert import LayerQuantSpec
-from salt_core.quant.fixed_point import RoundMode
+from salt_core.quant.fixed_point import OverflowMode, RoundMode
 
 # overflow_events 最多列幾筆,其餘只算進筆數
 MAX_OVERFLOW_EVENTS = 50
@@ -217,14 +217,23 @@ def overflow_events(network: Network, params, round_mode: RoundMode | str, raw: 
 def overflow_summary(network: Network, decoder, params, round_mode: RoundMode | str,
                      raw: InputEvents, batch_size: int, policies: dict,
                      out: QuantSplitOutput) -> dict:
-    """report 用的溢位分析:每層溢位筆數、餘裕、最少要加幾位元、溢位位置。"""
+    """report 用的溢位分析:每層溢位筆數、餘裕、最少要加幾位元、溢位位置。
+
+    有層用飽和時只回傳溢位筆數(飽和過的樣本數)跟餘裕:飽和是刻意讓暫存器變窄,
+    每筆樣本都會碰到上下限,最少要加幾位元、溢位位置沒有意義。
+    """
     names = [layer.name for layer in network.layers]
-    extra, rounds = min_extra_bits(network, decoder, params, round_mode, raw, batch_size,
-                                   policies, out)
-    return {
+    summary = {
         "overflowed_samples": {name: int(out.overflowed[:, i].sum())
                                for i, name in enumerate(names)},
         "headroom_bits": dict(zip(names, headroom_bits(params, out))),
+    }
+    if any(OverflowMode(p.overflow_mode) is OverflowMode.SATURATE for p in params):
+        return summary
+    extra, rounds = min_extra_bits(network, decoder, params, round_mode, raw, batch_size,
+                                   policies, out)
+    return {
+        **summary,
         "min_extra_bits": dict(zip(names, extra)),
         "min_extra_bits_rounds": rounds,
         "overflow_events": overflow_events(network, params, round_mode, raw, out),

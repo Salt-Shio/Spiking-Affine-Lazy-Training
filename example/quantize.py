@@ -1,6 +1,7 @@
 """量化實驗:浮點 run 的權重照量化規格轉成整數模型,跑滿驗證樣本,存成可以獨立重跑的資料夾。
 
-產生:讀來源 run 的權重 -> 校準樣本量膜電位範圍 M -> 算每層量化參數(i_V 加 guard_bits)->
+產生:讀來源 run 的權重 -> 校準樣本量膜電位範圍 M -> 算每層量化參數(i_V 加 guard_bits,
+    或直接用 spec.i_V)->
     跑驗證樣本(容量出界就放大重跑)-> 寫 experiments/<來源 run>/quant/<資料夾名>/。
 檢查:只讀量化資料夾跟資料集,重跑驗證樣本,逐筆比對 reference.npz。有不同就回傳非 0。
 評估:只讀量化資料夾跟資料集,在 test(或 val)上跑,寫進資料夾的 eval/。
@@ -48,7 +49,7 @@ _SECTION_KEYS = {
     "calibration": {"split", "n_samples"},
     "verify": {"n_samples"},
     "spec": {"bits", "f_a", "f_V", "round_mode", "out_granularity", "clip_percentile",
-             "overflow_mode", "guard_bits"},
+             "overflow_mode", "guard_bits", "i_V"},
 }
 _OUT_GRANULARITIES = ("per_channel", "per_tensor")
 _CALIBRATION_SPLITS = ("val", "train")
@@ -60,7 +61,8 @@ _CALIBRATION_SPLITS = ("val", "train")
 
 def check_quant_config(cfg: dict) -> None:
     """config 缺節、缺 key、有不認得的 key、out_granularity 或 calibration.split 不合法、
-    guard_bits 是負數時 raise ValueError。"""
+    guard_bits 是負數、i_V 不是 null 也不是 {層名: 正整數}、或給了 i_V 但 guard_bits 不是 0 時
+    raise ValueError。i_V 的層名要對得上網路,產生時才檢查。"""
     unknown = sorted(set(cfg) - set(_SECTION_KEYS))
     if unknown:
         raise ValueError(f"config 最外層有不認得的 key:{unknown},認得的是 {sorted(_SECTION_KEYS)}")
@@ -79,14 +81,25 @@ def check_quant_config(cfg: dict) -> None:
                          f"拿到 {cfg['calibration']['split']!r}")
     if int(cfg["spec"]["guard_bits"]) < 0:
         raise ValueError(f"spec.guard_bits 不能是負數,拿到 {cfg['spec']['guard_bits']}")
+    i_V = cfg["spec"]["i_V"]
+    if i_V is None:
+        return
+    if not isinstance(i_V, dict) or not all(isinstance(v, int) and not isinstance(v, bool)
+                                            and v >= 1 for v in i_V.values()):
+        raise ValueError(f"spec.i_V 要是 null 或 {{層名: 正整數}},拿到 {i_V!r}")
+    if int(cfg["spec"]["guard_bits"]) != 0:
+        raise ValueError("spec.i_V 直接指定暫存器寬度時 guard_bits 要是 0,"
+                         f"拿到 {cfg['spec']['guard_bits']}")
 
 
 def spec_name(spec: dict) -> str:
-    """規格組成的名字,例如 b8_fa10_fv10_round_pc_clip100_wrap_g1。"""
+    """規格組成的名字,例如 b8_fa10_fv10_round_pc_clip100_wrap_g1;
+    直接指定 i_V 時結尾換成 i_V,例如 b7_fa6_fv0_round_pc_clip100_saturate_iv9-11-11。"""
     granularity = "pc" if spec["out_granularity"] == "per_channel" else "pt"
+    register = (f"g{spec['guard_bits']}" if spec["i_V"] is None
+                else "iv" + "-".join(str(v) for v in spec["i_V"].values()))
     return (f"b{spec['bits']}_fa{spec['f_a']}_fv{spec['f_V']}_{spec['round_mode']}_"
-            f"{granularity}_clip{spec['clip_percentile']:g}_{spec['overflow_mode']}_"
-            f"g{spec['guard_bits']}")
+            f"{granularity}_clip{spec['clip_percentile']:g}_{spec['overflow_mode']}_{register}")
 
 
 def _source_tag(which) -> str:
@@ -153,15 +166,46 @@ def _split_of(data_meta: dict, part: str) -> NMNISTSplit:
 
 
 def _build_params(network: Network, float_params, spec_cfg: dict,
-                  v_abs_max: list[np.ndarray]) -> list:
-    """照 config 的 spec 節算每層的 QuantizedLayerParams,i_V 再加 guard_bits。"""
+                  v_abs_max: list[np.ndarray]) -> tuple[list, list[int]]:
+    """照 config 的 spec 節算每層的 QuantizedLayerParams。
+
+    回傳 (params, 校準算出的每層 i_V)。params 的 i_V:spec.i_V 是 null 時是校準值加 guard_bits,
+    否則直接用 spec.i_V。spec.i_V 的層名對不上網路、或會 fire 的層暫存器上限低於門檻
+    (永遠不會 fire)時 raise ValueError。
+    """
     base = LayerQuantSpec(bits=spec_cfg["bits"], f_a=spec_cfg["f_a"], f_V=spec_cfg["f_V"],
                           clip_percentile=float(spec_cfg["clip_percentile"]),
                           overflow_mode=spec_cfg["overflow_mode"])
     specs = quant_layer_specs(base, len(network.layers),
                               out_per_channel=spec_cfg["out_granularity"] == "per_channel")
     params = build_quantized_params(network.layers, float_params, specs, v_abs_max)
-    return with_extra_i_V(params, [int(spec_cfg["guard_bits"])] * len(params))
+    calibrated = [int(p.i_V) for p in params]
+    if spec_cfg["i_V"] is None:
+        params = with_extra_i_V(params, [int(spec_cfg["guard_bits"])] * len(params))
+    else:
+        params = _with_given_i_V(network, params, spec_cfg["i_V"])
+    _check_register_reaches_threshold(network, params)
+    return params, calibrated
+
+
+def _with_given_i_V(network: Network, params: list, given: dict) -> list:
+    """每層的 i_V 換成 given[層名]。層名跟網路對不上時 raise ValueError。"""
+    names = [layer.name for layer in network.layers]
+    if set(given) != set(names):
+        raise ValueError(f"spec.i_V 的層名要是 {names},拿到 {list(given)}")
+    return [p._replace(i_V=int(given[name])) for p, name in zip(params, names)]
+
+
+def _check_register_reaches_threshold(network: Network, params: list) -> None:
+    """會 fire 的層,暫存器最大值要到得了門檻,否則 raise ValueError。"""
+    for layer, p in zip(network.layers, params):
+        if p.v_th_int is None:
+            continue
+        register_max = (1 << (p.i_V + p.f_V - 1)) - 1
+        v_th_max = int(np.max(np.asarray(p.v_th_int)))
+        if register_max < v_th_max:
+            raise ValueError(f"{layer.name} 的暫存器最大值 {register_max} 低於門檻 {v_th_max},"
+                             f"永遠不會 fire;i_V={p.i_V} 太小")
 
 
 def _capacity(network: Network) -> dict:
@@ -169,16 +213,17 @@ def _capacity(network: Network) -> dict:
             if layer.capacity is not None}
 
 
-def _report(metadata: dict, network: Network, params: list, out: QuantSplitOutput,
-            labels: np.ndarray, float_accuracy: float, n_regrow: int, overflow: dict) -> dict:
-    """report.yaml 的內容。overflow 是 overflow_summary 的回傳。"""
+def _report(metadata: dict, network: Network, params: list, calibrated_i_V: list[int],
+            out: QuantSplitOutput, labels: np.ndarray, float_accuracy: float, n_regrow: int,
+            overflow: dict) -> dict:
+    """report.yaml 的內容。calibrated_i_V 是 _build_params 回傳的校準值;
+    overflow 是 overflow_summary 的回傳。"""
     names = [layer.name for layer in network.layers]
-    guard_bits = int(metadata["spec"]["guard_bits"])
     return {
         "source": metadata["source"],
         "spec": metadata["spec"],
         "data": metadata["data"],
-        "i_V_calibrated": {name: int(p.i_V) - guard_bits for name, p in zip(names, params)},
+        "i_V_calibrated": dict(zip(names, calibrated_i_V)),
         "i_V": {name: int(p.i_V) for name, p in zip(names, params)},
         "register_bits": {name: int(p.i_V + p.f_V) for name, p in zip(names, params)},
         "accuracy": float(np.mean(out.preds == labels)),
@@ -220,7 +265,7 @@ def quantize(cfg: dict, experiments_dir: str | os.PathLike = EXPERIMENTS_DIR) ->
         [layer.with_chunk_size(1) for layer in float_network.layers])
     calibration_raw = split_input_events(_split_of(data_meta, "calibration"), network.input_shape)
     v_abs_max = calibrate_v_abs_max(network, float_params, calibration_raw, batch_size)
-    quant_params = _build_params(network, float_params, spec_cfg, v_abs_max)
+    quant_params, calibrated_i_V = _build_params(network, float_params, spec_cfg, v_abs_max)
 
     split = _split_of(data_meta, "verify")
     raw = split_input_events(split, network.input_shape)
@@ -248,8 +293,9 @@ def quantize(cfg: dict, experiments_dir: str | os.PathLike = EXPERIMENTS_DIR) ->
                    spec_cfg["round_mode"], metadata)
     np.savez(os.path.join(out_dir, REFERENCE_FILENAME), labels=labels, **reference_arrays(out))
     with open(os.path.join(out_dir, REPORT_FILENAME), "w", encoding="utf-8") as f:
-        yaml.safe_dump(_report(metadata, network, quant_params, out, labels, float_accuracy,
-                               n_regrow, overflow), f, allow_unicode=True, sort_keys=False)
+        yaml.safe_dump(_report(metadata, network, quant_params, calibrated_i_V, out, labels,
+                               float_accuracy, n_regrow, overflow),
+                       f, allow_unicode=True, sort_keys=False)
     return out_dir
 
 

@@ -18,7 +18,7 @@ from salt_core.io import load_quantized
 from salt_core.quant.fixed_point import RoundMode
 
 SPEC = {"bits": 8, "f_a": 10, "f_V": 10, "round_mode": "round", "out_granularity": "per_channel",
-        "clip_percentile": 100, "overflow_mode": "wrap", "guard_bits": 1}
+        "clip_percentile": 100, "overflow_mode": "wrap", "guard_bits": 1, "i_V": None}
 
 
 def _cfg(run: str, **spec_overrides) -> dict:
@@ -38,6 +38,9 @@ def test_spec_name():
     assert spec_name({**SPEC, "out_granularity": "per_tensor", "clip_percentile": 99.5,
                       "round_mode": "truncate", "guard_bits": 0}) == \
         "b8_fa10_fv10_truncate_pt_clip99.5_wrap_g0"
+    assert spec_name({**SPEC, "overflow_mode": "saturate", "guard_bits": 0,
+                      "i_V": {"conv1": 9, "conv2": 11, "out": 11}}) == \
+        "b8_fa10_fv10_round_pc_clip100_saturate_iv9-11-11"
 
 
 def test_quant_dir_name_has_weight_source_and_calibration():
@@ -76,11 +79,19 @@ def test_check_quant_config_missing_section_raises():
     ("spec", "out_granularity", "per_layer"),
     ("calibration", "split", "test"),
     ("spec", "guard_bits", -1),
+    ("spec", "i_V", {"conv1": 0}),
+    ("spec", "i_V", 9),
 ])
 def test_check_quant_config_bad_value_raises(section, key, value):
     cfg = _cfg("x")
     cfg[section][key] = value
     with pytest.raises(ValueError, match=key):
+        check_quant_config(cfg)
+
+
+def test_check_quant_config_i_V_with_guard_bits_raises():
+    cfg = _cfg("x", i_V={"conv1": 9})
+    with pytest.raises(ValueError, match="guard_bits"):
         check_quant_config(cfg)
 
 
@@ -178,4 +189,38 @@ def test_quantize_val_calibration_more_than_val_size_raises(reference_run):
     cfg = _cfg(os.path.basename(reference_run.exp_dir), bits=4)
     cfg["calibration"]["n_samples"] = 9
     with pytest.raises(ValueError, match="val_size"):
+        _quantize(reference_run, cfg)
+
+
+def test_given_i_V_replaces_calibrated(reference_run, quant_dir):
+    """直接指定 i_V:暫存器用指定值,report 的 i_V_calibrated 照樣是校準值;
+    飽和模式不算最少要加幾位元、溢位位置。"""
+    calibrated = _report(quant_dir)["i_V_calibrated"]
+    given = {name: v - 1 for name, v in calibrated.items()}
+    given_dir = _quantize(reference_run, _cfg(os.path.basename(reference_run.exp_dir),
+                                              overflow_mode="saturate", guard_bits=0, i_V=given))
+    report = _report(given_dir)
+    model = load_quantized(os.path.join(given_dir, MODEL_FILENAME))
+
+    assert os.path.basename(given_dir).endswith(
+        "_saturate_iv" + "-".join(str(v) for v in given.values()))
+    assert report["i_V"] == given
+    assert [p.i_V for p in model.params] == list(given.values())
+    assert report["i_V_calibrated"] == calibrated
+    assert set(report["headroom_bits"]) == set(given)
+    assert "min_extra_bits" not in report and "overflow_events" not in report
+
+
+def test_given_i_V_wrong_layer_names_raises(reference_run):
+    cfg = _cfg(os.path.basename(reference_run.exp_dir), guard_bits=0, i_V={"conv": 9})
+    with pytest.raises(ValueError, match="層名"):
+        _quantize(reference_run, cfg)
+
+
+def test_register_below_threshold_raises(reference_run, quant_dir):
+    """f_V=0、i_V=1:暫存器最大值是 0,到不了門檻,永遠不會 fire。"""
+    names = list(_report(quant_dir)["i_V"])
+    cfg = _cfg(os.path.basename(reference_run.exp_dir), f_V=0, guard_bits=0,
+               i_V={name: 1 for name in names})
+    with pytest.raises(ValueError, match="不會 fire"):
         _quantize(reference_run, cfg)

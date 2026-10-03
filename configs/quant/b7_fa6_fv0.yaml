@@ -1,6 +1,6 @@
-# 量化實驗:python -m example.quantize configs/quant/baseline.yaml
+# 量化實驗:python -m example.quantize configs/quant/b7_fa6_fv0.yaml
 # 輸出到 experiments/<source.run>/quant/<資料夾名>/,名字由 source.params、calibration、spec 自動組成。
-# 規格跟 example/analysis/golden_output.py 的 QUANT_SPEC 相同。
+# 沒飽和版:暫存器繞回,i_V 用校準值加 1 個保護位元。飽和版見 b7_fa6_fv0_sat.yaml,權重碼相同。
 
 source:
   run: scale_10k_20260919_050446   # experiments/ 底下的資料夾名
@@ -14,12 +14,12 @@ verify:
   n_samples: null                  # 跑幾筆 val 存成參考輸出;null 是 run 的整個 val
 
 spec:
-  bits: 8                          # 權重碼位元數
-  f_a: 10                          # 衰減碼小數位元
-  f_V: 10                          # 膜電位暫存器小數位元
+  bits: 7                          # 權重碼位元數
+  f_a: 6                           # 衰減碼小數位元
+  f_V: 0                           # 膜電位暫存器小數位元
   round_mode: round                # round 或 truncate
   out_granularity: per_channel     # 輸出層的 s_c:per_channel 或 per_tensor;其他層固定逐 channel
   clip_percentile: 100             # 權重截斷門檻取 |w| 的第幾百分位,100 = 不截斷
   overflow_mode: wrap              # 暫存器溢位:wrap 或 saturate
-  guard_bits: 0                    # 保護位元:每層 i_V 在校準算出的值上再加幾個位元
+  guard_bits: 1                    # 保護位元:每層 i_V 在校準算出的值上再加幾個位元
   i_V: null                        # 直接指定每層 i_V({層名: 值},guard_bits 要是 0);null 是校準值加 guard_bits

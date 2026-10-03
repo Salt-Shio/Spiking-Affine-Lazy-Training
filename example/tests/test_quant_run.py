@@ -32,7 +32,7 @@ def setup(reference_run):
            "verify": {"n_samples": None},
            "spec": {"bits": 8, "f_a": 8, "f_V": 4, "round_mode": "round",
                     "out_granularity": "per_channel", "clip_percentile": 100,
-                    "overflow_mode": "wrap", "guard_bits": 0}}
+                    "overflow_mode": "wrap", "guard_bits": 0, "i_V": None}}
     model = load_quantized(os.path.join(quantize(cfg, experiments_dir=os.path.dirname(exp_dir)),
                                         MODEL_FILENAME))
     data_cfg = load_run_record(exp_dir)["config"]["data"]
