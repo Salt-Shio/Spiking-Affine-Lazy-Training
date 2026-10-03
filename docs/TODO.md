@@ -22,6 +22,18 @@
   - i_V 要用多少樣本量膜電位範圍。2026-09-27 實測:b=8、f_a=10、f_V=10,用 val 前 50 筆量範圍算出 i_V
     (conv1 12、conv2 14、out 14),跑滿 val 2000 筆後 conv1、out 各有 1 筆暫存器溢位(繞回)。驗證溢位時
     用的是量範圍的同一批樣本,看不到這種情況;要決定量範圍用多少樣本、驗證要不要換一批。
+- **量化實驗資料夾(進行中,2026-10-03 定案)。** 量化模型要像浮點版一樣有自己的一份實驗結果:只靠這份
+  就能獨立重跑,附逐筆參考輸出,之後拿來比對 FPGA 的執行結果。FPGA 檔案格式不在這次範圍(見最後一節)。
+  1. `salt_core/io.py` 加 `save_quantized` / `load_quantized`:網路描述、每層 `QuantizedLayerParams`
+     原樣(逐神經元)、`round_mode`、呼叫端給的中繼資料,存成一個 npz。測試:存讀逐值相等、讀回來
+     forward 逐位元相同。
+  2. 新入口 `python -m example.quantize configs/quant/<x>.yaml`:讀來源 run 的權重 → 量 M → 算參數 →
+     跑滿驗證 split(預設整個 val)→ 容量出界就放大重跑 → 寫 `experiments/<來源 run>/quant/<規格名>/`
+     的 `model.npz`、`reference.npz`(逐筆預測、輸出層暫存器值、每層 spike 數、溢位、出界)、`report.yaml`。
+     規格名由規格自動組成,例如 `b8_fa10_fv10_round_pc_clip100`。
+  3. `python -m example.quantize --check <量化資料夾>`:只讀這個資料夾跟資料集,重跑並逐筆比對 `reference.npz`。
+  4. `golden_output.py` 的量 M、量化 forward 改用第 2 項的共用函式;改完 `compare_quant` 要 0 差異。
+  5. `membrane_quantization` notebook 第 5 步的溢位驗證改用 `VERIFY_N_SAMPLES`(預設整個 val)。
 - **`max_queue_len` 只長不縮。** firing rate 訓練中單調下降(見 [`問題紀錄.md`](問題紀錄.md)
   「決策:firing rate 訓練過程單調下降,判斷不是問題、不處理」)→ 下游事件變少 → 佇列需求
   `LayerDiag.needed["max_queue_len"]` 掉,max_queue_len 有收縮空間,偵測訊號現成。要做成有 hysteresis 的啟發式
