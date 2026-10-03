@@ -34,6 +34,14 @@
   3. `python -m example.quantize --check <量化資料夾>`:只讀這個資料夾跟資料集,重跑並逐筆比對 `reference.npz`。
   4. `golden_output.py` 的量 M、量化 forward 改用第 2 項的共用函式;改完 `compare_quant` 要 0 差異。
   5. `membrane_quantization` notebook 第 5 步的溢位驗證改用 `VERIFY_N_SAMPLES`(預設整個 val)。
+  6. 餘裕(2026-10-03 定案):原本 i_V 剛好裝下校準樣本的最大值,沒留餘裕,val 2000 筆就有 2 筆溢位。
+     spec 加 `guard_bits`(每層 i_V 加 g,建議先用 1);`calibration.split` 可選 val 或 train(用更多樣本量 M);
+     資料夾名加上校準來源跟 g。溢位改飽和(`overflow_mode: saturate`)原本就有,暫不用。
+  7. report 加:每層實測峰值跟餘裕(bits)、溢位位置(樣本、層、channel、位置、時間、溢位前後的值)、
+     最少要加幾 bits(溢位的層 +1 重跑,只看實際溢位旗標,直到 0 筆)。i_V 開大不改變沒溢位樣本的結果,
+     val 2000 筆實測逐位元相同。
+  8. `python -m example.quantize --eval <量化資料夾> --which test`:在沒用過的資料上跑,寫進資料夾的
+     `eval/`(準確率、溢位筆數跟位置、餘裕、最少要加幾 bits),檢驗餘裕夠不夠。
 - **`max_queue_len` 只長不縮。** firing rate 訓練中單調下降(見 [`問題紀錄.md`](問題紀錄.md)
   「決策:firing rate 訓練過程單調下降,判斷不是問題、不處理」)→ 下游事件變少 → 佇列需求
   `LayerDiag.needed["max_queue_len"]` 掉,max_queue_len 有收縮空間,偵測訊號現成。要做成有 hysteresis 的啟發式
