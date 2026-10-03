@@ -1,6 +1,6 @@
 """example/quantize.py。
 
-- spec_name、check_quant_config、quant_layer_specs:小例子。
+- spec_name、quant_dir_name、check_quant_config、quant_layer_specs:小例子。
 - quantize、check:對共用的參考訓練(conftest.py 的 reference_run)產生量化資料夾,
   報告跟參考輸出要一致,check 重跑要逐筆相同;參考輸出被改過時 check 要抓到。
 """
@@ -11,7 +11,8 @@ import pytest
 import yaml
 
 from example.quantize import (MODEL_FILENAME, QUANT_DIRNAME, REFERENCE_FILENAME, REPORT_FILENAME,
-                              check, check_quant_config, quant_layer_specs, quantize, spec_name)
+                              check, check_quant_config, quant_dir_name, quant_layer_specs, quantize,
+                              spec_name)
 from salt_core.io import load_quantized
 from salt_core.quant.convert import LayerQuantSpec
 from salt_core.quant.fixed_point import RoundMode
@@ -36,6 +37,16 @@ def test_spec_name():
     assert spec_name(SPEC) == "b8_fa10_fv10_round_pc_clip100_wrap"
     assert spec_name({**SPEC, "out_granularity": "per_tensor", "clip_percentile": 99.5,
                       "round_mode": "truncate"}) == "b8_fa10_fv10_truncate_pt_clip99.5_wrap"
+
+
+def test_quant_dir_name_prefixes_weight_source():
+    cfg = _cfg("x")
+    assert quant_dir_name(cfg) == "best_b8_fa10_fv10_round_pc_clip100_wrap"
+    cfg["source"]["params"] = 59
+    assert quant_dir_name(cfg) == "e59_b8_fa10_fv10_round_pc_clip100_wrap"
+    cfg["source"]["params"] = "last"
+    with pytest.raises(ValueError, match="source.params"):
+        quant_dir_name(cfg)
 
 
 def test_check_quant_config_unknown_key_raises():
@@ -75,7 +86,8 @@ def quant_dir(reference_run):
 
 
 def test_quantize_writes_folder_under_source_run(reference_run, quant_dir):
-    assert quant_dir == os.path.join(reference_run.exp_dir, QUANT_DIRNAME, spec_name(SPEC))
+    assert quant_dir == os.path.join(reference_run.exp_dir, QUANT_DIRNAME,
+                                     "best_" + spec_name(SPEC))
     for name in (MODEL_FILENAME, REFERENCE_FILENAME, REPORT_FILENAME):
         assert os.path.isfile(os.path.join(quant_dir, name))
 

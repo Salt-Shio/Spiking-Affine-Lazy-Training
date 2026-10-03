@@ -1,6 +1,6 @@
-# 量化實驗:python -m example.quantize configs/quant/baseline.yaml
+# 量化實驗:python -m example.quantize configs/quant/b8_fa6_fv6.yaml
 # 輸出到 experiments/<source.run>/quant/<權重來源>_<規格名>/,名字由 source.params 跟 spec 自動組成。
-# 規格跟 example/analysis/golden_output.py 的 QUANT_SPEC 相同。
+# 規格是 notebook membrane_quantization 掃描挑出的那組(用 epoch 59 權重挑的,這裡改用 best)。
 
 source:
   run: scale_10k_20260919_050446   # experiments/ 底下的資料夾名
@@ -14,8 +14,8 @@ verify:
 
 spec:
   bits: 8                          # 權重碼位元數
-  f_a: 10                          # 衰減碼小數位元
-  f_V: 10                          # 膜電位暫存器小數位元
+  f_a: 6                           # 衰減碼小數位元
+  f_V: 6                           # 膜電位暫存器小數位元
   round_mode: round                # round 或 truncate
   out_granularity: per_channel     # 輸出層的 s_c:per_channel 或 per_tensor;其他層固定逐 channel
   clip_percentile: 100             # 權重截斷門檻取 |w| 的第幾百分位,100 = 不截斷

@@ -28,9 +28,9 @@
      原樣(逐神經元)、`round_mode`、呼叫端給的中繼資料,存成一個 npz。測試:存讀逐值相等、讀回來
      forward 逐位元相同。
   2. 新入口 `python -m example.quantize configs/quant/<x>.yaml`:讀來源 run 的權重 → 量 M → 算參數 →
-     跑滿驗證 split(預設整個 val)→ 容量出界就放大重跑 → 寫 `experiments/<來源 run>/quant/<規格名>/`
+     跑滿驗證 split(預設整個 val)→ 容量出界就放大重跑 → 寫 `experiments/<來源 run>/quant/<權重來源>_<規格名>/`
      的 `model.npz`、`reference.npz`(逐筆預測、輸出層暫存器值、每層 spike 數、溢位、出界)、`report.yaml`。
-     規格名由規格自動組成,例如 `b8_fa10_fv10_round_pc_clip100`。
+     資料夾名由權重來源跟規格自動組成,例如 `best_b8_fa10_fv10_round_pc_clip100_wrap`。
   3. `python -m example.quantize --check <量化資料夾>`:只讀這個資料夾跟資料集,重跑並逐筆比對 `reference.npz`。
   4. `golden_output.py` 的量 M、量化 forward 改用第 2 項的共用函式;改完 `compare_quant` 要 0 差異。
   5. `membrane_quantization` notebook 第 5 步的溢位驗證改用 `VERIFY_N_SAMPLES`(預設整個 val)。

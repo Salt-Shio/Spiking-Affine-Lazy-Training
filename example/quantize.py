@@ -1,12 +1,12 @@
 """量化實驗:浮點 run 的權重照量化規格轉成整數模型,跑滿驗證樣本,存成可以獨立重跑的資料夾。
 
 產生:讀來源 run 的權重 -> val 前幾筆量膜電位範圍 M -> 算每層量化參數 -> 跑驗證樣本
-    (容量出界就放大重跑)-> 寫 experiments/<來源 run>/quant/<規格名>/。
+    (容量出界就放大重跑)-> 寫 experiments/<來源 run>/quant/<權重來源>_<規格名>/。
 檢查:只讀量化資料夾跟資料集,重跑驗證樣本,逐筆比對 reference.npz。有不同就回傳非 0。
 
 用法(路徑相對於 repo 根目錄,或給絕對路徑):
   python -m example.quantize configs/quant/baseline.yaml
-  python -m example.quantize --check experiments/<來源 run>/quant/<規格名>
+  python -m example.quantize --check experiments/<來源 run>/quant/<資料夾名>
 輸出:model.npz(salt_core.io.save_quantized 格式)、reference.npz(逐筆輸出)、report.yaml
 """
 import argparse
@@ -158,14 +158,28 @@ def check_quant_config(cfg: dict) -> None:
 
 
 def spec_name(spec: dict) -> str:
-    """規格組成的資料夾名,例如 b8_fa10_fv10_round_pc_clip100_wrap。"""
+    """規格組成的名字,例如 b8_fa10_fv10_round_pc_clip100_wrap。"""
     granularity = "pc" if spec["out_granularity"] == "per_channel" else "pt"
     return (f"b{spec['bits']}_fa{spec['f_a']}_fv{spec['f_V']}_{spec['round_mode']}_"
             f"{granularity}_clip{spec['clip_percentile']:g}_{spec['overflow_mode']}")
 
 
+def _source_tag(which) -> str:
+    """權重來源的標記:best、final、e<epoch>。不是這三種時 raise ValueError。"""
+    if which in ("best", "final"):
+        return which
+    if isinstance(which, int) and not isinstance(which, bool):
+        return f"e{which}"
+    raise ValueError(f"source.params 要是 best、final 或 epoch 編號,拿到 {which!r}")
+
+
+def quant_dir_name(cfg: dict) -> str:
+    """量化資料夾名:權重來源加規格,例如 best_b8_fa10_fv10_round_pc_clip100_wrap、e59_b8_...。"""
+    return f"{_source_tag(cfg['source']['params'])}_{spec_name(cfg['spec'])}"
+
+
 def _load_source_params(source_dir: str, which) -> tuple[Network, tuple, int]:
-    """回傳 (網路, 浮點權重, 權重的 epoch)。which 是 "best"、"final" 或 epoch 編號。"""
+    """回傳 (網路, 浮點權重, 權重的 epoch)。which 是 "best"、"final" 或 epoch 編號(已經檢查過)。"""
     run_record = load_run_record(source_dir)
     if which == "best":
         network, params = load_run_params(source_dir, "best")
@@ -173,11 +187,9 @@ def _load_source_params(source_dir: str, which) -> tuple[Network, tuple, int]:
     if which == "final":
         network, params = load_run_params(source_dir, "final")
         return network, params, int(run_record["config"]["train"]["epochs"]) - 1
-    if isinstance(which, int):
-        network, params = load_weights(weight_snapshot_path(
-            os.path.join(source_dir, WEIGHTS_DIRNAME), which))
-        return network, params, which
-    raise ValueError(f"source.params 要是 best、final 或 epoch 編號,拿到 {which!r}")
+    network, params = load_weights(weight_snapshot_path(
+        os.path.join(source_dir, WEIGHTS_DIRNAME), which))
+    return network, params, which
 
 
 def _val_head(max_events: int, seed_val: int, val_size: int, n: int) -> NMNISTSplit:
@@ -260,7 +272,7 @@ def quantize(cfg: dict, experiments_dir: str | os.PathLike = EXPERIMENTS_DIR) ->
     check_quant_config(cfg)
     spec_cfg, source_cfg = cfg["spec"], cfg["source"]
     source_dir = os.path.join(experiments_dir, source_cfg["run"])
-    out_dir = os.path.join(source_dir, QUANT_DIRNAME, spec_name(spec_cfg))
+    out_dir = os.path.join(source_dir, QUANT_DIRNAME, quant_dir_name(cfg))
     if os.path.exists(out_dir):
         raise FileExistsError(f"{out_dir} 已經存在,要重產請先刪掉")
 
