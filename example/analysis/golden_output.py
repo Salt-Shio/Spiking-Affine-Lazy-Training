@@ -18,18 +18,17 @@ import sys
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 import yaml
 
 from data.src.nmnist import NMNISTDataset
 from example.models.conv_net import build_decoder, build_growth_policies
 from example.paths import DATASET_ROOT, EXPERIMENTS_DIR
+from example.quantize import (calibrate_v_abs_max, grown_for_needed, quant_forward_split,
+                              quant_layer_specs, reference_arrays)
 from example.utils import load_run_params, load_run_record, split_input_events, take_input_events
-from salt_core.capacity import Capacity, LayerDiag, grown_to_fit
+from salt_core.capacity import Capacity
 from salt_core.network import Network
-from salt_core.quant.backend import QuantBackend
-from salt_core.quant.calibrate import merge_v_ranges, v_abs_max_per_channel, v_range_per_channel
 from salt_core.quant.convert import LayerQuantSpec, build_quantized_params
 
 RUN_DIR = EXPERIMENTS_DIR / "scale_10k_20260919_050446"
@@ -110,10 +109,7 @@ def overflow_report(layers: list, out: dict) -> dict:
 def grown_layers(layers: list, out: dict) -> list:
     """照那次 run 的放大公式,用整個 split 的最大需求放大每一層。"""
     policies = build_growth_policies(load_run_record(str(RUN_DIR))["config"]["model"], layers)
-    diags = [LayerDiag(spike_count=0, firing_rate=0.0,
-                       needed={knob: int(v.max()) for knob, v in out["needed"][layer.name].items()})
-             for layer in layers]
-    return grown_to_fit(layers, policies, diags)
+    return grown_for_needed(layers, policies, out["needed"])
 
 
 def accuracy(out: dict, labels: np.ndarray) -> float:
@@ -181,45 +177,19 @@ def compare() -> int:
 def build_golden_quant_params(network: Network, params, split) -> list:
     """照 QUANT_SPEC 算每層的量化參數,M 用 split 前 QUANT_CALIBRATION_SAMPLES 筆逐筆量。"""
     raw = split_input_events(split, network.input_shape)
-    per_sample = [v_range_per_channel(network.layers, network.apply(
-                      params, take_input_events(raw, i), trace=True).traces)
-                  for i in range(QUANT_CALIBRATION_SAMPLES)]
-    v_abs_max = v_abs_max_per_channel(merge_v_ranges(per_sample))
+    v_abs_max = calibrate_v_abs_max(network, params, raw, QUANT_CALIBRATION_SAMPLES)
     spec = LayerQuantSpec(bits=QUANT_SPEC["bits"], f_a=QUANT_SPEC["f_a"], f_V=QUANT_SPEC["f_V"],
                           overflow_mode=QUANT_SPEC["overflow_mode"])
-    specs = [spec] * (len(network.layers) - 1) + [spec._replace(fires=False)]
-    return build_quantized_params(network.layers, params, specs, v_abs_max)
+    return build_quantized_params(network.layers, params,
+                                  quant_layer_specs(spec, len(network.layers)), v_abs_max)
 
 
-def quant_forward_split(network: Network, decoder, quant_params: list, split,
-                        batch_size: int) -> dict:
-    """整個 split 分批跑量化版 forward。回傳 numpy 陣列:v_final_int (N, n_class)、
-    preds (N,),spike_count、truncated、overflowed 各 (N, n_layers)。"""
-    backend = QuantBackend(round_mode=QUANT_SPEC["round_mode"])
-
-    # 量化參數含 Python 整數(f_a、f_V、i_V),當 jit 的常數,不當引數傳。
-    @jax.jit
-    def run_batch(raw_batch):
-        output = network.apply_batched(quant_params, raw_batch, backend=backend)
-        scores, _ = jax.vmap(decoder.decode)(backend.readout(output.last, quant_params[-1]))
-        n = scores.shape[0]
-        truncated = [jnp.zeros(n, dtype=bool) if layer.capacity is None
-                     else ~layer.capacity.fits(diag)
-                     for layer, diag in zip(network.layers, output.diags)]
-        return {"v_final_int": output.last.v_final,
-                "preds": jnp.argmax(scores, axis=1),
-                "spike_count": jnp.stack([jnp.sum(r.spike_mask, axis=(1, 2))
-                                          for r in output.results], axis=1),
-                "truncated": jnp.stack(truncated, axis=1),
-                "overflowed": jnp.stack([jnp.any(r.overflowed, axis=(1, 2))
-                                         for r in output.results], axis=1)}
-
-    raw = split_input_events(split, network.input_shape)
-    n = split.labels.shape[0]
-    parts = [jax.tree_util.tree_map(
-                 np.asarray, run_batch(take_input_events(raw, slice(start, start + batch_size))))
-             for start in range(0, n, batch_size)]
-    return {key: np.concatenate([part[key] for part in parts]) for key in parts[0]}
+def golden_quant_forward(network: Network, decoder, quant_params: list, split,
+                         batch_size: int) -> dict:
+    """整個 split 分批跑量化版 forward,回傳 reference_arrays 的逐筆輸出。"""
+    out = quant_forward_split(network, decoder, quant_params, QUANT_SPEC["round_mode"],
+                              split_input_events(split, network.input_shape), batch_size)
+    return reference_arrays(out)
 
 
 def load_quant_run() -> tuple:
@@ -235,7 +205,7 @@ def load_quant_run() -> tuple:
 
 def save_quant() -> None:
     network, decoder, quant_params, split, batch_size = load_quant_run()
-    out = quant_forward_split(network, decoder, quant_params, split, batch_size)
+    out = golden_quant_forward(network, decoder, quant_params, split, batch_size)
     labels = np.asarray(split.labels)
     np.savez(GOLDEN_DIR / "golden_quant.npz", labels=labels, **out)
     names = [layer.name for layer in network.layers]
@@ -260,7 +230,7 @@ def compare_quant() -> int:
     golden = np.load(GOLDEN_DIR / "golden_quant.npz")
     network, decoder, quant_params, split, batch_size = load_quant_run()
     i_V = {layer.name: p.i_V for layer, p in zip(network.layers, quant_params)}
-    out = quant_forward_split(network, decoder, quant_params, split, batch_size)
+    out = golden_quant_forward(network, decoder, quant_params, split, batch_size)
 
     print(f"accuracy {accuracy(out, golden['labels']):.4f}(黃金輸出 {report['accuracy']:.4f})")
     print(f"i_V {i_V}(黃金輸出 {report['i_V']})")

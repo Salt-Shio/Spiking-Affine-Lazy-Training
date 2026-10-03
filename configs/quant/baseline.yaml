@@ -1,0 +1,22 @@
+# 量化實驗:python -m example.quantize configs/quant/baseline.yaml
+# 輸出到 experiments/<source.run>/quant/<規格名>/,規格名由 spec 自動組成。
+# 規格跟 example/analysis/golden_output.py 的 QUANT_SPEC 相同。
+
+source:
+  run: scale_10k_20260919_050446   # experiments/ 底下的資料夾名
+  params: best                     # best、final,或 epoch 編號(weights/epoch_XXX.npz)
+
+calibration:
+  n_samples: 50                    # 量膜電位範圍 M 用 val 的前幾筆
+
+verify:
+  n_samples: null                  # 跑幾筆 val 存成參考輸出;null 是 run 的整個 val
+
+spec:
+  bits: 8                          # 權重碼位元數
+  f_a: 10                          # 衰減碼小數位元
+  f_V: 10                          # 膜電位暫存器小數位元
+  round_mode: round                # round 或 truncate
+  out_granularity: per_channel     # 輸出層的 s_c:per_channel 或 per_tensor;其他層固定逐 channel
+  clip_percentile: 100             # 權重截斷門檻取 |w| 的第幾百分位,100 = 不截斷
+  overflow_mode: wrap              # 暫存器溢位:wrap 或 saturate
