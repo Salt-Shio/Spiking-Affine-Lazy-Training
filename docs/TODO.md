@@ -42,16 +42,26 @@
      val 2000 筆實測逐位元相同。
   8. `python -m example.quantize --eval <量化資料夾> --which test`:在沒用過的資料上跑,寫進資料夾的
      `eval/`(準確率、溢位筆數跟位置、餘裕、最少要加幾 bits),檢驗餘裕夠不夠。
-- **膜電位暫存器 i_V 太大,想縮小(2026-10-03 提出,還沒開始)。** 目前選的
-  `best_val50_b8_fa6_fv6_round_pc_clip100_wrap_g1`:i_V conv1 13、conv2 15、out 15,暫存器 19/21/21 bits;
-  val 0.9270、test 10000 筆 0.9236、0 溢位、餘裕約 1 bit。i_V ≈ log2(v_th/s_c) + log2(M/v_th) + 2(+ guard):
-  - 第一段是權重 8 bits 讓整數單位很細:conv1 5.6~7.0 bits、conv2 5.4~6.6 bits。
-  - 第二段是負膜電位沒有下限:conv1 4.25 bits(M=19)、conv2 6.56 bits(M=94)。負值是常態,不是極端:
-    conv2 中位數 −7.86,82% 的時間 < −v_th,50% 的時間 < −8 v_th(val 200 筆、所有事件步)。
-  候選方向(使用者要另開 session 自由試):
-  - A. 降權重位元 b(6、5、4,搭配 clip 90):用 `configs/quant/` 直接試,看 i_V + f_V 總寬度跟 test 準確率。
-  - B. 負膜電位設下限(例如 V ≥ −4 v_th):省 conv1 約 2、conv2 約 4.5 bits,但改變模型行為(conv2 65% 時間
-    < −4 v_th),要浮點訓練、整數模擬、FPGA 三邊一起加,要重新訓練。先寫推導跟方案給使用者看再動手。
+- **膜電位暫存器縮小:出沒飽和、飽和兩版(2026-10-03 定案,實作中,分支 `membrane-iv-shrink`)。**
+  原本 b8 f_V6 g1:暫存器 19/21/21 bits(conv1/conv2/out),test 10000 筆 0.9236。實測(test,標準誤約 0.27%):
+  - f_V 6 → 0 不掉準確率;b 8 → 7 不掉。兩者都是讓暫存器最低位變粗,對寬度效果一樣。
+  - 沒飽和版 b7 f_a6 f_V0 繞回 g1:12/14/14,0.9222,0 溢位。
+  - 飽和版:同一組權重碼,i_V 直接指定 9/11/11、溢位改飽和,0.9229。conv 層正向一碰門檻就 fire,
+    實際只有負向會被夾住;幾乎每筆樣本都會碰到上下限,硬體要逐位元照做。
+  - b4 掉約 1%(clip 90:10/12/12,0.9129)。
+  要做的事:
+  1. `example/quantize.py`:spec 加 `i_V`(null = 量到的 + guard_bits;給 {層名: 值} = 直接用)。給了 i_V 時
+     guard_bits 要是 0;會 fire 的層暫存器上限低於門檻時報錯;資料夾名用 `iv9-11-11` 取代 `g<g>`。
+  2. `example/quant_run.py`:飽和模式不算「最少要加幾 bits」跟溢位位置,只留飽和過的樣本數跟餘裕。
+  3. config:新增 `configs/quant/b7_fa6_fv0.yaml`(沒飽和版)、`b7_fa6_fv0_sat.yaml`(飽和版);
+     現有兩個補 `i_V: null`。
+  4. `example/tests/test_quantize.py` 補 1、2 的測試。
+  5. 產生兩版,跑 `--check`、`--eval --which test`。
+  6. 文件:膜電位量化推導的溢位政策改成兩版並存;問題紀錄記「寬度 = log2(範圍 / 最低位),b 跟 f_V
+     效果一樣」「飽和直接當負向下限,不用重訓」;架構補 config 的 `i_V`。
+  沒做的方向(只記下來):膜電位正則化(loss 懲罰太負的 V,推估再省 conv2 約 2 bits,要 fine-tune)、
+  b4 QAT、不均勻刻度暫存器。另外量膜電位範圍讀的是 reset 之後的值,fire 前的正向峰值沒量到;
+  i_V 縮到很小時繞回模式可能漏 fire,現在的設定都在正向下限之上。
 - **`max_queue_len` 只長不縮。** firing rate 訓練中單調下降(見 [`問題紀錄.md`](問題紀錄.md)
   「決策:firing rate 訓練過程單調下降,判斷不是問題、不處理」)→ 下游事件變少 → 佇列需求
   `LayerDiag.needed["max_queue_len"]` 掉,max_queue_len 有收縮空間,偵測訊號現成。要做成有 hysteresis 的啟發式
