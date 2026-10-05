@@ -1,14 +1,19 @@
+# 每條規則都要放在一段底下:tools/pack_snapshot.py 照段名決定打不打包,沒分段的規則會讓它報錯。
+
+# [垃圾] 快取、建置產物、打包輸出:不打包
 __pycache__/
 *.pyc
-.env
-experiments/
-data/datasets/
 *.egg-info/
 build/
+.env
+*.zip
+/_claude_home/
 
-# 本機 / 工具設定,不進公開 repo
+# [打包] 不進公開 repo 的本機檔案:實驗結果、本機 / 工具設定
+experiments/
 /CLAUDE.md
 .claude/
 .vscode/
 
-*.zip
+# [打包:dataset] 資料集,太大,加 --with-dataset 才打包
+data/datasets/
