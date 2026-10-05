@@ -5,7 +5,7 @@ run_name: baseline
 # train_size=1000/val_size=200 debug 子集,跳到 train_size=10000/val_size=2000
 # (N-MNIST Train/ 60000 筆完整切分是 54000/6000,先抓這個中間量級,不是全量),
 # 看準確率會不會隨資料量提升——2026-09-19 討論定案,之後專案重心轉向
-# CSNN-FPGA 硬體端可行性,這是訓練演算法這條線目前最後一次放大實驗。
+# SALT-FPGA 硬體端可行性,這是訓練演算法這條線目前最後一次放大實驗。
 #
 # lr 1e-3→5e-3:lr=1e-3(跟這份 config 完全一樣的 weight_decay+cosine 組合,
 # train_size=1000)測過,穩定性最好但 100 epoch 內準確率反而比 lr=1e-2 低

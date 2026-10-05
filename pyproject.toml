@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spiking-affine-lazy-training"
 version = "0.0.0"
-description = "CSNN-FPGA 的訓練端:單狀態仿射 LIF、事件驅動、chunk 化平行掃描,支援 conv 架構"
+description = "SALT-FPGA 的訓練端:單狀態仿射 LIF、事件驅動、chunk 化平行掃描,支援 conv 架構"
 requires-python = ">=3.11"
 # 依賴清單維持在 requirements.txt(conda 環境 jax 已完整安裝);這裡刻意不重列,
 # 這個套件用 `pip install -e . --no-deps` 註冊,不透過 pip 解析依賴。

@@ -1,79 +1,96 @@
 # Spiking-Affine-Lazy-Training
 
-CSNN-FPGA(一個獨立的硬體專案)的**訓練端**。
+SALT-FPGA 的**訓練端**。
+訓練出的模型 forward 要跟 FPGA 的逐事件推論**逐筆對得上**,支援 conv 跟 FC。
 
-FPGA 那邊的推論電路是**事件驅動、逐筆處理**的:硬體收到一筆事件,就在當下用
-「這筆事件距離這顆神經元上次更新經過的真實時間」做解析衰減、加權重、判斷要不要
-fire —— 不等下一筆事件,也不湊固定時間格(tick)。這個專案訓練出的模型,forward
-行為必須跟這套逐事件推論**完全對得上**,而且要支援 conv,不是只有全連接。
+## 重點
 
-## 為什麼不直接用 spikingjelly 這類套件
+- **逐事件,不是逐 tick**:每筆事件到達就衰減、加權重、判斷 fire,不湊固定時間格。
+- **單狀態 LIF**:只有膜電位 $V$,沒有電流 $I$。
+- **平行化**:每一步是仿射變換,用 associative scan 把 $O(S)$ 序列步驟壓成 $O(\log S)$ 深度。
+- **量化**:浮點權重轉成整數模型,只用整數運算推論,輸出逐位元可重現。
 
-`LIFNode` 是**逐 tick** 更新:`v = v·(1-1/τ) + x[t]`,`t` 只是張量索引。
-一個 tick 內不管累積多少輸入事件,tick 結束只判斷一次要不要 fire。
-例:`v_th=1`、同 tick 內 `w1=w2=1`、`x[t]=2` → 只 fire 一次,多出的 `1.0` 消失。
+## 神經元模型
 
-硬體對不上這件事:硬體收到一筆事件時,**不知道這個 tick 之後還會不會有更多事件**,
-只能等收到更晚的事件才能確定可以結算。實測會導致同一層內不同神經元的輸出時間戳
-新鮮度不一致,下游收到的事件順序可能違反「時間非遞減」的假設。
+$$V \leftarrow V\cdot(1-1/\tau)^{N} + w, \qquad s = \mathbb{1}[V \ge v_{th}]$$
 
-查過的其他現成框架(mlGeNN 底層是固定 dt 網格模擬、SparseProp 針對 autonomous
-recurrent 網路、jaxsnn 只驗證過小型 dense 網路、ADSEQ 太新沒公開程式碼)也都不是
-完全合適的候選,所以決定自己開發。
+- $N$:距上次更新的整數 ms(離散 Euler 衰減,對齊 FPGA 的 ms 精度)。
+- 輸出時間戳 = 觸發這次 fire 的事件自己的時間。
+- 引理:純衰減只會讓 $V$ 更接近 0,所以 fire 與否在事件到達當下就能決定。
+- 結果:每層輸出天生時間遞增,不需要 watermark / reorder buffer。
 
-## 換成什麼
+## 為什麼不用現成框架
 
-**單狀態事件驅動 LIF**:只有一個膜電位 $V$,沒有電流變數 $I$,輸入直接加進 $V$。
+訓練端的 forward 要跟硬體是**同一個函數**,要同時做到:
 
-$$V \leftarrow V\cdot(1-1/\tau)^{N} + w, \qquad s = \mathbb{1}[V \ge v_{th}], \qquad
-t_{\text{輸出}} = \text{觸發這次結算的事件自己的時間}$$
+1. 每筆事件到達當下就決定 fire,不等同一時間格的其他事件。
+2. 單狀態神經元,整數 ms 的離散衰減 $(1-1/\tau)^N$。
+3. 支援 conv。
+4. 能在 GPU 上平行訓練幾千到幾萬筆事件的長序列。
 
-$N$ = 距上次更新經過的整數 ms(離散 Euler 衰減,不是連續 $e^{-\Delta t/\tau}$——
-對齊 FPGA 規格的整數 ms 精度)。
+查過的現成框架,沒有一個同時做到這 4 點。
 
-**關鍵引理**:純衰減($a\in(0,1]$、沒有新的 $w$ 加進來)永遠不會讓 $V$ 變大,只會
-更接近 0。所以「要不要 fire」永遠在事件到達當下就能封閉式決定,不需要等未來。
-輸出時間戳直接是觸發事件自己的 $t$,搭配嚴格序列化處理,一層的輸出天生時間遞增,
-遞迴到多層整條 pipeline 都對——不需要 watermark / reorder buffer。
+- **逐時間格(tick)模擬的框架**做不到第 1 點:同一格內的輸入先加總,格子結束才判斷一次 fire。
+  - 硬體收到事件時不知道這格後面還有沒有事件,做不到「等格子結束」。
+  - 例:`v_th=1`、同一格 `w1=w2=1`,逐 tick fire 一次,逐事件 fire 兩次。
+  - 是不同的函數,權重不能沿用。
+- **事件驅動的做法**:實際查證過的是 Bullet Trains(見下方致謝),做不到第 2 點。
+  - 它是兩狀態(電流驅動電壓)、連續時間指數衰減的模型,跟硬體不是同一個函數。
 
-**跟 spikingjelly 是不同的函數**,不是同一演算法的等效實作:同 tick 內 `w1=w2=1`,
-spikingjelly fire 一次,逐事件處理是兩次獨立判斷(E1 fire、reset;E2 再 fire)。
-**不能沿用 spikingjelly 訓練好的權重。**
+## 致謝:snn-bullet-trains
 
-## 為什麼要平行化(associative scan)
+這個專案的平行化思路大量受到 [snn-bullet-trains](https://github.com/ToddMorrill/snn-bullet-trains) 啟發。
+對應論文:*Bullet Trains: Parallelizing Training of Temporally Precise Spiking Neural Networks*(Morrill, Pehle, Zador,ICML 2026)。
 
-逐事件把序列長度從幾百步拉到幾千幾萬步。逐步 BPTT 是 $O(S)$ 個序列相依步驟
-(不能平行)+ 記憶體隨長度線性成長。
+- **借來的**:事件當仿射映射、`combine` 合成、associative scan、chunk 投機執行。
+- **沒借的**:兩狀態 $(V, I)$ 動力學跟 root solver。
+  單狀態模型的 fire 判斷是封閉式,不需要求根。
+- 筆記:[`docs/math/bullet-trains 核心仿射概念.md`](docs/math/bullet-trains%20核心仿射概念.md)
 
-單狀態模型每一步就是一個仿射變換 $m_i(x) = a_i x + w_i$;仿射變換可以先合併
-(函數合成有結合律),把 $O(S)$ 改寫成 $O(\log S)$ 深度的平行前綴掃描
-(`jax.lax.associative_scan`)。
+## 目錄
 
-工程骨架(仿射映射、`combine`、chunk 投機執行)借自 Bullet Trains(ICML 2026),
-**但不套用它的神經元動力學**——它是兩狀態模型($\tau_m\dot V = -V + I$、
-$\tau_s\dot I = -I$),$I>0$ 時電壓能在沒有新事件時單靠殘留電流爬升,所以需要
-root solver;單狀態模型沒有這個性質(上面的引理),不需要那整套。
-
-## 結構
-
-| 資料夾 | 定位 |
+| 資料夾 | 內容 |
 |---|---|
-| `salt_core/` | 核心運算,自成封閉系統:層、網路、容量;浮點 backend(chunk 化 associative scan、surrogate gradient)跟整數 backend(模擬 FPGA 定點運算) |
-| `data/` | N-MNIST 載入 + 資料集視覺化,不依賴 `salt_core/` |
-| `viz/` | 通用繪圖(逐 epoch 曲線、網格圖、動畫);只有 `replay_panels.py` 依賴 `salt_core/` |
-| `example/` | 拿 `salt_core` + `data` 組一個實際能訓練的模型:conv 網路、訓練腳本、動態容量放大、評估、分析、notebook。換資料集 / 換架構改這裡 |
-| `configs/` | 訓練用的 yaml |
+| `salt_core/` | 核心:層、網路、容量;浮點 backend(chunk 化 scan、surrogate gradient)、`quant/` 整數 backend |
+| `data/` | N-MNIST 載入與視覺化,不依賴 `salt_core/`;資料集放 `data/datasets/N-MNIST/` |
+| `viz/` | 通用繪圖(曲線、網格圖、動畫) |
+| `example/` | 實際模型:conv 網路、訓練、評估、量化、分析、notebook。換資料集 / 架構改這裡 |
+| `configs/` | `conv/` 訓練、`quant/` 量化的 yaml |
+| `tools/` | `pack_snapshot.py`:把不進 git 的本機檔案打包到另一台機器 |
+| `archive/` | 封存的 bug 查證證據,不維護 |
 
-- 架構(分層、`EventStream` 約定、backend、容量、解碼器):[`docs/架構.md`](docs/架構.md)
-- 規格(dataset 格式、網路超參):[`docs/規格書.md`](docs/規格書.md)
-- 數學推導:[`docs/math/`](docs/math/)
-- 待辦:[`docs/TODO.md`](docs/TODO.md)
+## 執行
 
-## 安裝與執行
+需要 Python ≥ 3.11,依賴見 `requirements.txt`(JAX CUDA 13)。
 
 ```
-pip install -e . --no-deps          # 依賴清單見 requirements.txt
+pip install -e . --no-deps
+
+# 訓練
 python -m example.train configs/conv/baseline.yaml
-python -m example.train --resume experiments/<run 目錄>   # 行程當掉後接著練
+python -m example.train --resume experiments/<run>          # 中斷後接著練
+
+# 評估
+python -m example.eval_test experiments/<run> [--which test|val]
+python -m example.plot_eval experiments/<run>
+
+# 量化
+python -m example.quantize configs/quant/baseline.yaml
+python -m example.quantize --check experiments/<run>/quant/<資料夾>   # 比對參考輸出
+python -m example.quantize --eval  experiments/<run>/quant/<資料夾>
+
 pytest
 ```
+
+## 文件
+
+| 文件 | 內容 |
+|---|---|
+| [`docs/架構.md`](docs/架構.md) | 分層、`EventStream` 約定、backend、容量、解碼器 |
+| [`docs/規格書.md`](docs/規格書.md) | dataset 格式、網路超參 |
+| [`docs/量化模型推論.md`](docs/量化模型推論.md) | 拿量化資料夾只用整數跑推論(給 FPGA 端) |
+| [`docs/監測規格.md`](docs/監測規格.md) | 訓練監測要記的量 |
+| [`docs/問題紀錄.md`](docs/問題紀錄.md) | 設計決策與理由 |
+| [`docs/寫法規則.md`](docs/寫法規則.md) | docstring / 註解規則 |
+| [`docs/math/`](docs/math/) | 數學推導 |
+| [`docs/TODO.md`](docs/TODO.md) | 待辦 |

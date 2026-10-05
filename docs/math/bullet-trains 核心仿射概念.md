@@ -213,11 +213,11 @@ fire 之後會硬重置 $V$,重置是一個**不連續跳變**,不是仿射映�
 - 第 1、2 節(leak、spike、reset)的解析解與求根器,是「一筆事件到達就用經過
   的真實時間解析衰減、判斷 fire」這個核心需求的直接對應,不需要改。
 - 第 3 節末段提到的「全連接假設」,是唯一要換成 conv 版佇列建構邏輯的地方,
-  詳見 `D:\Project\CSNN-FPGA\docs\SNN\Concept\conv_event_scatter_banking_derivation.md`。
+  詳見 `D:\Project\SALT-FPGA\docs\SNN\Concept\model_operation_float.md`「4. Conv 層：事件只影響感受野內的候選神經元」。
 - 第 5 節的 speculative execution 機制,理論上不依賴全連接或 conv 的差異
   ——它只依賴「事件佇列 + 仿射映射 + reset 斷點」這個結構,conv 版佇列一樣
   可以套用同一套 chunk 平行化,但沒有實測驗證過。
-- **模型落差已查證、已定案(不是懸而未決的問題)**:CSNN-FPGA 硬體端與
+- **模型落差已查證、已定案(不是懸而未決的問題)**:SALT-FPGA 硬體端與
   spikingjelly 用的是**單變量** LIF($h[m]=v[m-1](1-\tfrac1\tau)+\tfrac{x[m]}\tau$,
   輸入直接打進 $V$),Bullet Trains 是**雙變量** current-based LIF(輸入打進
   $I$,$I$ 再驅動 $V$)——兩者是不同的微分方程,不是同一個模型的兩種參數化,

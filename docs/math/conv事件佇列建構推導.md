@@ -34,10 +34,10 @@ conv 的權重要看事件座標相對輸出位置的偏移(kernel tap),不是�
 誰」就能決定,也不是每顆輸出神經元都跟每筆事件有關——一維 `event_source_idx`
 不夠用,要換成 `(x_i,y_i,c_i)` 三元組。
 
-## 1. 連接結構:$o,k$ 公式(抄自 CSNN-FPGA 硬體規格)
+## 1. 連接結構:$o,k$ 公式(抄自 SALT-FPGA 硬體規格)
 
-完整推導見 `D:\Project\CSNN-FPGA\docs\SNN\Concept\conv_event_scatter_banking_derivation.md`
-第 4、5、6、10.1 節,這裡只列訓練端要用的結論。
+完整推導見 `D:\Project\SALT-FPGA\docs\SNN\Concept\model_operation_float.md`
+「4. Conv 層：事件只影響感受野內的候選神經元」,這裡只列訓練端要用的結論。
 
 符號:$K$ kernel size、$S$ stride、$P$ padding(方形 kernel,$H,W$ 兩軸共用
 同一組)、$i$ 事件座標(單軸)、$o$ 輸出座標(單軸)、$k$ kernel tap 索引。
@@ -158,8 +158,8 @@ $\dfrac{H_{out}W_{out}}{N^2}$——以 conv1($H_{out}=W_{out}=64,N=2$)為例,
 壓縮版要真的省到運算量,`max_queue_len` 必須明顯小於 $n_{total}$;但要
 保證不漏接任何真實事件(靜默截斷會是難以察覺的正確性錯誤),需要一個有
 根據的資料密度上限(例如上游事件編碼有沒有保證單一輸入像素的最大 fire
-頻率)。這個問題連 CSNN-FPGA 硬體規格自己都還沒解決(該文件第 15 節第 3
-項 `FIFO_DEPTH` 一樣懸而未決,要等實測),不是本文件能憑空推出正確數字的
+頻率)。這個問題連 SALT-FPGA 硬體規格自己都還沒解決(`D:\Project\SALT-FPGA\docs\SNN\Todo\csnn_pl_implementation_todo.md`
+第 6 項 `FIFO_DEPTH` 一樣懸而未決,要等實測),不是本文件能憑空推出正確數字的
 東西。若不打算做這個論證,壓縮版唯一「保證安全」的上限就是
 `n_total_events`——這樣陣列形狀退化成跟密集版一樣大,完全沒省到運算量,
 還倒賠一段展開/排序的前處理成本。
