@@ -56,7 +56,7 @@ $$V \leftarrow V\cdot(1-1/\tau)^{N} + w, \qquad s = \mathbb{1}[V \ge v_{th}]$$
 | `viz/` | 通用繪圖(曲線、網格圖、動畫) |
 | `example/` | 實際模型:conv 網路、訓練、評估、量化、分析、notebook。換資料集 / 架構改這裡 |
 | `configs/` | `conv/` 訓練、`quant/` 量化的 yaml |
-| `tools/` | `pack_snapshot.py`:把不進 git 的本機檔案打包到另一台機器 |
+| `tools/` | `pack_snapshot.py`:把不進 git 的本機檔案打包到另一台機器;`export_fpga.py`:量化模型的 conv 層匯出成 SALT-FPGA 用的 `.mem` |
 | `archive/` | 封存的 bug 查證證據,不維護 |
 
 ## 執行

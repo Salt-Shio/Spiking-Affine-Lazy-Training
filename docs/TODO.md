@@ -94,4 +94,5 @@
   輸入最後留在神經元裡的 V 不同——反例見 [`問題紀錄.md`](問題紀錄.md)「洞見:同一時間戳記排序,用複合鍵
   不能只用時間」)。硬體還沒做出來,沒有「現有規則」可讀;之後由訓練端、硬體端訂一個簡單的共同約定
   (例如同分一律照 channel 編號)。
-- **量化模型的匯出格式。** 要等 SALT-FPGA 那邊的規格。
+- **量化模型的匯出格式。** conv 層已有:`python -m tools.export_fpga`(打包在 `salt_core/fpga_export.py`),
+  格式規格在 SALT-FPGA 的 `docs/SNN/Concept/Layer-RTL/Conv.md`。FC 層要等 SALT-FPGA 的 FC.md 定案。
